@@ -112,6 +112,36 @@ def _sanitize_host(host):
     return h
 
 
+def named_target_hosts(text):
+    """Public sites the USER named in this request, not a static list.
+
+    A request like "audit www.example.com" names its own target. Refusing it
+    because the operator's built-in allowlist is short is a capability defect,
+    not a safety property (#355): the user is the authority for which public
+    page they asked about, and the SSRF guard still decides whether it may be
+    fetched. This only *admits a candidate*; ``fetch_url`` re-validates the
+    host and requires a globally public resolution before any socket opens.
+
+    Returns a set of sanitized hostnames. Address literals and private-looking
+    names never qualify (``_is_fetchable_domain`` + ``_sanitize_host``), so
+    this cannot become a probe primitive on its own.
+    """
+    hosts = set()
+    for raw in _URL_RE.findall(text or ""):
+        try:
+            candidate = urllib.parse.urlsplit(raw).hostname or ""
+        except ValueError:
+            continue
+        clean = _sanitize_host(candidate)
+        if clean and _is_fetchable_domain(clean):
+            hosts.add(clean)
+    for match in _BARE_DOMAIN_RE.finditer(text or ""):
+        clean = _sanitize_host("".join(match.group(1, 2)))
+        if clean and _is_fetchable_domain(clean):
+            hosts.add(clean)
+    return hosts
+
+
 def resolve_fetch_allowlist(settings):
     """Derive ``(allowed_hosts, allow_any_public)`` from settings.
 
@@ -427,8 +457,113 @@ def _page_title(page_html):
     return _clean_text(m.group(1))[:200] if m else ""
 
 
+def _browser_enabled():
+    """Renderer switch. ON by default; ``HARNESS_FETCH_BROWSER=0`` opts out.
+
+    The capability is decided here, once, not by whichever entry point
+    remembered to export an env var: a public page the user named must be
+    readable through the stock chat lane. Hermetic tests pin the switch
+    explicitly (``allow_browser=``) and the package stays importable without
+    Playwright -- ``_browser_available()`` is the presence check.
+    """
+    raw = os.environ.get("HARNESS_FETCH_BROWSER")
+    if raw is None or not raw.strip():
+        return True
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
+def _browser_available():
+    """True when a headless browser can be launched for a blocked page.
+
+    Optional on purpose: the core must install and run with no browser at
+    all. A bot-protected site is unreadable by a plain GET, so when the
+    capability is present the fetch ladder uses it; when it is absent the
+    refusal is reported honestly (#355).
+    """
+    try:
+        from playwright.sync_api import sync_playwright  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def fetch_via_browser(url, timeout=25.0, max_chars=6000):
+    """Render ONE https URL in headless Chromium and return its visible text.
+
+    Used only after a plain HTTPS GET is refused (403/429/JS-only), which is
+    what bot protection looks like from the outside. Guards are the same as
+    the plain path: https only, the initial host and the FINAL url after
+    navigation must both resolve to globally public addresses, and the body
+    is truncated. The browser is closed in every path.
+    """
+    parsed = urllib.parse.urlsplit(url or "")
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise HarnessError("browser fetch refused: only https:// URLs are fetched")
+    import socket as _socket
+    _resolved_addresses_public(parsed.hostname.lower(), _socket.getaddrinfo)
+    from playwright.sync_api import sync_playwright
+
+    emit("web_fetch", phase="browser", url=url)
+    final = url
+    title = ""
+    text = ""
+    with sync_playwright() as p:
+        # A headed real browser is deliberate. Cloudflare-class bot protection
+        # answers every headless engine with "Just a moment..." (verified on
+        # Chrome, Edge and bundled Chromium); the same page loads in ~2.5s in
+        # a headed browser. One page, closed immediately.
+        browser = None
+        # Real browsers first (their TLS/JS fingerprint clears bot checks),
+        # bundled Chromium headed next, headless last (no display, or the
+        # site tolerates it). Each attempt is independent and cheap.
+        for launch in ({'channel': 'chrome'}, {'channel': 'msedge'},
+                       {}, {'headless': True}):
+            opts = dict(launch)
+            opts.setdefault("headless", False)
+            try:
+                browser = p.chromium.launch(**opts)
+                break
+            except Exception:
+                continue
+        if browser is None:
+            raise HarnessError("browser fetch: no launchable browser")
+        try:
+            page = browser.new_page()
+            page.goto(url, wait_until="domcontentloaded",
+                      timeout=int(timeout * 1000))
+            # Cloudflare interstitials resolve on their own; poll until the
+            # body stops growing instead of sleeping a fixed budget on every
+            # page. A challenge or pre-hydration shell is never accepted as
+            # the page.
+            _settled = ("just a moment", "attention required", "loading",
+                        "please wait", "checking your browser")
+            prev = -1
+            for _ in range(10):
+                title = (page.title() or "").strip()
+                text = _clean_text(page.inner_text("body") or "")
+                done = (title.lower() not in _settled and len(text) > 200
+                        and len(text) == prev)
+                if done:
+                    break
+                prev = len(text)
+                page.wait_for_timeout(1500)
+            final = page.url
+            final_host = (urllib.parse.urlsplit(final).hostname or "").lower()
+            if final_host and final_host != parsed.hostname.lower():
+                _resolved_addresses_public(final_host, _socket.getaddrinfo)
+            if not text.strip():
+                text = _clean_text(
+                    _extract_text(page.content() or ""))
+        finally:
+            browser.close()
+    if not text.strip():
+        raise HarnessError("browser fetch: page rendered no readable text")
+    return {"url": final, "title": title, "text": text[:max_chars],
+            "fetched_by": "browser"}
+
+
 def fetch_url(url, allowed_hosts, timeout=12.0, max_chars=6000,
-              allow_any_public=False):
+              allow_any_public=False, named_hosts=None, allow_browser=None):
     """Fetch ONE https URL and return {url, title, text}.
 
     Refusals are HarnessErrors with machine-readable messages:
@@ -441,6 +576,11 @@ def fetch_url(url, allowed_hosts, timeout=12.0, max_chars=6000,
     to a globally public address, so the fetcher can never reach a private,
     loopback, link-local, or metadata address (the SSRF guard is retained
     even when the allowlist is relaxed).
+
+    ``named_hosts`` are hosts the user explicitly named in the request. They
+    get the same treatment: admitted without an allowlist entry, but only
+    after the same public-address proof. So a request can always reach the
+    public page it names, and never reaches anything internal.
     """
     if not url or not url.strip():
         raise HarnessError("web fetch: empty url")
@@ -451,13 +591,23 @@ def fetch_url(url, allowed_hosts, timeout=12.0, max_chars=6000,
     host = (parsed.hostname or "").lower()
     if not host:
         raise HarnessError("web fetch refused: no host in URL")
-    if allow_any_public:
+    # None = auto: the renderer is used only when the operator enabled it AND
+    # the package is importable, so default installs stay hermetic.
+    browser_ok = ((_browser_enabled() and _browser_available())
+                  if allow_browser is None else bool(allow_browser))
+    named = {h.lower() for h in (named_hosts or [])}
+    if allow_any_public or host in named:
         import socket as _socket
         try:
             _resolved_addresses_public(host, _socket.getaddrinfo)
         except HarnessError as e:
             raise HarnessError(
                 f"web fetch refused: {str(e).split(':', 1)[-1].strip()}") from e
+        if host in named and not allow_any_public:
+            # Provenance for the ledger: this host was admitted because the
+            # user named it, not because an operator pre-approved it.
+            emit("web_fetch", phase="admitted", url=u,
+                 admitted_by="named-target")
     else:
         allowed = {h.lower() for h in (allowed_hosts or [])}
         if host not in allowed:
@@ -487,6 +637,18 @@ def fetch_url(url, allowed_hosts, timeout=12.0, max_chars=6000,
             from ._http import interruptible_sleep
             interruptible_sleep(1.5, current_cancel_check())
     if error_note is not None or raw is None:
+        # Bot protection (403/429) and JS-only shells look like this from a
+        # plain GET. When the optional browser capability is present, the
+        # same URL is rendered once instead of refusing a public page the
+        # user asked about (#355). Policy refusals above never reach here.
+        # urllib raises HTTPError for a 4xx ("HTTP Error 403: Forbidden"),
+        # while a 5xx arrives as a status, so match the code anywhere in the
+        # note. Policy refusals never reach this branch.
+        blocked = bool(error_note) and ("403" in error_note
+                                        or "429" in error_note)
+        if blocked and browser_ok:
+            emit("web_fetch", phase="upgrade", url=u, reason=error_note)
+            return fetch_via_browser(u, max_chars=max_chars)
         emit("web_fetch", phase="end", ok=False, url=u)
         raise HarnessError(error_note or "web fetch failed: empty response")
     final_host = (urllib.parse.urlsplit(final_url).hostname or "").lower()
@@ -496,6 +658,9 @@ def fetch_url(url, allowed_hosts, timeout=12.0, max_chars=6000,
             f"web fetch refused: redirect to non-allowlisted host '{final_host}'")
     text = _extract_text(raw.decode("utf-8-sig", "replace"))[:max_chars]
     if not text:
+        if browser_ok:
+            emit("web_fetch", phase="upgrade", url=u, reason="no readable text")
+            return fetch_via_browser(u, max_chars=max_chars)
         emit("web_fetch", phase="end", ok=False, url=u)
         raise HarnessError("web fetch returned no readable text")
     emit("web_fetch", phase="end", ok=True, url=final_url, chars=len(text))
@@ -503,7 +668,7 @@ def fetch_url(url, allowed_hosts, timeout=12.0, max_chars=6000,
             "text": text}
 
 
-def gather_web_context(prompt: str, *, allowed_hosts=DEFAULT_FETCH_HOSTS, allow_any_public=False, fetch_url_fn=None, search_web_fn=None, find_urls_fn=None, extract_query_fn=None, max_sources=3):
+def gather_web_context(prompt: str, *, allowed_hosts=DEFAULT_FETCH_HOSTS, allow_any_public=False, named_hosts=None, fetch_url_fn=None, search_web_fn=None, find_urls_fn=None, extract_query_fn=None, max_sources=3):
     """Single-owner web evidence gathering for one chat turn.
 
     Fetches allowlisted URLs in the prompt (one per URL, up to max_sources);
@@ -517,14 +682,17 @@ def gather_web_context(prompt: str, *, allowed_hosts=DEFAULT_FETCH_HOSTS, allow_
     find_fn = find_urls_fn if find_urls_fn is not None else find_urls
     extract_fn = extract_query_fn if extract_query_fn is not None else extract_query
     sources: List[Dict[str, Any]] = []
+    named = {h.lower() for h in (named_hosts or [])}
     urls = find_fn(prompt)[:max_sources]
     if urls:
         for u in urls:
             try:
-                # Pass allow_any_public only when set, so the injectable seam
-                # keeps its original (url, allowed_hosts=...) shape for the
-                # default allowlisted path and existing test doubles.
-                if allow_any_public:
+                # Pass allow_any_public only when the URL is admitted by
+                # policy (operator disabled the list) or by the user naming
+                # that host, so the injectable seam keeps its original
+                # (url, allowed_hosts=...) shape on the default path.
+                host = (urllib.parse.urlsplit(u).hostname or "").lower()
+                if allow_any_public or host in named:
                     page = fetch_fn(u, allowed_hosts=allowed_hosts,
                                     allow_any_public=True)
                 else:
@@ -540,10 +708,16 @@ def gather_web_context(prompt: str, *, allowed_hosts=DEFAULT_FETCH_HOSTS, allow_
             r_url = r.get("url", "")
             r_host = (urllib.parse.urlsplit(r_url).hostname or "").lower()
             allowed = {h.lower() for h in (allowed_hosts or [])}
-            # If the discovered source is from an allowlisted host, enrich snippet with primary page text
-            if r_host in allowed and not any(s.get("kind") == "fetch" and s.get("ok") for s in sources):
+            # If the discovered source is from an allowlisted (or
+            # user-named) host, enrich the snippet with the page's own text.
+            admitted = r_host in allowed or r_host in named or allow_any_public
+            if admitted and not any(s.get("kind") == "fetch" and s.get("ok") for s in sources):
                 try:
-                    page = fetch_fn(r_url, allowed_hosts=allowed_hosts)
+                    if allow_any_public or r_host in named:
+                        page = fetch_fn(r_url, allowed_hosts=allowed_hosts,
+                                        allow_any_public=True)
+                    else:
+                        page = fetch_fn(r_url, allowed_hosts=allowed_hosts)
                     sources.append({"kind": "fetch", "ok": True, "url": page["url"], "title": page["title"], "text": page["text"]})
                     continue
                 except ToolCancelled:

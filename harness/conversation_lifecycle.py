@@ -21,7 +21,7 @@ from .results import _http_error
 from .session import governor_for, ledger_for
 from .simple_request import relevant_history as simple_relevant_history
 from .token_budget import resolve_lane_max_tokens as _resolve_lane_max_tokens
-from .web import gather_web_context, resolve_fetch_allowlist
+from .web import gather_web_context, named_target_hosts, resolve_fetch_allowlist
 
 
 class ConversationLifecycleMixin:
@@ -55,8 +55,9 @@ class ConversationLifecycleMixin:
         if web:
             if cancel_check and cancel_check():
                 raise ToolCancelled("Prompt execution was cancelled by user")
+            named_hosts = named_target_hosts(prompt)
             try:
-                web_sources = self._gather_web_context(prompt)
+                web_sources = self._gather_web_context(prompt, named_hosts)
             except ToolCancelled:
                 raise
             except Exception as e:  # web tools must never kill the chat lane
@@ -298,7 +299,8 @@ class ConversationLifecycleMixin:
         emit("chat_response", intent="conversation", cost=cost, model=model)
         return result
 
-    def _gather_web_context(self, prompt: str) -> List[Dict[str, Any]]:
+    def _gather_web_context(self, prompt: str,
+                            named_hosts=None) -> List[Dict[str, Any]]:
         # Web owns the network seams; pass those module functions through so
         # policy and hermetic test patches remain at the single owner.
         import harness.web as _web
@@ -308,6 +310,7 @@ class ConversationLifecycleMixin:
             prompt,
             allowed_hosts=allowed,
             allow_any_public=any_public,
+            named_hosts=named_hosts or named_target_hosts(prompt),
             fetch_url_fn=_web.fetch_url,
             search_web_fn=_web.search_web,
             find_urls_fn=_web.find_urls,

@@ -5,7 +5,10 @@ pins the allowlist refusals, the redirect refusal, honest failure modes,
 and the prompt-side extraction helpers. No live network in this battery.
 """
 import http.server
+import os
+import sys
 import threading
+import types
 import unittest
 from unittest import mock
 
@@ -274,11 +277,14 @@ class FetchUrlTests(unittest.TestCase):
         self.assertIn("web fetch failed", str(ctx.exception))
 
     def test_script_only_page_is_no_readable_text(self):
+        # Hermetic: pin the renderer off. Without a renderer an empty JS shell
+        # is an honest refusal; the upgrade path is covered separately.
         body = b"<html><head><script>var a=1;</script></head><body></body></html>"
         url = "https://www.anthropic.com/x"
         with mock.patch.object(web, "_http_get", return_value=(200, body, url)):
             with self.assertRaises(HarnessError) as ctx:
-                web.fetch_url(url, allowed_hosts=["www.anthropic.com"])
+                web.fetch_url(url, allowed_hosts=["www.anthropic.com"],
+                              allow_browser=False)
         self.assertIn("no readable text", str(ctx.exception))
 
     def test_transient_failure_retried_once_then_ok(self):
@@ -533,6 +539,354 @@ class AllowlistRelaxationTests(unittest.TestCase):
             page = web.fetch_url("https://freeoffgridcalculator.com/",
                                  allowed_hosts=[], allow_any_public=True)
         self.assertIn("hello world", page["text"])
+
+
+class NamedTargetAdmissionTests(unittest.TestCase):
+    """#355: a public site the user names is fetchable without an allowlist edit.
+
+    The capability comes from the request (the user is the authority on what
+    they asked about), while the SSRF public-address proof still decides
+    whether a socket may open. An unnamed host stays refused.
+    """
+
+    def test_request_hosts_are_extracted_from_bare_domains_and_urls(self):
+        named = web.named_target_hosts(
+            "audit www.freeoffgridcalculator.com for usability, then check "
+            "https://example.org/pricing too")
+        self.assertIn("www.freeoffgridcalculator.com", named)
+        self.assertIn("example.org", named)
+
+    def test_address_literals_and_localhost_never_qualify(self):
+        named = web.named_target_hosts(
+            "read https://127.0.0.1/secret and http://localhost/admin "
+            "and http://169.254.169.254/latest/meta-data")
+        self.assertEqual(named, set())
+
+    def test_non_web_file_names_never_qualify(self):
+        self.assertEqual(web.named_target_hosts("open report.pdf"), set())
+
+    def test_named_public_host_is_fetched(self):
+        body = b"<html><title>Calculator</title><body>solar sizing</body></html>"
+        with mock.patch.object(web, "_resolved_addresses_public",
+                               return_value=["93.184.216.34"]), \
+             mock.patch.object(web, "_http_get",
+                               return_value=(200, body,
+                                             "https://www.freeoffgridcalculator.com/")):
+            page = web.fetch_url(
+                "https://www.freeoffgridcalculator.com/",
+                allowed_hosts=["en.wikipedia.org"],
+                named_hosts={"www.freeoffgridcalculator.com"})
+        self.assertIn("solar sizing", page["text"])
+
+    def test_named_host_still_refused_when_it_resolves_privately(self):
+        with mock.patch.object(
+                web, "_resolved_addresses_public",
+                side_effect=HarnessError(
+                    "site probe refused: resolves to non-public address")):
+            with self.assertRaises(HarnessError):
+                web.fetch_url(
+                    "https://www.freeoffgridcalculator.com/",
+                    allowed_hosts=[],
+                    named_hosts={"www.freeoffgridcalculator.com"})
+
+    def test_unnamed_host_is_still_refused_even_with_named_hosts_present(self):
+        with self.assertRaises(HarnessError) as ctx:
+            web.fetch_url("https://other.example/",
+                          allowed_hosts=["en.wikipedia.org"],
+                          named_hosts={"www.freeoffgridcalculator.com"})
+        self.assertIn("allowlist", str(ctx.exception))
+
+    def test_named_target_is_traced_in_the_ledger_event(self):
+        body = b"<html><title>T</title><body>ok</body></html>"
+        with mock.patch.object(web, "_resolved_addresses_public",
+                               return_value=["93.184.216.34"]), \
+             mock.patch.object(web, "_http_get",
+                               return_value=(200, body, "https://example.com/")), \
+             mock.patch.object(web, "emit") as emit:
+            web.fetch_url("https://example.com/", allowed_hosts=[],
+                          named_hosts={"example.com"})
+        admitted = [c for c in emit.call_args_list
+                    if c.args and c.args[0] == "web_fetch"
+                    and c.kwargs.get("phase") == "admitted"]
+        self.assertTrue(admitted, emit.call_args_list)
+        self.assertEqual(admitted[0].kwargs.get("admitted_by"), "named-target")
+
+    def test_gather_web_context_admits_the_named_prompt_url(self):
+        calls = []
+
+        def fake_fetch(url, allowed_hosts=None, allow_any_public=False):
+            calls.append((url, allow_any_public))
+            return {"url": url, "title": "t", "text": "body"}
+
+        sources = web.gather_web_context(
+            "audit https://www.freeoffgridcalculator.com/ please",
+            allowed_hosts=["en.wikipedia.org"],
+            named_hosts=web.named_target_hosts(
+                "audit https://www.freeoffgridcalculator.com/ please"),
+            fetch_url_fn=fake_fetch,
+            search_web_fn=lambda q: [])
+        self.assertEqual(sources[0]["kind"], "fetch")
+        self.assertTrue(sources[0]["ok"])
+        self.assertTrue(calls[0][1], "named target must be admitted for the fetch")
+
+
+class BrowserFallbackTests(unittest.TestCase):
+    """#355: a bot-protected public page is rendered, not refused.
+
+    Bot protection answers a plain GET with 403/429 (or an empty JS shell).
+    When the operator enables the optional renderer the same URL is opened
+    once in Chromium; otherwise the honest refusal is unchanged.
+    """
+
+    def _no_network(self):
+        return mock.patch.object(web, "_http_get",
+                                 return_value=(403, b"",
+                                               "https://example.com/"))
+
+    def test_the_renderer_is_on_by_default_and_env_can_opt_out(self):
+        # One owner, no per-entry-point env plumbing: the stock chat lane gets
+        # the renderer; an operator (or a hermetic test) can still say no.
+        env = {k: v for k, v in os.environ.items() if k != "HARNESS_FETCH_BROWSER"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertTrue(web._browser_enabled())
+        for off in ("0", "false", "no", "off"):
+            with mock.patch.dict(os.environ, {"HARNESS_FETCH_BROWSER": off}):
+                self.assertFalse(web._browser_enabled())
+        with mock.patch.dict(os.environ, {"HARNESS_FETCH_BROWSER": "1"}):
+            self.assertTrue(web._browser_enabled())
+
+    def test_403_upgrades_to_the_renderer(self):
+        with self._no_network(),              mock.patch.object(web, "_browser_enabled", return_value=True),              mock.patch.object(web, "_browser_available", return_value=True),              mock.patch.object(
+                 web, "fetch_via_browser",
+                 return_value={"url": "https://example.com/",
+                               "title": "t", "text": "rendered body",
+                               "fetched_by": "browser"}) as render:
+            page = web.fetch_url("https://example.com/",
+                                 allowed_hosts=["example.com"])
+        self.assertEqual(page["text"], "rendered body")
+        self.assertEqual(page["fetched_by"], "browser")
+        render.assert_called_once()
+
+    def test_403_still_refuses_without_a_renderer(self):
+        with self._no_network(),              mock.patch.object(web, "_browser_enabled", return_value=False):
+            with self.assertRaises(HarnessError) as ctx:
+                web.fetch_url("https://example.com/",
+                              allowed_hosts=["example.com"])
+        self.assertIn("403", str(ctx.exception))
+
+    def test_empty_shell_upgrades_and_a_missing_renderer_keeps_the_refusal(self):
+        body = b"<html><script>app()</script><body></body></html>"
+        with mock.patch.object(web, "_http_get",
+                               return_value=(200, body, "https://example.com/")),              mock.patch.object(web, "_browser_enabled", return_value=True),              mock.patch.object(web, "_browser_available", return_value=True),              mock.patch.object(
+                 web, "fetch_via_browser",
+                 return_value={"url": "https://example.com/", "title": "t",
+                               "text": "rendered", "fetched_by": "browser"}):
+            page = web.fetch_url("https://example.com/",
+                                 allowed_hosts=["example.com"])
+        self.assertEqual(page["fetched_by"], "browser")
+        with mock.patch.object(web, "_http_get",
+                               return_value=(200, body, "https://example.com/")),              mock.patch.object(web, "_browser_enabled", return_value=False):
+            with self.assertRaises(HarnessError) as ctx:
+                web.fetch_url("https://example.com/",
+                              allowed_hosts=["example.com"])
+        self.assertIn("no readable text", str(ctx.exception))
+
+    def test_policy_refusals_never_reach_the_renderer(self):
+        with mock.patch.object(web, "_browser_enabled", return_value=True),              mock.patch.object(web, "_browser_available", return_value=True),              mock.patch.object(web, "fetch_via_browser") as render:
+            with self.assertRaises(HarnessError):
+                web.fetch_url("https://unlisted.example/",
+                              allowed_hosts=["example.com"])
+        render.assert_not_called()
+
+
+class _FakePage:
+    """Just enough of playwright's Page: scripted titles/texts, then stable."""
+
+    def __init__(self, steps, final_url="https://example.com/", html=""):
+        self._steps = list(steps)
+        self.url = final_url
+        self._html = html
+        self.waits = 0
+        self.goto_args = None
+
+    def goto(self, url, **kwargs):
+        self.goto_args = (url, dict(kwargs))
+
+    def title(self):
+        return self._steps[0][0] if len(self._steps) == 1 else self._steps[0][0]
+
+    def inner_text(self, selector):
+        if len(self._steps) > 1:
+            return self._steps.pop(0)[1]
+        return self._steps[0][1]
+
+    def wait_for_timeout(self, ms):
+        self.waits += 1
+
+    def content(self):
+        return self._html
+
+
+class _FakeBrowser:
+    def __init__(self, page):
+        self.page = page
+        self.closed = False
+
+    def new_page(self):
+        return self.page
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeChromium:
+    def __init__(self, page, fail_channels=("chrome", "msedge"), fail_all=False):
+        self.page = page
+        self.fail_channels = set(fail_channels)
+        self.fail_all = fail_all
+        self.launches = []
+        self.browser = None
+
+    def launch(self, **kwargs):
+        self.launches.append(dict(kwargs))
+        if self.fail_all or kwargs.get("channel") in self.fail_channels:
+            raise RuntimeError("channel unavailable")
+        self.browser = _FakeBrowser(self.page)
+        return self.browser
+
+
+def _install_fake_playwright(chromium):
+    """Inject a stand-in ``playwright.sync_api`` for the renderer."""
+    class _PW:
+        def __enter__(self):
+            return types.SimpleNamespace(chromium=chromium)
+
+        def __exit__(self, *exc):
+            return False
+
+    module = types.ModuleType("playwright.sync_api")
+    module.sync_playwright = lambda: _PW()
+    parent = types.ModuleType("playwright")
+    parent.sync_api = module
+    return mock.patch.dict(
+        sys.modules, {"playwright": parent, "playwright.sync_api": module})
+
+
+class BrowserRenderTests(unittest.TestCase):
+    """The renderer itself: launch ladder, challenge poll, honest failures.
+
+    A bot-protected page only clears in a headed real browser, so the ladder
+    tries Chrome, then Edge, then bundled Chromium, then headless -- and the
+    public-address guard runs on the requested host and on the final URL.
+    """
+
+    def test_a_challenge_clears_in_the_first_launchable_browser(self):
+        page = _FakePage([("Just a moment...", "Checking your browser"),
+                          ("Real title", "Rendered body " * 40)])
+        chromium = _FakeChromium(page)
+        with mock.patch.object(web, "_resolved_addresses_public",
+                               return_value=["93.184.216.34"]) as guard, \
+             _install_fake_playwright(chromium):
+            out = web.fetch_via_browser("https://example.com/", max_chars=500)
+        self.assertEqual(out["fetched_by"], "browser")
+        self.assertEqual(out["title"], "Real title")
+        self.assertIn("Rendered body", out["text"])
+        self.assertLessEqual(len(out["text"]), 500)
+        # Headed real browsers first; the bundled engine is the fallback.
+        self.assertEqual([launch.get("channel") for launch in chromium.launches],
+                         ["chrome", "msedge", None])
+        self.assertTrue(all(launch.get("headless") is False
+                            for launch in chromium.launches))
+        self.assertTrue(chromium.browser.closed)
+        self.assertGreaterEqual(guard.call_count, 1)
+
+    def test_no_launchable_browser_is_an_honest_refusal(self):
+        chromium = _FakeChromium(_FakePage([("t", "body")]), fail_all=True)
+        with mock.patch.object(web, "_resolved_addresses_public",
+                               return_value=["93.184.216.34"]), \
+             _install_fake_playwright(chromium):
+            with self.assertRaises(HarnessError) as ctx:
+                web.fetch_via_browser("https://example.com/")
+        self.assertIn("no launchable browser", str(ctx.exception))
+
+    def test_non_https_is_refused_before_any_browser_starts(self):
+        chromium = _FakeChromium(_FakePage([("t", "body")]))
+        with _install_fake_playwright(chromium):
+            with self.assertRaises(HarnessError):
+                web.fetch_via_browser("http://example.com/")
+        self.assertEqual(chromium.launches, [])
+
+    def test_an_empty_dom_falls_back_to_the_rendered_html(self):
+        page = _FakePage([("t", "")], html="<html><body><p>from html</p></body></html>")
+        chromium = _FakeChromium(page, fail_channels=("chrome", "msedge"))
+        with mock.patch.object(web, "_resolved_addresses_public",
+                               return_value=["93.184.216.34"]), \
+             _install_fake_playwright(chromium):
+            out = web.fetch_via_browser("https://example.com/")
+        self.assertIn("from html", out["text"])
+
+    def test_a_blank_render_is_never_passed_off_as_evidence(self):
+        chromium = _FakeChromium(_FakePage([("t", "")], html=""))
+        with mock.patch.object(web, "_resolved_addresses_public",
+                               return_value=["93.184.216.34"]), \
+             _install_fake_playwright(chromium):
+            with self.assertRaises(HarnessError) as ctx:
+                web.fetch_via_browser("https://example.com/")
+        self.assertIn("no readable text", str(ctx.exception))
+
+    def test_a_render_that_lands_on_another_host_re_proves_the_address(self):
+        page = _FakePage([("t", "body text " * 40)],
+                         final_url="https://elsewhere.example/")
+        chromium = _FakeChromium(page, fail_channels=("chrome", "msedge"))
+        seen = []
+
+        def guard(host, resolve_fn):
+            seen.append(host)
+            return ["93.184.216.34"]
+
+        with mock.patch.object(web, "_resolved_addresses_public", guard), \
+             _install_fake_playwright(chromium):
+            out = web.fetch_via_browser("https://example.com/")
+        self.assertEqual(out["url"], "https://elsewhere.example/")
+        self.assertEqual(seen, ["example.com", "elsewhere.example"])
+
+    def test_a_non_public_landing_host_is_refused(self):
+        page = _FakePage([("t", "body text " * 40)],
+                         final_url="https://internal.intranet.local/")
+        chromium = _FakeChromium(page, fail_channels=("chrome", "msedge"))
+
+        def guard(host, resolve_fn):
+            if host != "example.com":
+                raise HarnessError(f"site probe refused: {host} is not public")
+            return ["93.184.216.34"]
+
+        with mock.patch.object(web, "_resolved_addresses_public", guard), \
+             _install_fake_playwright(chromium):
+            with self.assertRaises(HarnessError):
+                web.fetch_via_browser("https://example.com/")
+        self.assertTrue(chromium.browser.closed)
+
+
+class NamedTargetHostsTests(unittest.TestCase):
+    """A user-named public target is admitted -- and only a public one."""
+
+    def test_scheme_urls_and_bare_domains_are_both_recognized(self):
+        hosts = web.named_target_hosts(
+            "audit https://www.example.com/x and also bare.example.org please")
+        self.assertEqual(hosts, {"www.example.com", "bare.example.org"})
+
+    def test_a_malformed_url_is_skipped_not_fatal(self):
+        with mock.patch.object(web.urllib.parse, "urlsplit",
+                               side_effect=ValueError("bad url")):
+            self.assertEqual(web.named_target_hosts("https://x.example/a"), set())
+
+    def test_address_literals_and_private_names_never_qualify(self):
+        self.assertEqual(web.named_target_hosts("curl 127.0.0.1 and 10.0.0.5"),
+                         set())
+        self.assertEqual(web.named_target_hosts("see internal.intranet"), set())
+
+    def test_empty_prompt_names_nothing(self):
+        self.assertEqual(web.named_target_hosts(""), set())
 
 
 class FetchAllowlistConfigTests(unittest.TestCase):

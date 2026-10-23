@@ -9,9 +9,15 @@ _NO_WEB_DISCLOSURE = (
 
 _WEB_CAPABILITY_NOTE = (
     "[Capability note] Web tools ARE attached this run: one web search, plus "
-    "page fetch restricted to exactly these hosts: {hosts}. Every other host "
-    "is refused by policy -- say so when asked about it rather than claiming "
-    "no internet access. Results for this turn follow the marker below; cite "
+    "page fetch for the built-in hosts ({hosts}) AND for any public site the "
+    "user explicitly named in the request (a named target is admitted for "
+    "that public-address-checked fetch, so 'audit example.com' can read "
+    "example.com). Hosts that are neither listed nor named are refused by "
+    "policy -- say so when asked about it rather than claiming "
+    "no internet access. A page that a plain fetch cannot read (bot check or "
+    "JavaScript-only) is rendered in a real browser, so script-heavy and "
+    "protected public pages are still evidence. Results for this turn follow "
+    "the marker below; cite "
     "only those, never invent others, and when a source FAILED, tell the user "
     "exactly what failed. These sources were gathered by the runtime before "
     "this turn -- do not narrate tool calls or describe fetching as your own "

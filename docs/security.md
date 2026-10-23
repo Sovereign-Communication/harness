@@ -44,6 +44,17 @@ is unchanged and still no sandbox.
   implicitly; with multiple roots the caller must name one. No MCP file path
   falls back to the server's process directory. Writes continue to require
   the configured or request-level `allow_write` authorization.
+- **Web evidence ladder.** Page fetch is https-only, never follows a redirect,
+  and requires the host — and any post-render URL — to resolve to a globally
+  public address, so relaxing the allowlist for a user-named target can never
+  reach a private, loopback, link-local, or metadata address. When a plain GET
+  is refused by bot protection (403/429) or returns an empty JS shell, the
+  same URL is rendered once in a browser (`HARNESS_FETCH_BROWSER`, on by
+  default). The public-address guard runs before the browser navigates and
+  again on the final URL. Rendering executes that public site's own JavaScript
+  in a separate browser process with a fresh profile — it is evidence
+  gathering, not a sandbox boundary; disable it with
+  `HARNESS_FETCH_BROWSER=0`.
 - **Scope limit.** These checks constrain Harness file paths; they are not an
   operating-system sandbox. In particular, an explicitly approved verification
   command still runs as the Harness process user, as described below.

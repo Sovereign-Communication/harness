@@ -468,6 +468,33 @@ presence-only in the settings view. The desktop shell reuses the persisted UI
 token and passes it via the URL fragment. See [docs/security.md](docs/security.md)
 and [docs/ui-readiness.md](docs/ui-readiness.md) for details.
 
+### Web evidence: one fetch ladder
+
+A chat turn that names a public site fetches that site; it does not search for
+it and it is not limited to a fixed allowlist of hosts. The ladder is decided
+in one place (`harness/web.py`):
+
+1. **Plain HTTPS GET** — bounded body, no redirects, SSRF public-address
+   proof for the host (and for any post-render URL).
+2. **Named-target admission** — the host the user typed is admitted even when
+   it is not on the allowlist; the allowlist only bounds *unprompted* hosts.
+3. **Browser render** — when the GET is refused (403/429 bot protection) or
+   returns an empty JS shell, the same URL is opened once in a real browser
+   and its visible text is used as evidence. This needs the optional extra:
+
+   ```bash
+   pip install 'sovereign-harness[render]'
+   playwright install chromium      # once
+   ```
+
+   The renderer is **on by default**; set `HARNESS_FETCH_BROWSER=0` to disable
+   it. Because challenge interstitials clear only in a headed browser, the
+   window may appear briefly and closes itself. When no renderer is installed
+   the refusal is reported as-is — never papered over.
+
+Every step emits a typed event (`web_fetch` start/retry/upgrade/browser/end),
+so the run timeline shows exactly which rung produced the evidence.
+
 ## MCP — native dispatch
 
 ```bash
