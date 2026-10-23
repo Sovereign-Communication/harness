@@ -853,3 +853,75 @@ header {
     left: 0;
   }
 }
+
+/* Governed script: proposal card, receipt, and steps */
+.script-card {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #0d1117;
+}
+
+.script-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.script-state {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--dim);
+}
+
+.script-state.pending,
+.script-state.warn { color: var(--yellow); border-color: var(--yellow); }
+.script-state.ok { color: var(--green); border-color: var(--green); }
+.script-state.bad { color: var(--red); border-color: var(--red); }
+
+.script-meta {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--dim);
+  display: grid;
+  gap: 4px;
+}
+
+.script-meta code {
+  font-family: var(--mono);
+  color: var(--fg);
+  word-break: break-all;
+}
+
+.script-source,
+.script-output {
+  margin: 0;
+  padding: 10px 12px;
+  background: #010409;
+  border-top: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 280px;
+  overflow: auto;
+  color: var(--fg);
+}
+
+.script-output.err { color: var(--red); }
+
+.script-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+}

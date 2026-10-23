@@ -38,6 +38,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 
 # ONE place that answers "which platform is this?" -- callers must not ask
@@ -206,6 +207,9 @@ def kill_and_reap(process, timeout=2.0):
 
 # How long to keep draining a killed command's pipes before abandoning them.
 _DRAIN_SECONDS = 2
+#: How often a cancellable wait re-checks the caller's flag. Small enough
+#: that Stop feels immediate, large enough not to spin a core.
+_CANCEL_POLL_SECONDS = 0.1
 
 
 def _kill_tree(process):
@@ -235,7 +239,7 @@ def _kill_tree(process):
         pass
 
 
-def run_tree(argv, cwd=None, timeout=None, env=None):
+def run_tree(argv, cwd=None, timeout=None, env=None, cancel_check=None):
     """Run an argv list like :func:`run`, but with a HARD wall-clock bound.
 
     Two properties :func:`run` does not have, both needed to run a command
@@ -250,8 +254,13 @@ def run_tree(argv, cwd=None, timeout=None, env=None):
       still held afterwards is abandoned -- so the call returns near
       ``timeout`` whatever the descendants do.
 
-    Exit codes match :func:`run`: 124 timed out, 126 not executable, 127 not
-    found. Output is decoded as UTF-8 with replacement.
+    ``cancel_check`` is optional and defaults to ``None`` (the historical
+    blocking call). When supplied, the wait polls in short slices and a
+    true return kills the whole tree and returns exit code 125 -- the same
+    contract Stop already has for provider calls.
+
+    Exit codes match :func:`run`: 124 timed out, 125 cancelled, 126 not
+    executable, 127 not found. Output is decoded as UTF-8 with replacement.
     """
     if isinstance(argv, str):
         raise OsalError(
@@ -279,10 +288,8 @@ def run_tree(argv, cwd=None, timeout=None, env=None):
         return CommandResult(126, f"not executable: {argv[0]}")
     except OSError as exc:
         return CommandResult(126, f"cannot run {argv[0]}: {exc}")
-    try:
-        out, err = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        _kill_tree(process)
+    def drain_after_kill():
+        """Collect what the killed tree already wrote, bounded in time."""
         try:
             process.communicate(timeout=_DRAIN_SECONDS)
         except subprocess.TimeoutExpired:
@@ -303,6 +310,38 @@ def run_tree(argv, cwd=None, timeout=None, env=None):
             process.wait(timeout=_DRAIN_SECONDS)
         except subprocess.TimeoutExpired:
             pass
+
+    cancelled = False
+    timed_out = False
+    if cancel_check is None and timeout is None:
+        out, err = process.communicate()
+    else:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            if cancel_check is not None and cancel_check():
+                cancelled = True
+                break
+            slice_s = _CANCEL_POLL_SECONDS
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    timed_out = True
+                    break
+                slice_s = min(slice_s, remaining)
+            try:
+                # Retrying communicate() after TimeoutExpired is documented:
+                # no output is lost, so a cancel never truncates the receipt.
+                out, err = process.communicate(timeout=slice_s)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+    if cancelled:
+        _kill_tree(process)
+        drain_after_kill()
+        return CommandResult(125, f"command cancelled: {' '.join(argv)}")
+    if timed_out:
+        _kill_tree(process)
+        drain_after_kill()
         return CommandResult(
             124, f"command timed out after {timeout}s: {' '.join(argv)}")
     return CommandResult(process.returncode,

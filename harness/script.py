@@ -40,6 +40,14 @@ Jev scores the script against the request for alignment and completeness. That
 score is evidence, never a gate: measured judge calibration on a good long
 answer is noisy, so a low score is reported to the agent as "revise" while a
 consented run still proceeds.
+
+The chat box and MCP are faces over this same owner, not copies. A chat message
+that starts with ``/script`` is *parsed* here (:func:`parse_script_request`),
+*proposed* here (:func:`propose_script`, which compiles but never writes or
+runs), and only executed here (:func:`run_script`) after the operator approves
+the exact source the card showed. ``script_evidence`` gives the chat lane the
+typed row it stores with the turn, in the same ``kind``/``ok`` vocabulary the
+web sources already use.
 """
 from __future__ import annotations
 
@@ -64,6 +72,12 @@ DEFAULT_MAX_OUTPUT_BYTES = 65_536
 MAX_OUTPUT_BYTES_CAP = 1_048_576
 MAX_SOURCE_CHARS = 200_000
 
+#: The chat-box command. A message has to opt in explicitly; ordinary chat is
+#: never scanned for code, so the model is not bypassed by accident.
+SCRIPT_COMMAND = "/script"
+_FENCE_RE = re.compile(
+    r"```(?:python|py)?[ \t]*\r?\n(.*?)```", re.DOTALL | re.IGNORECASE)
+
 #: The environment a script may see. Everything else (provider keys, tokens,
 #: proxy settings carrying credentials) is dropped rather than filtered, so a
 #: new secret in the operator's shell never becomes reachable by accident.
@@ -78,6 +92,20 @@ _ENV_ALLOW = (
 
 _RUN_DIR_NAME = ".harness"
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+class ScriptRefused(HarnessError):
+    """A typed refusal from the one execution owner.
+
+    ``reason`` is the machine-readable classification the CLI, MCP and server
+    use, so none of them has to match prose to know *why* a run was refused.
+    """
+
+    kind = "script_refused"
+
+    def __init__(self, reason: str, message: str):
+        super().__init__(f"script refused: {message}")
+        self.reason = str(reason)
 
 
 @dataclass(frozen=True)
@@ -159,8 +187,8 @@ def _scrubbed_env(policy: ScriptPolicy) -> Dict[str, str]:
     return env
 
 
-def _refuse(reason: str) -> HarnessError:
-    return HarnessError(f"script refused: {reason}")
+def _refuse(reason: str, message: str) -> ScriptRefused:
+    return ScriptRefused(reason, message)
 
 
 def _within(path: Path, root: Path) -> bool:
@@ -177,7 +205,7 @@ def _compile(source: str) -> None:
         compile(source, "<harness-script>", "exec")
     except SyntaxError as exc:
         raise _refuse(
-            f"syntax error at line {exc.lineno}: {exc.msg}") from exc
+            "syntax", f"syntax error at line {exc.lineno}: {exc.msg}") from exc
 
 
 def _capped(raw: str, limit: int) -> tuple:
@@ -187,6 +215,104 @@ def _capped(raw: str, limit: int) -> tuple:
     return blob[:limit], True
 
 
+def parse_script_request(prompt: str) -> Optional[Dict[str, str]]:
+    """Read a ``/script`` chat message into ``{goal, source}``, or return None.
+
+    Only an explicit command opt in: ordinary prompts are never scanned for
+    code. The source is the single fenced Python block; the goal is the rest
+    of the command line. Prose after the block is allowed and ignored, but a
+    second code block is ambiguous and refused rather than guessed at.
+    """
+    text = (prompt or "").strip()
+    if not text.startswith(SCRIPT_COMMAND):
+        return None
+    rest = text[len(SCRIPT_COMMAND):]
+    if rest and not rest[0].isspace():
+        return None  # ``/scripts`` is not the command
+    first_line, _, body = rest.partition("\n")
+    blocks = _FENCE_RE.findall(body)
+    if len(blocks) != 1:
+        raise _refuse(
+            "empty",
+            "a /script message needs exactly one fenced ```python block "
+            f"(found {len(blocks)})")
+    source = blocks[0].strip("\n")
+    if not source.strip():
+        raise _refuse("empty", "the fenced script block is empty")
+    return {"goal": first_line.strip(), "source": source}
+
+
+def propose_script(prompt: str, *, root=None,
+                   policy: Optional[ScriptPolicy] = None) -> Optional[Dict[str, Any]]:
+    """Turn a ``/script`` message into a consent request -- never a run.
+
+    Compiling here means the card never asks the operator to approve a script
+    that cannot start. Nothing is written and nothing executes; the sha in the
+    payload is the handle the run must present.
+    """
+    request = parse_script_request(prompt)
+    if request is None:
+        return None
+    policy = policy or resolve_script_policy()
+    if not policy.enabled:
+        raise _refuse(
+            "disabled", "scripting is disabled (set HARNESS_SCRIPT_ENABLED=1)")
+    if root is None or not str(root).strip():
+        raise _refuse(
+            "root", "select a workspace folder before running a script")
+    root_path = Path(str(root)).expanduser().resolve()
+    if not root_path.is_dir():
+        raise _refuse("root", f"workspace root is not a directory: {root_path}")
+    source = request["source"]
+    if len(source) > MAX_SOURCE_CHARS:
+        raise _refuse(
+            "too_large", f"script is larger than {MAX_SOURCE_CHARS} characters")
+    _compile(source)
+    sha = script_sha256(source)
+    goal = request["goal"]
+    return {
+        "status": "awaiting_consent",
+        "kind": "script",
+        "response": (
+            "Script ready for approval -- nothing has run yet.\n\n"
+            f"sha256: `{sha}`\n"
+            f"size: {len(source)} characters\n"
+            f"workspace: `{root_path}`\n"
+            + (f"goal: {goal}\n\n" if goal else "\n")
+            + "Approve the exact source shown to run it once; editing it "
+              "invalidates the approval."
+        ),
+        "script": {
+            "goal": goal,
+            "source": source,
+            "sha256": sha,
+            "chars": len(source),
+            "root": str(root_path),
+            "timeout_s": policy.timeout_s,
+            "enabled": True,
+        },
+    }
+
+
+def script_evidence(receipt: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """The typed evidence row the chat lane stores with the turn.
+
+    Same ``kind``/``ok`` vocabulary as the web sources, so a transcript has
+    one evidence shape rather than a second, script-specific one.
+    """
+    receipt = receipt or {}
+    return {
+        "kind": "script",
+        "ok": receipt.get("status") == "ok",
+        "sha256": receipt.get("script_sha256"),
+        "status": receipt.get("status"),
+        "exit_code": receipt.get("exit_code"),
+        "duration_s": receipt.get("duration_s"),
+        "chars": len(str(receipt.get("stdout") or "")),
+        "path": receipt.get("script_path"),
+    }
+
+
 def run_script(source: str, *, root, goal: str = "", allow_exec: bool = False,
                consent_sha: Optional[str] = None, timeout_s: Optional[int] = None,
                policy: Optional[ScriptPolicy] = None,
@@ -194,32 +320,37 @@ def run_script(source: str, *, root, goal: str = "", allow_exec: bool = False,
                task_id: Optional[str] = None) -> Dict[str, Any]:
     """Write, compile-check, and run one script; return a receipt.
 
-    Every refusal is a :class:`HarnessError` whose message starts with
-    ``script refused:`` so a caller (CLI, MCP, chat) can classify without
-    parsing prose.
+    Every refusal is a :class:`ScriptRefused` (a ``HarnessError`` with
+    ``kind="script_refused"`` and a ``reason``), so a caller can classify
+    without parsing prose.
     """
     policy = policy or resolve_script_policy()
     if not policy.enabled:
-        raise _refuse("scripting is disabled (set HARNESS_SCRIPT_ENABLED=1)")
+        raise _refuse(
+            "disabled", "scripting is disabled (set HARNESS_SCRIPT_ENABLED=1)")
     if not allow_exec:
-        raise _refuse("explicit consent is required (approve the script to run it)")
+        raise _refuse(
+            "no_consent",
+            "explicit consent is required (approve the script to run it)")
     if not source or not str(source).strip():
-        raise _refuse("the script is empty")
+        raise _refuse("empty", "the script is empty")
     source = str(source)
     if len(source) > MAX_SOURCE_CHARS:
-        raise _refuse(f"script is larger than {MAX_SOURCE_CHARS} characters")
+        raise _refuse(
+            "too_large", f"script is larger than {MAX_SOURCE_CHARS} characters")
     if root is None or not str(root).strip():
-        raise _refuse("an explicit workspace root is required")
+        raise _refuse("root", "an explicit workspace root is required")
     root_path = Path(str(root)).expanduser().resolve()
     if not root_path.is_dir():
-        raise _refuse(f"workspace root is not a directory: {root_path}")
+        raise _refuse("root", f"workspace root is not a directory: {root_path}")
 
     sha = script_sha256(source)
     if consent_sha and str(consent_sha).strip():
         if not _SHA_RE.match(str(consent_sha).strip().lower()):
-            raise _refuse("consent sha is not a sha256 digest")
+            raise _refuse("sha_invalid", "consent sha is not a sha256 digest")
         if str(consent_sha).strip().lower() != sha:
             raise _refuse(
+                "sha_mismatch",
                 "consent was granted for a different script (sha mismatch); "
                 "re-approve the current source")
 
@@ -232,7 +363,7 @@ def run_script(source: str, *, root, goal: str = "", allow_exec: bool = False,
     run_id = f"{sha[:8]}-{int(time.time() * 1000)}"
     run_dir = root_path / _RUN_DIR_NAME / "scripts" / run_id
     if not _within(run_dir, root_path):
-        raise _refuse("run directory would escape the workspace root")
+        raise _refuse("write", "run directory would escape the workspace root")
     try:
         run_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -240,14 +371,15 @@ def run_script(source: str, *, root, goal: str = "", allow_exec: bool = False,
         except OSError:
             pass  # Windows: ACLs, not POSIX modes
     except OSError as exc:
-        raise _refuse(f"cannot create the run directory: {exc}") from exc
+        raise _refuse(
+            "write", f"cannot create the run directory: {exc}") from exc
     script_path = run_dir / f"script_{sha[:8]}.py"
     try:
         # LF always (osal owns evidence bytes): the file a reader sees must
         # hash to the consent sha, on every platform.
         osal.write_text(str(script_path), source)
     except OSError as exc:
-        raise _refuse(f"cannot write the script: {exc}") from exc
+        raise _refuse("write", f"cannot write the script: {exc}") from exc
 
     timeout = _bounded_int(
         timeout_s if timeout_s is not None else policy.timeout_s,
@@ -261,17 +393,22 @@ def run_script(source: str, *, root, goal: str = "", allow_exec: bool = False,
     # use the capabilities this product already owns.
     result = osal.run_tree(
         [sys.executable, str(script_path)],
-        cwd=str(root_path), timeout=timeout, env=_scrubbed_env(policy))
+        cwd=str(root_path), timeout=timeout, env=_scrubbed_env(policy),
+        cancel_check=cancel_check)
     duration_s = round(time.monotonic() - started, 3)
     stdout, out_truncated = _capped(result.stdout, policy.max_output_bytes)
     stderr, err_truncated = _capped(result.stderr, policy.max_output_bytes)
     killed = result.returncode == 124
+    cancelled = result.returncode == 125
 
     receipt: Dict[str, Any] = {
-        "status": "ok" if result.returncode == 0 else (
-            "timeout" if killed else "failed"),
+        "kind": "script",
+        "status": ("ok" if result.returncode == 0 else
+                   "cancelled" if cancelled else
+                   "timeout" if killed else "failed"),
         "exit_code": int(result.returncode),
         "killed": killed,
+        "cancelled": cancelled,
         "stdout": stdout,
         "stderr": stderr,
         "truncated": bool(out_truncated or err_truncated),
@@ -296,9 +433,12 @@ def run_script(source: str, *, root, goal: str = "", allow_exec: bool = False,
             receipt["alignment"] = {
                 "available": False, "reason": f"{type(exc).__name__}: {exc}"}
 
+    alignment = receipt.get("alignment") or {}
     emit("script_end", status=receipt["status"], exit_code=receipt["exit_code"],
          duration_s=duration_s, truncated=receipt["truncated"],
-         sha256=sha, task_id=task_id)
+         sha256=sha, task_id=task_id, chars=len(stdout),
+         aligned=alignment.get("aligned"),
+         sufficient=alignment.get("sufficient"))
     return receipt
 
 

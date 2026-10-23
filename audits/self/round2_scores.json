@@ -20,7 +20,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.96,
+        "confidence": 1.0,
         "evaluated": true
       },
       "R": {
@@ -38,7 +38,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.99,
+        "confidence": 0.96,
         "evaluated": true
       },
       "SD": {
@@ -224,7 +224,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 4882 tests in 342.699s\n\nOK (env clean; empty home)"
+        "evidence": "unittest: Ran 4922 tests in 433.855s\n\nOK (env clean; empty home)"
       },
       {
         "id": "R14",
@@ -288,7 +288,7 @@
         "id": "D1",
         "label": "MCP tool parity with README",
         "score": 1.0,
-        "evidence": "README documents all 29 MCP tools, no stale names"
+        "evidence": "README documents all 30 MCP tools, no stale names"
       },
       {
         "id": "D2",
@@ -354,7 +354,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "changed harness lines are suite-executed (changed-line coverage 2/2 = 100% (bar 95%) vs baseline 1be932b801)"
+        "evidence": "changed harness lines are suite-executed (changed-line coverage 185/185 = 100% (bar 95%) vs baseline 271f666dbd)"
       }
     ]
   }

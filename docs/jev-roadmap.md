@@ -435,8 +435,46 @@ complete site audit scored **0.30** → `needs_iteration`. The field caps now sh
 one 4,096-token budget (`JEV_ANSWER_MAX_CHARS` 7,000); the same plan then scored
 0.81 twice, deterministically, and a live script run scored 0.96.
 
-P2 (next slice, tracked on #357): MCP `script_run`, the GUI approval card, and
-`kind=script` evidence in the chat lane.
+P2 shipped as `SCR-2` below (PR #360): MCP `script_run`, the GUI approval card,
+and `kind=script` evidence in the chat lane.
+
+### Governed scripting faces (`SCR-2`) — 2026-10-23 (#360)
+
+SCR-1 shipped the runner and a CLI face; SCR-2 makes it reachable where work
+starts without adding a second execution path. `harness/script.py` owns the new
+edges too: `parse_script_request` reads only a message beginning with
+`/script` (one fenced Python block), `propose_script` compiles and returns a
+consent payload but never writes or runs, `script_evidence` gives the chat lane
+a `kind=script` row in the same vocabulary as `web_sources`, and `ScriptRefused`
+carries a machine-readable `reason` (`disabled`, `no_consent`, `sha_missing`,
+`sha_invalid`, `sha_mismatch`, `empty`, `too_large`, `root`, `syntax`, `write`,
+`cancel`) so no face matches prose. The GUI shows the source and sha256, and
+approval posts kind `script` to `/api/runs`; `script_start` / `script_end`
+become first-class steps and the receipt becomes the message body. MCP exposes
+the same call as `script_run` on the mutation lane. `osal.run_tree` gained an
+optional `cancel_check` (default unchanged), so Stop kills the process tree and
+the receipt says `cancelled` (exit 125).
+
+**Planned before implementing.** The plan was scored through the same Jev
+sufficiency pack used for SCR-1: `answer_sufficient` **0.87** (bar 0.70),
+`iteration_required` false, `plan_required` true, deterministic on repeat. Two
+earlier drafts scored 0.41/0.43 because they exceeded the candidate budget
+(>7,000 characters): the judge again saw a truncated document, which is the
+same defect SCR-1 fixed on the input side and a reminder that a plan must fit
+the reader it is judged by.
+
+**Merged with evidence.** The first D12 refresh measured 163/185 changed lines
+(88%) — the empty-block, file-as-root, oversized, no-allowed-roots, scoring,
+ledger-failure and history-persistence branches had no test that reached them.
+Those cases were added and the baseline was regenerated against the
+`origin/main` merge-base, so D12 now reports 185/185 from real execution rather
+than a truncated claim; the self-audit scores 10.00/10 on security,
+reliability, structural hygiene and documentation (13/13, 14/14, 8/8, 12/12).
+The faces were then exercised through the real surfaces, not unit seams: the
+chat flow in a browser at `127.0.0.1:8765` (proposal → Approve → `script_start`
+step → receipt body) with the disabled, no-consent and bad-sha refusals holding
+under the default-off flag, and a stdio MCP client that listed `script_run` and
+called it behind `allow_write`.
 
 ### Web evidence ladder — 2026-10-23 (#355)
 

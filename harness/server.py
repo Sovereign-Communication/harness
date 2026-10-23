@@ -36,6 +36,7 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
 from . import events as _events
+from . import script as _script
 from .agent import AutonomousAgent
 from .request_intent import classify_prompt_intent
 import harness.history as _history
@@ -69,6 +70,15 @@ def _delete_chat_session(session_id: str) -> bool:
     try:
         _history.get_default_history_dir = get_default_history_dir
         return delete_chat_session(session_id)
+    finally:
+        _history.get_default_history_dir = orig
+
+def _save_chat_turn(session_id: str, turn):
+    """Persist a chat turn through the patch-propagating history seam."""
+    orig = _history.get_default_history_dir
+    try:
+        _history.get_default_history_dir = get_default_history_dir
+        return _history.save_chat_turn(session_id, turn)
     finally:
         _history.get_default_history_dir = orig
 
@@ -213,7 +223,8 @@ def _dispatch_file_list(root, raw, label):
 def validate_dispatch(kind, args):
     """CLI-boundary validation for UI dispatch. Same discipline as the CLI
     parsers: untrusted input is range-checked before anything runs."""
-    if kind not in ("apply", "verify", "continue", "bench", "chat", "dogfood", "plan", "driver_task"):
+    if kind not in ("apply", "verify", "continue", "bench", "chat", "dogfood",
+                    "plan", "driver_task", "script"):
         raise HarnessError(f"unknown dispatch kind '{kind}'")
     args = dict(args or {})
     if kind == "driver_task":
@@ -241,6 +252,29 @@ def validate_dispatch(kind, args):
             args["task_max_cost"] = _finite_float(args["task_max_cost"], "task_max_cost", 0.0, HARD_TASK_MAX_COST)
         if args.get("max_cost") is not None:
             args["max_cost"] = _finite_float(args["max_cost"], "max_cost", 0.0, HARD_MAX_COST)
+    elif kind == "script":
+        # The boundary that every face crosses: no root, no consent or no
+        # sha means no run thread at all. The runner re-checks all of it.
+        _dispatch_workspace(args, required=True)
+        source = args.get("source")
+        if not isinstance(source, str) or not source.strip():
+            raise HarnessError("script requires 'source' (the Python text to run)")
+        if len(source) > _script.MAX_SOURCE_CHARS:
+            raise HarnessError(
+                f"script source is larger than {_script.MAX_SOURCE_CHARS} characters")
+        args["source"] = source
+        args["goal"] = str(args.get("goal") or "").strip()[:2000]
+        sha = str(args.get("consent_sha") or "").strip().lower()
+        if not re.match(r"^[0-9a-f]{64}$", sha):
+            raise HarnessError(
+                "script requires 'consent_sha' (the sha256 of the approved source)")
+        args["consent_sha"] = sha
+        if args.get("allow_exec") is not True:
+            raise HarnessError("script requires allow_exec=true (explicit consent)")
+        args["allow_exec"] = True
+        args["timeout_s"] = _opt_int(args, "timeout_s", 1, _script.MAX_TIMEOUT_S)
+        args["score"] = _opt_bool(args, "score") if "score" in args else True
+        args["session_id"] = _opt_str(args, "session_id")
     elif kind == "chat":
         _opt_str(args, "prompt", required=True)
         args["auto_apply"] = _opt_bool(args, "auto_apply") if "auto_apply" in args else False
@@ -437,6 +471,27 @@ def run_chat_task(task_id, args, cancel_check):
         settings.allow_escalation = bool(args["allow_escalation"])
     prompt = args["prompt"]
     root_dir = Path(args["root_dir"]) if args.get("root_dir") else None
+    # A /script message is a consent request, not a model turn: the card it
+    # returns is the only way the source can run, and the run still has to
+    # present the sha the card showed.
+    proposal = _script.propose_script(
+        prompt, root=root_dir, policy=_script.resolve_script_policy(settings))
+    if proposal is not None:
+        info = proposal["script"]
+        _events.emit("script_proposed", task_id=task_id,
+                     sha256=info["sha256"], chars=info["chars"],
+                     goal=info["goal"], enabled=info["enabled"])
+        turn = {
+            "status": proposal["status"], "intent": "script",
+            "kind": "script", "script_state": "proposed",
+            "prompt": prompt, "response": proposal["response"],
+            "model": "script-runner", "cost": 0.0,
+            "script": {k: info[k] for k in
+                       ("goal", "sha256", "chars", "root", "timeout_s")},
+        }
+        if args.get("session_id"):
+            _save_chat_turn(args["session_id"], turn)
+        return proposal
     agent = AutonomousAgent(settings=settings, root_dir=root_dir)
     # Bind cancellation at the network boundary as well as the orchestration
     # checkpoints, so Stop can interrupt an in-flight provider request.
@@ -453,6 +508,72 @@ def run_chat_task(task_id, args, cancel_check):
         max_tokens=args.get("max_tokens"),
         reasoning_effort=args.get("reasoning_effort"),
     )
+
+
+def _script_receipt_text(receipt):
+    """The human-readable body a receipt owes the transcript."""
+    lines = [
+        f"Script {receipt['status']} (exit {receipt['exit_code']}) in "
+        f"{receipt['duration_s']}s.",
+    ]
+    if receipt.get("goal"):
+        lines.append(f"goal: {receipt['goal']}")
+    lines.append(
+        f"sha256 `{receipt['script_sha256']}` · `{receipt['script_path']}`")
+    alignment = receipt.get("alignment") or {}
+    if alignment.get("available"):
+        sufficient = alignment.get("sufficient")
+        pct = (f" ({round(float(sufficient) * 100)}%)"
+               if isinstance(sufficient, (int, float)) else "")
+        lines.append(f"Jev alignment: {alignment.get('verdict')}{pct}.")
+    for label, key in (("stdout", "stdout"), ("stderr", "stderr")):
+        body = str(receipt.get(key) or "")
+        if body.strip():
+            lines.append(f"\n{label}:\n```\n{body.rstrip()}\n```")
+    if receipt.get("truncated"):
+        lines.append("\nOutput was truncated at the configured cap.")
+    return "\n".join(lines)
+
+
+def run_script_task(task_id, args, cancel_check):
+    """Execute one approved script through the one governed runner.
+
+    Consent and the sha re-check live in ``run_script``; this lane only
+    supplies the settings-derived policy, the judge and the receipt envelope.
+    """
+    from .jev_policy import policy_for
+
+    settings = load_settings()
+    root = require_workspace(args.get("root_dir"))
+    policy = _script.resolve_script_policy(settings)
+    jev = None
+    if args.get("score", True):
+        _api_key, governor = governor_for(settings)
+        jev = policy_for(settings, governor=governor,
+                         ledger=ledger_for(settings, caller="agent"))
+    receipt = _script.run_script(
+        args["source"], root=root, goal=args.get("goal") or "",
+        allow_exec=True, consent_sha=args.get("consent_sha"),
+        timeout_s=args.get("timeout_s"), policy=policy,
+        cancel_check=cancel_check, jev_policy=jev, task_id=task_id)
+    result = {
+        "status": receipt["status"],
+        "intent": "script",
+        "kind": "script",
+        # The approval is its own action: the user message for it already
+        # exists in the transcript, so reloading must not invent a second one.
+        "prompt": "",
+        "goal": args.get("goal") or "",
+        "response": _script_receipt_text(receipt),
+        "model": "script-runner",
+        "cost": 0.0,
+        "script": receipt,
+        "script_evidence": [_script.script_evidence(receipt)],
+    }
+    if args.get("session_id"):
+        _save_chat_turn(args["session_id"],
+                        {**result, "script_state": "ran"})
+    return result
 
 
 def run_dogfood_task(task_id, args, cancel_check):
@@ -912,6 +1033,7 @@ RUNNERS = {
     "dogfood": run_dogfood_task,
     "plan": run_plan_task,
     "driver_task": run_driver_task,
+    "script": run_script_task,
 }
 
 
