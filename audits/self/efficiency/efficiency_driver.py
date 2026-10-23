@@ -14,7 +14,12 @@ Environment:
   HARNESS_EFFORT_CAP       per-effort spend cap (default $0.008)
   HARNESS_TOTAL_GUARD      total spend guard (default $0.09)
 """
-import os, sys, json, subprocess, time, urllib.request
+import os
+import sys
+import json
+import subprocess
+import time
+import urllib.request
 
 KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
 if not KEY:
@@ -286,7 +291,7 @@ EFFORTS = [
 
 def main():
     _, base_usage = key_usage()
-    print("baseline key usage: $%.4f" % base_usage, flush=True)
+    print(f"baseline key usage: ${base_usage:.4f}", flush=True)
     total_start = base_usage
     grand = {"attempted": 0, "ok": 0, "cost_reported": 0.0}
     for ei, (domain, check, prompts) in enumerate(EFFORTS, 1):
@@ -313,7 +318,7 @@ def main():
                 ok += 1
                 grand["ok"] += 1
             else:
-                findings.append("FAIL idx %d: %s" % (pi, res.get("resp", "")[:120]))
+                findings.append(f"FAIL idx {pi}: {res.get('resp', '')[:120]}")
             m = res.get("model") or "none"
             models[m] = models.get(m, 0) + 1
             cost_sum += res.get("cost", 0) or 0
@@ -322,16 +327,15 @@ def main():
                 lat.append(res["latency"])
         _, u1 = key_usage()
         spent = u1 - u0
-        print("EFFORT %d/%d %-14s ok=%d/%d models=%s key_spent=$%.5f reported=$%.5f avg_lat=%.1fs" % (
-            ei, len(EFFORTS), domain, ok, len(prompts), models, spent, cost_sum,
-            sum(lat) / len(lat) if lat else 0), flush=True)
+        avg_lat = sum(lat) / len(lat) if lat else 0
+        print(f"EFFORT {ei}/{len(EFFORTS)} {domain:<14} ok={ok}/{len(prompts)} models={models} "
+              f"key_spent=${spent:.5f} reported=${cost_sum:.5f} avg_lat={avg_lat:.1f}s", flush=True)
         if findings:
             for fl in findings[:6]:
                 print("   note: " + fl, flush=True)
     _, u_end = key_usage()
-    print("TOTAL key spend: $%.5f | reported sum: $%.5f | ok %d/%d" % (
-        u_end - total_start, grand["cost_reported"], grand["ok"],
-        grand["attempted"]), flush=True)
+    print(f"TOTAL key spend: ${u_end - total_start:.5f} | reported sum: ${grand['cost_reported']:.5f} "
+          f"| ok {grand['ok']}/{grand['attempted']}", flush=True)
 
 if __name__ == "__main__":
     main()
