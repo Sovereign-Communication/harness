@@ -30,10 +30,22 @@ import secrets
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import __version__
-from .config import load_settings
+from .actions import IRREVERSIBLE
+from .config import default_consent_ledger_path, load_settings
+from .consent_ledger import RestConsentLedger
 from .driver import driver_from_settings
-from .errors import DriverError, PerceptionUnavailable
+from .errors import (DriverError, PerceptionUnavailable,
+                     PersistentStateUnavailable, VocabularyError)
 from .perception import Target
+
+
+_STEP_FIELDS = frozenset({
+    "target", "schema", "consent", "step_id", "prefer",
+    "require_stable",
+})
+_CONSENT_FIELDS = frozenset({
+    "granted", "action", "params", "by", "consent_id",
+})
 
 #: The closed set of stop reasons. Callers may branch on these; nothing else
 #: about a blocked step is a stable contract.
@@ -92,6 +104,8 @@ class Service:
         if token is None:
             token = self.driver.settings.token
         self.token = token or secrets.token_urlsafe(24)
+        self._rest_consent_ledger = RestConsentLedger(
+            default_consent_ledger_path())
 
     # -- routes ---------------------------------------------------------
 
@@ -135,14 +149,58 @@ class Service:
 
     def step(self, body):
         """Run one step. This is the integration's single call."""
+        if not isinstance(body, dict):
+            return _wrapped(400, {"ok": False,
+                                  "error": "step body must be an object"})
+        unknown = set(body) - _STEP_FIELDS
+        if unknown:
+            return _wrapped(400, {
+                "ok": False,
+                "error": f"unknown step field(s): {sorted(unknown)}",
+            })
         target = body.get("target")
-        if not target:
-            return _wrapped(400, {"ok": False, "error": "target is required"})
-        resolved = self._resolve_target(body.get("schema"))
+        if not isinstance(target, str) or not target.strip():
+            return _wrapped(400, {
+                "ok": False, "error": "target must be a non-empty string"})
+        schema_name = body.get("schema")
+        if ("schema" in body
+                and (not isinstance(schema_name, str)
+                     or not schema_name.strip())):
+            return _wrapped(400, {"ok": False,
+                                  "error": "schema must be a non-empty string"})
+        if "consent" in body and not isinstance(body["consent"], dict):
+            return _wrapped(400, {"ok": False,
+                                  "error": "consent must be an object"})
+        if "step_id" in body and (
+                not isinstance(body["step_id"], str)
+                or not body["step_id"].strip()):
+            return _wrapped(400, {
+                "ok": False, "error": "step_id must be a non-empty string"})
+        if "prefer" in body:
+            from .perception import SOURCE_ORDER
+            prefer = body["prefer"]
+            if (not isinstance(prefer, list)
+                    or any(not isinstance(name, str)
+                           or name not in SOURCE_ORDER for name in prefer)):
+                return _wrapped(400, {
+                    "ok": False,
+                    "error": "prefer must be an array of declared source names",
+                })
+        if ("require_stable" in body
+                and type(body["require_stable"]) is not bool):
+            return _wrapped(400, {
+                "ok": False, "error": "require_stable must be a boolean"})
+
+        resolved = self._resolve_target(schema_name)
         if isinstance(resolved, dict):
             return _wrapped(400, {"ok": False, **resolved})
         target_class, schema = resolved
-        consent = self._consent_for(body.get("consent"))
+        try:
+            consent = self._consent_for(body.get("consent"))
+        except PersistentStateUnavailable as exc:
+            return _wrapped(503, {"ok": False, "error": str(exc)})
+        except ValueError as exc:
+            return _wrapped(400, {"ok": False, "error": str(exc)})
         try:
             result = self.driver.step(
                 Target(target, target_class), schema=schema, consent=consent,
@@ -152,8 +210,8 @@ class Service:
                 # own, which left the audit chain unjoinable to the caller's
                 # own log after the fact.
                 step_id=body.get("step_id"),
-                prefer=tuple(body.get("prefer") or ()),
-                require_stable=bool(body.get("require_stable", True)),
+                prefer=tuple(body.get("prefer", ())),
+                require_stable=body.get("require_stable", True),
                 # No new wire field: `params` already means "the parameter
                 # set" here, and consent is *defined* as bound to one exact
                 # (action, params) pair. The action's parameters are
@@ -163,6 +221,8 @@ class Service:
                 # field would have meant two spellings of the same pair that
                 # could drift apart.
                 params=consent.params if consent else {})
+        except PersistentStateUnavailable as exc:
+            return _wrapped(503, {"ok": False, "error": str(exc)})
         except DriverError as exc:
             return _wrapped(400, {"ok": False, "error": str(exc)})
         # A decision the driver declined to act on is a successful API call
@@ -201,12 +261,52 @@ class Service:
         for.
         """
         from .executor import Consent
+        if body is None:
+            return None
+        if not isinstance(body, dict):
+            raise ValueError("consent must be an object")
         if not body:
             return None
-        return Consent(granted=bool(body.get("granted", False)),
-                       action=body.get("action", "*"),
-                       params=body.get("params") or {},
-                       by=body.get("by", "api"))
+        unknown = set(body) - _CONSENT_FIELDS
+        if unknown:
+            raise ValueError(f"unknown consent field(s): {sorted(unknown)}")
+        if "params" in body and not isinstance(body["params"], dict):
+            raise ValueError("consent params must be an object")
+        if "by" in body and (
+                not isinstance(body["by"], str) or not body["by"].strip()):
+            raise ValueError("consent by must be a non-empty string")
+
+        consent_id = body.get("consent_id")
+        if "consent_id" in body:
+            if (not isinstance(consent_id, str) or not consent_id.strip()
+                    or len(consent_id) > 128):
+                raise ValueError(
+                    "consent_id must be a non-empty string of at most 128 "
+                    "characters")
+
+        consent = Consent(granted=body.get("granted", False),
+                          action=body.get("action", "*"),
+                          params=body.get("params", {}),
+                          by=body.get("by", "api"))
+        if consent.granted:
+            try:
+                action = self.driver.vocabulary.resolve(consent.action)
+            except VocabularyError:
+                action = None
+            if (action is not None
+                    and action.action_class == IRREVERSIBLE
+                    and consent_id is None):
+                raise ValueError(
+                    "consent_id is required for irreversible consent")
+        if consent_id is None:
+            return consent
+
+        replay_guard = self._rest_consent_ledger.bind(
+            consent_id, consent.to_dict())
+        return Consent(
+            granted=consent.granted, action=consent.action,
+            params=consent.params, by=consent.by,
+            _replay_guard=replay_guard)
 
     def verify(self, body=None):
         verdict = self.driver.audit.verify()

@@ -29,9 +29,11 @@ model through the same client primitives the decision tier uses -- one
 endpoint, one key, one budget, one price list -- and it is the only extractor
 whose spend reaches the run ceiling.
 """
+import base64
 import json
+import uuid
 
-from . import transport
+from . import osal, transport
 from .audit import KIND_EXTRACTION
 from .budget import UNAVAILABLE, estimate_call_cost
 from .config import JEV_INPUT_PRICE_PER_MILLION
@@ -39,6 +41,7 @@ from .consensus import Vote
 from .errors import SchemaError
 from .jev_client import SYSTEM_ONE_URL
 from .perception import VISION_CLASS
+from .png import SIGNATURE as PNG_SIGNATURE
 from .schema import validate_state
 
 #: Instruction handed to a vision model. Deliberately instructs the model to
@@ -46,7 +49,8 @@ from .schema import validate_state
 #: model that guesses produces a confident wrong value that -- absent the
 #: consensus tier -- would be indistinguishable from a true observation.
 EXTRACTION_INSTRUCTIONS = (
-    "You are reading a screen. Report ONLY the fields named below, using "
+    "You are reading the screen image in the `screen` state field. "
+    "Report ONLY the fields named below, using "
     "exactly these field names. If a field is not visible or you are not "
     "certain of it, omit it rather than guessing. Do not add commentary.\n"
     "FIELDS:\n{fields}"
@@ -149,15 +153,19 @@ class VisionExtractor:
     serves = (VISION_CLASS,)
 
     def __init__(self, slot, settings, *, budget, audit,
-                 transport_module=None, timeout=90):
+                 transport_module=None, timeout=90, image_preparer=None):
         self.slot = slot
         self.settings = settings
         self.budget = budget
         self.audit = audit
         self._transport = transport_module or transport
         self.timeout = timeout
+        self._image_preparer = image_preparer or osal.prepare_image_bytes
 
     def extract(self, capture, schema):
+        if not self.settings.screen_enabled:
+            return self._record(Extraction(
+                reason="screen vision is not enabled"))
         if not self.settings.keyed:
             # No call, no reservation, no charge. An unkeyed vision slot is
             # "unavailable", never "answered nothing".
@@ -165,7 +173,13 @@ class VisionExtractor:
                                                    "extraction"))
 
         questions = _extraction_questions(schema)
-        estimate = _estimate_capture_tokens(capture, questions)
+        try:
+            body_extra, estimate = _vision_request(
+                capture, questions, self.settings.jev_model,
+                prepare_image=self._image_preparer)
+        except ValueError as exc:
+            return self._record(Extraction(
+                reason=f"image admission refused: {exc}"))
         reserve_usd = estimate_call_cost(
             estimate, price_per_million=JEV_INPUT_PRICE_PER_MILLION)
 
@@ -179,10 +193,10 @@ class VisionExtractor:
             response = self._transport.call_service(
                 SYSTEM_ONE_URL, questions,
                 headers={"Authorization":
-                         f"Bearer {self.settings.jev_api_key}"},
+                         f"Bearer {self.settings.jev_api_key}",
+                         "TypeSafe-Danger-Zone-Images": "true"},
                 timeout=self.timeout,
-                body_extra={"state": _capture_state(capture),
-                            "model": self.settings.jev_model})
+                body_extra=body_extra)
         except Exception as exc:
             charged = reservation.settle(None)
             return self._record(Extraction(
@@ -259,22 +273,96 @@ def _extraction_questions(schema):
     }
 
 
-def _estimate_capture_tokens(capture, questions):
-    """A pre-flight upper bound, using the decision tier's own approximation.
+# There is no published image-token estimator yet: the image docs say image
+# tokens are included in usage.input_tokens and that estimation guidance is
+# forthcoming. The default model context is 64k per request, and this path
+# does not enable long context. Harness records that documented limit as
+# 65,536 tokens in its Jev model catalog, so reserve the full request context
+# as a conservative maximum for text plus the prepared image. This is a bound,
+# not an estimate from image bytes. Sources: docs.typesafe.ai/images and
+# docs.typesafe.ai/models.
+IMAGE_REQUEST_TOKEN_BOUND = 65_536
+# These are the Jev model IDs whose context and input price are present in
+# Harness's model catalog. Refuse other IDs rather than reusing this bound
+# where its model and pricing provenance is unknown.
+_VISION_MODELS_WITH_VERIFIED_BOUND = frozenset({"jev-latest", "jev-1.13.0"})
+# The provider image contract sets these limits; preparation may shrink a
+# larger local capture before the prepared-asset limits are applied. Source:
+# docs.typesafe.ai/images (Limits).
+MAX_IMAGE_BYTES = 16 * 1024 * 1024
+MAX_REQUEST_BYTES = 32 * 1024 * 1024
+def _vision_request(capture, questions, model, *, prepare_image):
+    """Build and admit one image request before it can reserve spend.
 
-    The capture is opaque here -- a path, a base64 blob, a handle. Its
-    serialised size is a safe over-estimate of what the provider will read,
-    and it errs high on purpose: a reservation that is too large costs a
-    refusal, while one that is too small silently under-bills.
+    Image bytes are prepared before admission and dispatch. The prepared
+    raster, rather than the source capture or its base64 representation,
+    becomes the sole request asset. The estimator reserves the full ordinary
+    image-request context because compressed bytes are not a token estimate.
     """
-    material = len(json.dumps(_capture_state(capture), default=str).encode(
-        "utf-8"))
-    material += len(json.dumps(questions, default=str).encode("utf-8"))
-    return max(1, material // 4 + 1)
+    if model not in _VISION_MODELS_WITH_VERIFIED_BOUND:
+        raise ValueError(
+            "no verified image budget bound for configured Jev model; "
+            "use jev-latest or jev-1.13.0")
+
+    payload = getattr(capture, "payload", None)
+    declared_format = None
+    if isinstance(payload, dict):
+        declared_format = payload.get("format")
+        encoded = payload.get("data_base64")
+        if not isinstance(encoded, str):
+            raise ValueError("capture asset needs base64 image data")
+        image = base64.b64decode(encoded, validate=True)
+    elif isinstance(payload, bytes):
+        image = payload
+        encoded = base64.b64encode(image).decode("ascii")
+    elif isinstance(payload, str):
+        encoded = payload
+        image = base64.b64decode(encoded, validate=True)
+    else:
+        raise ValueError("capture does not contain image bytes")
+
+    if not image:
+        raise ValueError("capture image is empty")
+    if image.startswith(PNG_SIGNATURE):
+        image_format = "png"
+    else:
+        raise ValueError("only PNG captures can be safely prepared")
+    if declared_format is not None:
+        declared_format = str(declared_format).lower()
+        if declared_format == "jpeg":
+            declared_format = "jpg"
+        if declared_format != image_format:
+            raise ValueError("declared image format does not match its bytes")
+
+    try:
+        prepared, detail = prepare_image(image)
+    except Exception as exc:
+        raise ValueError(f"image preparation failed: {exc}") from exc
+    if prepared is None:
+        raise ValueError(detail or "image preparation refused the capture")
+    dimensions, detail = osal.validate_prepared_image(prepared)
+    if dimensions is None:
+        raise ValueError(detail or "image preparation returned an invalid raster")
+    if len(prepared) > MAX_IMAGE_BYTES:
+        raise ValueError("prepared image exceeds the per-image byte limit")
+
+    encoded = base64.b64encode(prepared).decode("ascii")
+    reference = f"screen-{uuid.uuid4().hex}"
+    body_extra = {
+        "state": {"screen": reference},
+        "assets": {reference: {"type": "image", "format": image_format,
+                              "data_base64": encoded}},
+        "model": model,
+    }
+    body = {"questions": questions, **body_extra}
+    body_size = len(json.dumps(body).encode("utf-8"))
+    if body_size > MAX_REQUEST_BYTES:
+        raise ValueError("prepared image request exceeds the request-body limit")
+    return body_extra, IMAGE_REQUEST_TOKEN_BOUND
 
 
 def build_vision_pool(settings, *, budget, audit, slots=1,
-                      transport_module=None, timeout=90):
+                      transport_module=None, timeout=90, image_preparer=None):
     """A pool of independent vision slots, for the ``gui`` target class.
 
     Built here rather than by the caller so that the vision pool is
@@ -285,7 +373,8 @@ def build_vision_pool(settings, *, budget, audit, slots=1,
     names = (f"vision-{i}" for i in range(max(1, int(slots))))
     return ExtractorPool(
         [VisionExtractor(name, settings, budget=budget, audit=audit,
-                         transport_module=transport_module, timeout=timeout)
+                         transport_module=transport_module, timeout=timeout,
+                         image_preparer=image_preparer)
          for name in names],
         serves=(VISION_CLASS,))
 
@@ -310,19 +399,6 @@ def _state_from_payload(payload, schema):
         return validate_state(fields, schema)
     except SchemaError:
         return None
-
-
-def _capture_state(capture):
-    """The payload a vision model is shown.
-
-    The capture is opaque to this module: a path, a base64 payload or a
-    handle, depending on the perception tier. Whatever it is, the two things
-    that must never happen are (a) logging it and (b) letting it reach the
-    audit log, both of which are enforced by the callers.
-    """
-    if isinstance(capture, dict):
-        return capture
-    return {"image_ref": str(capture)}
 
 
 def _json_from_text(text):

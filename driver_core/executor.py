@@ -29,10 +29,15 @@ mode performs no side effect while still producing the identical record, so
 the dry run is a real rehearsal rather than a different code path that
 happens to skip the interesting part.
 """
+import threading
+
 from . import osal
 from .actions import IRREVERSIBLE, READ_ONLY
 from .audit import KIND_ACTION, required
-from .errors import ConsentError, ExecutorError, VocabularyError
+from .errors import (ConsentError, ExecutionOutcomeUnknown,
+                     ExecutorError, PersistentStateUnavailable,
+                     VocabularyError)
+from .executor_registry import input_backend_needs
 
 #: Declared parameter normalisers, by name. An ``Action`` names one; this is
 #: where the name becomes a function. The indirection exists so that
@@ -132,33 +137,76 @@ class Consent:
     ``/home/x/notes``, because the operator is shown the resolved path.
     """
 
-    __slots__ = ("granted", "action", "params", "by", "_spent")
+    __slots__ = ("granted", "action", "params", "by", "_spent",
+                 "_pending", "_lock", "_replay_guard")
 
-    def __init__(self, granted, action="*", params=None, by="operator"):
-        self.granted = bool(granted)
+    def __init__(self, granted, action="*", params=None, by="operator", *,
+                 _replay_guard=None):
+        if not isinstance(granted, bool):
+            raise ValueError("granted must be a boolean")
+        if not isinstance(action, str):
+            raise ValueError("action must be a string")
+        if params is None:
+            params = {}
+        if not isinstance(params, dict):
+            raise ValueError("params must be a mapping")
+        self.granted = granted
         self.action = action
-        self.params = dict(params or {})
+        self.params = dict(params)
         self.by = by
         #: Irreversible actions this consent has already authorised.
         self._spent = set()
+        #: In-flight use prevents a concurrent call from spending the same
+        #: irreversible grant while the first action is still running.
+        self._pending = set()
+        self._lock = threading.RLock()
+        #: Optional durable guard attached only by the REST consent boundary.
+        self._replay_guard = _replay_guard
 
     def covers(self, action_name, action_class, params):
         """Whether this consent authorises exactly this action, right now."""
-        if action_class == READ_ONLY:
+        with self._lock:
+            if action_class == READ_ONLY:
+                return True
+            if not self.granted:
+                return False
+            # No wildcard. This single line is the difference between "a
+            # capability for one pair" and "a permission", and the whole design
+            # rests on it being here.
+            if self.action != action_name:
+                return False
+            if self.params != dict(params or {}):
+                return False
+            if (action_class == IRREVERSIBLE
+                    and (action_name in self._spent
+                         or action_name in self._pending)):
+                # Used or already in flight. A fresh confirmation is required.
+                return False
+            if (action_class == IRREVERSIBLE and self._replay_guard is not None
+                    and not self._replay_guard.available()):
+                return False
             return True
-        if not self.granted:
-            return False
-        # No wildcard. This single line is the difference between "a
-        # capability for one pair" and "a permission", and the whole design
-        # rests on it being here.
-        if self.action != action_name:
-            return False
-        if self.params != dict(params or {}):
-            return False
-        if action_class == IRREVERSIBLE and action_name in self._spent:
-            # Already used. A fresh confirmation is required, every time.
-            return False
-        return True
+
+    def _claim(self, action_name, action_class, params):
+        """Atomically reserve an irreversible grant for one dispatch."""
+        with self._lock:
+            if not self.covers(action_name, action_class, params):
+                return False
+            if action_class == IRREVERSIBLE:
+                if (self._replay_guard is not None
+                        and not self._replay_guard.claim()):
+                    return False
+                self._pending.add(action_name)
+            return True
+
+    def _finish(self, action_name, *, succeeded):
+        """Release an in-flight grant, spending it only after success."""
+        with self._lock:
+            if self._replay_guard is not None:
+                self._replay_guard.finish(succeeded=succeeded)
+            self._pending.discard(action_name)
+            if succeeded:
+                self._spent.add(action_name)
 
     def spend(self, action_name):
         """Consume an irreversible consent so it cannot be re-used.
@@ -169,12 +217,13 @@ class Consent:
         which is why every irreversible executor here refuses before it
         commits, rather than part-way through.
         """
-        self._spent.add(action_name)
+        self._finish(action_name, succeeded=True)
 
     @property
     def spent(self):
         """Irreversible actions this consent has already authorised."""
-        return frozenset(self._spent)
+        with self._lock:
+            return frozenset(self._spent)
 
     def to_dict(self):
         return {"granted": self.granted, "action": self.action,
@@ -263,21 +312,46 @@ class Executor:
                 f"which is not registered; registered: "
                 f"{sorted(self.registry.names())}.{self.registry.policy_note}")
 
-        if self.dry_run:
+        # The advertised capability view is not an execution gate by itself.
+        # Refuse here as well, before dry-run can report success and before a
+        # handler can perform an action its backend explicitly disallows.
+        backend_needs = input_backend_needs(action, self.registry)
+        if backend_needs:
+            result = ExecutionResult(
+                action.name, action.action_class, checked, False,
+                detail=" ".join(backend_needs))
+        elif self.dry_run:
             result = ExecutionResult(
                 action.name, action.action_class, checked, True,
                 detail="dry run: no side effect was performed", output=None,
                 dry_run=True)
         else:
-            result = self._invoke(handler, action, checked)
-
-        # An irreversible consent is consumed only by a consequence that
-        # actually happened. A dry run performed none, and a failed one was
-        # refused before it committed, so neither spends anything.
-        if (result.ok and not result.dry_run
-                and action.action_class == IRREVERSIBLE
-                and consent is not None):
-            consent.spend(action.name)
+            claimed = False
+            if action.action_class == IRREVERSIBLE:
+                if not isinstance(consent, Consent):
+                    raise ConsentError(
+                        "irreversible actions require a Consent grant")
+                if not consent._claim(action.name, action.action_class, checked):
+                    self.check_consent(action, checked, consent)
+                    raise ConsentError(
+                        "irreversible consent is already being used")
+                claimed = True
+            result = None
+            try:
+                result = self._invoke(handler, action, checked)
+            finally:
+                if claimed:
+                    succeeded = bool(
+                        result and result.ok and not result.dry_run)
+                    try:
+                        consent._finish(action.name, succeeded=succeeded)
+                    except PersistentStateUnavailable as exc:
+                        if succeeded:
+                            raise ExecutionOutcomeUnknown(
+                                "action succeeded, but its consent could not "
+                                "be durably marked spent; the outcome may "
+                                "have occurred and replay remains blocked") from exc
+                        raise
 
         if self.audit is not None:
             self.audit.append(

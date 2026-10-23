@@ -84,18 +84,39 @@ The Python exceptions in [`driver_core/errors.py`](../driver_core/errors.py)
 `OsalError`, ...) are internal: the service converts them into the reasons
 above or into a 400, so they never reach a REST caller as a stack trace.
 
-## Input actions are always refused today
+## Input actions require an explicit backend and consent
 
 The action vocabulary declares six kinds of synthetic input: `click`,
 `type_text`, `press_key`, `focus`, `scroll` and `submit_irreversible`.
-**Every one of them is refused, always, until an input backend is registered**
-through `driver_core.osal.register_input_backend`. Nothing in this repository
-registers one, so on a stock install a step that would click, type, press a
-key, focus, scroll or submit comes back `ok: false` with
-`reason: "execution_refused"`; the detail says either that side effects are
-off or that no backend is registered for the platform. It never reports an
-input that did not happen. The input backend is tracked as open work (roadmap
-row `DRV-2`, which stays open); this document will describe it when it exists.
+By default they still refuse: no backend is installed, `DRIVER_ALLOW_WRITE`
+is off, and no consent is inferred. An embedding application can register a
+backend through `driver_core.osal.register_input_backend`.
+The optional `supported_kinds` iterable is frozen on first check; malformed
+string declarations and iterables that cannot be snapshotted fail closed.
+
+The in-repo native backend currently supports only Windows `focus`. Enable it
+on the driver service with both `DRIVER_ALLOW_WRITE=1` and
+`DRIVER_NATIVE_INPUT=1`. The `focus` target is an exact, visible top-level
+window title, and the request refuses if that title is missing or ambiguous.
+The backend does not click, type, press keys, scroll or submit: the declared
+parameters for those actions do not identify a sufficiently bounded target.
+Those actions continue to refuse until an embedding application supplies a
+backend that supports them. `DRIVER_SCREEN` remains a separate opt-in for
+screen capture and is not enabled by native input.
+
+Every permitted action still requires consent for its exact action and
+parameters. The service creates its native backend per driver, so one driver
+cannot inherit another driver's native-input setting.
+
+On the REST API, a granted irreversible consent also requires a caller
+generated `consent_id`: a nonblank string of at most 128 characters. The
+service binds that ID to the exact grant and reuses the same atomic consent
+state for retries, so concurrent or later submissions cannot spend it twice.
+Use a new ID only after a new confirmation; reusing an ID for different grant
+details is a malformed request. Spent IDs remain recorded across service
+restarts and bearer-token rotation in a bounded per-user state database that
+is independent of the audit-log path. The ledger never evicts records; once
+its 16,384-record limit is reached, new irreversible consent IDs are refused.
 
 What the executor actually implements (the vocabulary declares 14 actions;
 only these have an executor behind them, and anything else is refused as
@@ -105,8 +126,9 @@ unregistered):
   The other declared read-only actions (`read_dom`, `call_read_tool`,
   `run_probe`) have no executor in this build and are refused.
 - Only when `DRIVER_ALLOW_WRITE` is set: `write_file` (back up, then atomic
-  replace) and `delete_file` (irreversible), plus the six input actions above,
-  which still refuse at the OS layer for want of a backend.
+  replace) and `delete_file` (irreversible). Input executors also require a
+  registered backend; the native Windows backend makes only exact-title
+  `focus` executable when `DRIVER_NATIVE_INPUT=1`.
 
 ## Consent is never invented
 
@@ -250,6 +272,7 @@ loopback default**. No Harness state file is written on the driver's behalf.
 | Config file | `DRIVER_CONFIG_PATH` | `~/.config/harness/driver.json` |
 | Audit log | `DRIVER_AUDIT_PATH` | per-user state directory |
 | Allow side-effect executors | `DRIVER_ALLOW_WRITE` | off |
+| Native Windows input | `DRIVER_NATIVE_INPUT` | off |
 | Dry run | `DRIVER_DRY_RUN` | off |
 
 ```json
@@ -265,6 +288,6 @@ holds the token can drive it. The driver is configured entirely under
 ## Status
 
 Delivered: the native module, the adapter, the CLI, the REST routes, the
-Driver pane and the MCP tools, with hermetic tests (no network, no screen, no
-model). Not delivered: any synthetic-input backend (above) and a live vision
-extractor, both tracked under roadmap row `DRV-2`, which stays open.
+Driver pane and the MCP tools. `DRV-2` remains open. Local verification
+exercises the GUI vision flow through `Driver.step` and a loopback image
+transport; external provider acceptance has not been verified.

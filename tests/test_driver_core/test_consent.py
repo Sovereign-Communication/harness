@@ -13,6 +13,7 @@ consent rule that is merely strict is not the same as one that is right --
 import os
 import shutil
 import tempfile
+import threading
 import unittest
 
 from driver_core import osal
@@ -36,6 +37,16 @@ def _executor(*, allow_write=True, dry_run=False):
 
 class WildcardTests(unittest.TestCase):
     """There is no wildcard grant, for any class."""
+
+    def test_consent_fields_do_not_coerce_malformed_grants(self):
+        for granted in ("false", 1, 0, None):
+            with self.subTest(granted=granted):
+                with self.assertRaisesRegex(ValueError, "boolean"):
+                    Consent(granted, "submit_irreversible",
+                            {"target": "Publish"})
+
+        with self.assertRaisesRegex(ValueError, "params"):
+            Consent(True, "submit_irreversible", [])
 
     def test_a_blanket_grant_authorises_nothing_that_has_consequences(self):
         """``Consent(True, "*")`` used to mean "every mutating action".
@@ -268,10 +279,9 @@ class InputBackendTests(unittest.TestCase):
     """Priority 1's actual deliverable: dispatch, and honest refusal."""
 
     def test_shipped_state_is_no_backend_and_it_refuses_by_name(self):
-        """driver-core contains no platform input code, by design.
+        """No process-global backend is registered by default.
 
-        The consequence an operator has to live with is that an
-        unconfigured driver clicks nothing -- and says so, rather than
+        Without an explicitly supplied backend, the call refuses rather than
         reporting a success that did not happen.
         """
         self.assertEqual(osal.input_backends(), {})
@@ -291,6 +301,176 @@ class InputBackendTests(unittest.TestCase):
         ok, _ = osal.send_input("click", target="OK")
         self.assertTrue(ok)
         self.assertEqual(seen, [("click", None, "OK")])
+
+    def test_one_shot_capability_iterable_stays_stable_across_checks(self):
+        def backend(kind, value=None, target=None):
+            return True, "sent"
+
+        backend.supported_kinds = iter(("focus",))
+        registered = osal.register_input_backend(osal.platform_name(), backend)
+        self.addCleanup(osal.disable_input_backend)
+
+        self.assertTrue(osal.input_backend_supports(registered, "focus"))
+        self.assertTrue(osal.input_backend_supports(registered, "focus"))
+        self.assertTrue(osal.send_input("focus", target="Window")[0])
+
+    def test_mutable_capability_declaration_is_frozen_on_first_check(self):
+        seen = []
+
+        def backend(kind, value=None, target=None):
+            seen.append((kind, value, target))
+            return True, "sent"
+
+        declaration = ["focus", "submit"]
+        backend.supported_kinds = declaration
+        registered = osal.register_input_backend(
+            osal.platform_name(), backend)
+        self.addCleanup(osal.disable_input_backend)
+        self.assertTrue(osal.send_input("focus", target="Window")[0])
+        declaration.append("click")
+
+        self.assertEqual(registered.supported_kinds, ("focus", "submit"))
+        self.assertIs(backend.supported_kinds, declaration)
+        ok, detail = osal.send_input("click", target="Button")
+        self.assertFalse(ok)
+        self.assertIn("does not support 'click'", detail)
+        self.assertEqual(seen, [("focus", None, "Window")])
+
+    def test_replacing_a_registered_capability_declaration_cannot_widen_it(self):
+        seen = []
+
+        def backend(kind, value=None, target=None):
+            seen.append((kind, value, target))
+            return True, "sent"
+
+        backend.supported_kinds = ("focus",)
+        osal.register_input_backend(osal.platform_name(), backend)
+        self.addCleanup(osal.disable_input_backend)
+        backend.supported_kinds = ("focus", "click")
+
+        ok, detail = osal.send_input("click", target="Button")
+
+        self.assertFalse(ok)
+        self.assertIn("does not support 'click'", detail)
+        self.assertEqual(seen, [])
+
+    def test_empty_and_string_capability_declarations_fail_closed(self):
+        calls = []
+
+        def backend(kind, value=None, target=None):
+            calls.append(kind)
+            return True, "sent"
+
+        backend.supported_kinds = []
+        frozen = osal.freeze_input_backend(backend)
+        self.assertFalse(osal.input_backend_supports(frozen, "focus"))
+        self.assertEqual(frozen.supported_kinds, ())
+
+        backend.supported_kinds = "click"
+        osal.register_input_backend(osal.platform_name(), backend)
+        self.addCleanup(osal.disable_input_backend)
+        ok, _ = osal.send_input("click", target="Button")
+        self.assertFalse(ok)
+        self.assertEqual(calls, [])
+
+    def test_concurrent_checks_snapshot_a_one_shot_capability_once(self):
+        entered = threading.Event()
+        release = threading.Event()
+        second_started = threading.Event()
+        second_done = threading.Event()
+        results = []
+        errors = []
+
+        def declaration():
+            entered.set()
+            if not release.wait(3):
+                return
+            yield "focus"
+
+        def backend(kind, value=None, target=None):
+            return True, "sent"
+
+        backend.supported_kinds = declaration()
+        platform = osal.platform_name()
+        self.addCleanup(osal.disable_input_backend, platform)
+
+        def check(done, started=None):
+            if started is not None:
+                started.set()
+            try:
+                registered = osal.register_input_backend(platform, backend)
+                results.append(osal.input_backend_supports(
+                    registered, "focus"))
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                done.set()
+
+        first_done = threading.Event()
+        first = threading.Thread(target=check, args=(first_done,))
+        second = threading.Thread(
+            target=check, args=(second_done, second_started))
+        first.start()
+        try:
+            self.assertTrue(entered.wait(2))
+            second.start()
+            self.assertTrue(second_started.wait(2))
+            self.assertFalse(
+                second_done.wait(0.2),
+                "a second check iterated the active one-shot declaration")
+        finally:
+            release.set()
+            first.join(2)
+            if second.ident is not None:
+                second.join(2)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(results, [True, True])
+
+    def test_native_windows_backend_focuses_one_exact_title(self):
+        class WindowApi:
+            def __init__(self):
+                self.focused = []
+
+            def find_exact_visible(self, title):
+                return [42] if title == "Harness smoke target" else []
+
+            def focus(self, hwnd, title):
+                self.focused.append((hwnd, title))
+                return True
+
+        api = WindowApi()
+        backend = osal.native_input_backend(
+            platform="windows", window_api=api)
+        ok, detail = osal.send_input(
+            "focus", target="Harness smoke target", backend=backend)
+        self.assertTrue(ok, detail)
+        self.assertEqual(api.focused, [(42, "Harness smoke target")])
+        self.assertEqual(backend.supported_kinds, ("focus",))
+
+    def test_native_windows_backend_refuses_ambiguous_and_other_kinds(self):
+        class WindowApi:
+            def find_exact_visible(self, title):
+                return [42, 43]
+
+            def focus(self, hwnd, title):
+                raise AssertionError("ambiguous targets must never be focused")
+
+        backend = osal.native_input_backend(
+            platform="windows", window_api=WindowApi())
+        ok, detail = osal.send_input(
+            "focus", target="Duplicate", backend=backend)
+        self.assertFalse(ok)
+        self.assertIn("found 2", detail)
+        ok, detail = osal.send_input("click", target="Duplicate",
+                                    backend=backend)
+        self.assertFalse(ok)
+        self.assertIn("does not support 'click'", detail)
+
+    def test_native_backend_is_unavailable_on_unsupported_platforms(self):
+        self.assertIsNone(osal.native_input_backend(platform="linux"))
 
     def test_a_backend_can_be_withdrawn_at_runtime(self):
         """Observe the machine, never drive it -- as a policy, not an
@@ -461,6 +641,27 @@ class ExecutorWiringTests(unittest.TestCase):
             consent=Consent(True, "click", {"target": "OK"}))
         self.assertFalse(result.ok)
         self.assertIn("no registered backend", result.detail)
+
+    def test_non_boolean_backend_result_refuses_without_spending_consent(self):
+        """A truthy string must not turn a backend refusal into a success."""
+        def backend(kind, value=None, target=None):
+            return "false", "backend refused"
+
+        backend.supported_kinds = ("submit",)
+        executor = Executor(
+            vocabulary=DEFAULT_VOCABULARY,
+            registry=build_driver_registry(
+                allow_write=True, input_backend=backend),
+            audit=MemoryAuditLog())
+        consent = Consent(
+            True, "submit_irreversible", {"target": "Publish"})
+
+        result = executor.execute(
+            "submit_irreversible", {"target": "Publish"}, consent=consent)
+
+        self.assertFalse(result.ok)
+        self.assertIn("non-boolean success flag", result.detail)
+        self.assertEqual(consent.spent, frozenset())
 
     def test_delete_file_is_performed_by_driver_core_itself(self):
         target = self._path("a.txt")

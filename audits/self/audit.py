@@ -633,12 +633,16 @@ def _classify_suite_output(text):
 # on upstream drift (a delisted model id) that has nothing to do with this
 # tree. CI's hermetic jobs carry none of these, so scrubbing is what makes the
 # local check the same check.
+# The operator disable switch must not override injected fake evaluators, and
+# the test-only network opt-out must not disable the suite's loopback guard.
 _HERMETIC_ENV_DROP = (
     "HARNESS_USE_FREE",
     "HARNESS_ALLOW_ESCALATION",
     "HARNESS_MAX_COST",
     "HARNESS_TASK_MAX_COST",
     "HARNESS_MIN_CONFIDENCE",
+    "HARNESS_JEV_DISABLE",
+    "HARNESS_TEST_ALLOW_NETWORK",
     "HARNESS_JEV_KEY",
     "TYPESAFE_API_KEY",
     "JEV_API_KEY",

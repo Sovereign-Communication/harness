@@ -12,7 +12,9 @@ inherit the whole process environment, which broke that claim in two ways:
 These tests pin the scrub contract without running the suite: they check which
 names are dropped, that they are reported so the evidence says what was
 scrubbed, and that the ledger variable is deliberately left to the suite's own
-isolation (``tests/__init__.py``) rather than silently removed.
+isolation (``tests/__init__.py``) rather than silently removed. The R13 child
+also drops the operator Jev disable switch so injected fake evaluators remain
+usable, and drops the test-only switch that disables the network guard.
 """
 
 import importlib.util
@@ -37,6 +39,11 @@ class AuditSuiteEnvIsolationTests(unittest.TestCase):
     def setUpClass(cls):
         cls.audit = _load_audit()
 
+    def _suite_env(self):
+        env, dropped = self.audit.hermetic_suite_env()
+        self.addCleanup(shutil.rmtree, env["HOME"], ignore_errors=True)
+        return env, dropped
+
     def test_routing_and_key_variables_are_dropped_and_reported(self):
         planted = {
             "HARNESS_USE_FREE": "true",
@@ -46,11 +53,41 @@ class AuditSuiteEnvIsolationTests(unittest.TestCase):
             "TYPESAFE_API_KEY": "not-a-real-key",
         }
         with mock.patch.dict(os.environ, planted, clear=False):
-            env, dropped = self.audit.hermetic_suite_env()
+            env, dropped = self._suite_env()
         for key in planted:
             self.assertNotIn(key, env, f"{key} leaked into the hermetic child")
             self.assertIn(key, dropped)
         self.assertEqual(dropped, sorted(dropped))
+
+    def test_disable_override_cannot_replace_fake_evaluator(self):
+        from harness.config import load_settings
+        from harness.jev_policy import JevPolicy
+
+        class _FakeEvaluator:
+            api_key = "fake-test-key"
+            model = "fake-test-model"
+
+        planted = {
+            "HARNESS_JEV_DISABLE": "1",
+            "HARNESS_TEST_ALLOW_NETWORK": "1",
+            "HARNESS_JEV_KEY": "not-a-real-key",
+            "JEV_API_KEY": "not-a-real-key",
+            "TYPESAFE_API_KEY": "not-a-real-key",
+            "OPENROUTER_API_KEY": "not-a-real-key",
+            "OPENROUTER_API_KEY_FILE": "not-a-real-file",
+        }
+        with mock.patch.dict(os.environ, planted, clear=False):
+            env, dropped = self._suite_env()
+        for name in planted:
+            self.assertNotIn(name, env, f"{name} leaked into the hermetic child")
+            self.assertIn(name, dropped)
+
+        with mock.patch.dict(os.environ, env, clear=True):
+            settings = load_settings({"jev_api_key": "fake-test-key"})
+            evaluator = _FakeEvaluator()
+            policy = JevPolicy(settings, evaluator=evaluator)
+            self.assertFalse(settings.jev_disabled)
+            self.assertIs(policy.evaluator, evaluator)
 
     def test_home_is_redirected_so_key_files_cannot_be_found(self):
         # The decisive leak: keys are also resolved from files under ~ that no
@@ -58,24 +95,21 @@ class AuditSuiteEnvIsolationTests(unittest.TestCase):
         # the CI result.
         with mock.patch.dict(os.environ, {"HOME": os.path.expanduser("~")},
                              clear=False):
-            env, _ = self.audit.hermetic_suite_env()
-            try:
-                sandbox = env["HOME"]
-                self.assertNotEqual(sandbox, os.path.expanduser("~"))
-                self.assertTrue(os.path.isdir(sandbox))
-                self.assertFalse(os.path.exists(
-                    os.path.join(sandbox, ".config", "scmorc",
-                                 "openrouter_fusion.env")))
-                self.assertFalse(os.path.exists(
-                    os.path.join(sandbox, ".config", "harness", "jev.env")))
-                self.assertEqual(env["USERPROFILE"], sandbox)
-            finally:
-                shutil.rmtree(sandbox, ignore_errors=True)
+            env, _ = self._suite_env()
+        sandbox = env["HOME"]
+        self.assertNotEqual(sandbox, os.path.expanduser("~"))
+        self.assertTrue(os.path.isdir(sandbox))
+        self.assertFalse(os.path.exists(
+            os.path.join(sandbox, ".config", "scmorc",
+                         "openrouter_fusion.env")))
+        self.assertFalse(os.path.exists(
+            os.path.join(sandbox, ".config", "harness", "jev.env")))
+        self.assertEqual(env["USERPROFILE"], sandbox)
 
     def test_unrelated_variables_survive(self):
         with mock.patch.dict(os.environ, {"HARNESS_UNRELATED_PROBE": "keep"},
                              clear=False):
-            env, dropped = self.audit.hermetic_suite_env()
+            env, dropped = self._suite_env()
         self.assertEqual(env.get("HARNESS_UNRELATED_PROBE"), "keep")
         self.assertNotIn("HARNESS_UNRELATED_PROBE", dropped)
 
@@ -84,7 +118,7 @@ class AuditSuiteEnvIsolationTests(unittest.TestCase):
         # one is already isolated, so R13 must not strip it.
         with mock.patch.dict(os.environ, {"HARNESS_LEDGER": "/tmp/probe.jsonl"},
                              clear=False):
-            env, _ = self.audit.hermetic_suite_env()
+            env, _ = self._suite_env()
         self.assertEqual(env.get("HARNESS_LEDGER"), "/tmp/probe.jsonl")
 
     def test_every_dropped_name_is_one_of_the_declared_hermetic_variables(self):

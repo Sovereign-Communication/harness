@@ -3,7 +3,9 @@
 Hermetic: every collaborator is a fake, the input backend is a recording
 double, and the real platform backend table is restored after each test.
 """
+import threading
 import unittest
+from unittest import mock
 
 from driver_core import osal
 from driver_core.actions import DEFAULT_VOCABULARY
@@ -11,10 +13,11 @@ from driver_core.audit import MemoryAuditLog
 from driver_core.budget import Budget
 from driver_core.config import load_settings
 from driver_core.driver import Driver
+from driver_core.errors import VocabularyError
 from driver_core.ev import FakeJev, action_answer
-from driver_core.executor import Consent
+from driver_core.executor import Consent, Executor
 from driver_core.executor_registry import (
-    INPUT_BACKED, build_driver_registry, executability,
+    INPUT_BACKED, ExecutorRegistry, build_driver_registry, executability,
 )
 from driver_core.extractors import ExtractorPool, StructuredExtractor
 from driver_core.perception import StructuredSource
@@ -78,6 +81,28 @@ class VocabularyExecutabilityTests(_NoBackend):
         self.assertTrue(actions["delete_file"]["executable"])
         self.assertFalse(actions["click"]["executable"])
         self.assertIn("input backend", " ".join(actions["click"]["needs"]))
+
+    def test_native_backend_is_an_explicit_driver_local_capability(self):
+        def backend(kind, value=None, target=None):
+            return True, "focused"
+
+        backend.supported_kinds = ("focus",)
+        settings = load_settings(env={}, allow_write=True,
+                                 native_input_enabled=True)
+        with mock.patch.object(osal, "native_input_backend",
+                               return_value=backend) as make_backend:
+            driver = Driver(settings=settings, audit=MemoryAuditLog())
+        make_backend.assert_called_once_with()
+        actions = self._by_name(driver)
+        self.assertTrue(actions["focus"]["executable"])
+        self.assertFalse(actions["click"]["executable"])
+        self.assertIn("does not support", " ".join(actions["click"]["needs"]))
+        self.assertEqual(osal.input_backends(), {})
+
+    def test_native_backend_environment_setting_is_opt_in(self):
+        self.assertFalse(load_settings(env={}).native_input_enabled)
+        self.assertTrue(load_settings(
+            env={"DRIVER_NATIVE_INPUT": "1"}).native_input_enabled)
 
     def test_registering_a_backend_makes_input_executable(self):
         osal.register_input_backend(osal.platform_name(),
@@ -154,6 +179,251 @@ class InputStepTests(_NoBackend):
         result = _driver(allow_write=False).step("t")
         self.assertTrue(result.ok)
         self.assertEqual(result.to_dict()["needs"], [])
+
+    def test_irreversible_consent_cannot_run_twice_concurrently(self):
+        entered = threading.Event()
+        release = threading.Event()
+        calls = []
+
+        def backend(kind, value=None, target=None):
+            calls.append((kind, value, target))
+            if len(calls) == 1:
+                entered.set()
+                if not release.wait(3):
+                    return False, "test release timed out"
+            return True, "submitted"
+
+        backend.supported_kinds = ("submit",)
+        osal.register_input_backend(osal.platform_name(), backend)
+        driver = _driver(allow_write=True, action="submit_irreversible")
+        consent = Consent(
+            True, "submit_irreversible", {"target": "Publish"})
+        outcomes = []
+        first_done = threading.Event()
+        second_started = threading.Event()
+        second_done = threading.Event()
+
+        def step(done, started=None):
+            if started is not None:
+                started.set()
+            try:
+                outcomes.append(driver.step(
+                    "test", consent=consent,
+                    params={"target": "Publish"}))
+            finally:
+                done.set()
+
+        first = threading.Thread(target=step, args=(first_done,))
+        second = threading.Thread(
+            target=step, args=(second_done, second_started))
+        first.start()
+        try:
+            self.assertTrue(
+                entered.wait(2), "first action did not reach backend")
+            second.start()
+            self.assertTrue(second_started.wait(2))
+            self.assertTrue(
+                second_done.wait(2),
+                "second step did not refuse the in-flight consent")
+            self.assertEqual(calls, [("submit", None, "Publish")])
+            self.assertTrue(any(
+                getattr(result, "reason", None) == "execution_refused"
+                for result in outcomes))
+        finally:
+            release.set()
+            first.join(2)
+            if second.ident is not None:
+                second.join(2)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(calls, [("submit", None, "Publish")])
+        self.assertEqual(sum(bool(getattr(result, "ok", False))
+                             for result in outcomes), 1)
+        self.assertTrue(any(
+            getattr(result, "reason", None) == "execution_refused"
+            for result in outcomes))
+        self.assertEqual(consent.spent, frozenset({"submit_irreversible"}))
+
+
+class InputCapabilityBoundaryTests(_NoBackend):
+
+    def test_mutating_backend_snapshot_cannot_widen_executor_dispatch(self):
+        calls = []
+
+        def backend(kind, value=None, target=None):
+            calls.append((kind, value, target))
+            return True, "sent"
+
+        backend.supported_kinds = ("focus",)
+        registry = build_driver_registry(allow_write=True,
+                                         input_backend=backend)
+
+        # Reproduce the old bypass: backend functions could replace the
+        # private marker that the registry used as its capability authority.
+        backend._driver_core_supported_kinds_snapshot = frozenset(
+            ("focus", "click"))
+
+        executor = Executor(vocabulary=DEFAULT_VOCABULARY,
+                            registry=registry, audit=MemoryAuditLog())
+        result = executor.execute(
+            "click", {"target": "OK"},
+            consent=Consent(True, "click", {"target": "OK"}))
+
+        self.assertFalse(result.ok)
+        self.assertIn("does not support 'click'", result.detail)
+        self.assertEqual(calls, [])
+        with self.assertRaises(AttributeError):
+            registry.input_backend._supported_kinds = ("focus", "click")
+
+    def test_driver_local_declaration_cannot_be_widened_after_registration(self):
+        calls = []
+
+        def backend(kind, value=None, target=None):
+            calls.append((kind, value, target))
+            return True, "sent"
+
+        backend.supported_kinds = ("focus",)
+        registry = build_driver_registry(allow_write=True,
+                                         input_backend=backend)
+        backend.supported_kinds = ("focus", "click")
+        executor = Executor(vocabulary=DEFAULT_VOCABULARY,
+                            registry=registry, audit=MemoryAuditLog())
+
+        result = executor.execute(
+            "click", {"target": "OK"},
+            consent=Consent(True, "click", {"target": "OK"}))
+
+        self.assertFalse(result.ok)
+        self.assertIn("does not support 'click'", result.detail)
+        self.assertEqual(calls, [])
+
+    def test_every_input_executor_obeys_the_backend_capability_set(self):
+        calls = []
+
+        def backend(kind, value=None, target=None):
+            calls.append((kind, value, target))
+            return True, "sent"
+
+        backend.supported_kinds = ("focus",)
+        executor = Executor(
+            vocabulary=DEFAULT_VOCABULARY,
+            registry=build_driver_registry(allow_write=True,
+                                           input_backend=backend),
+            audit=MemoryAuditLog())
+        cases = (
+            ("click", {"target": "OK"}, "click"),
+            ("type_text", {"text": "hello"}, "type"),
+            ("press_key", {"keys": "ENTER"}, "key"),
+            ("focus", {"target": "window"}, "focus"),
+            ("scroll", {"direction": "down"}, "scroll"),
+            ("submit_irreversible", {"target": "Publish"}, "submit"),
+        )
+
+        for action, params, kind in cases:
+            with self.subTest(action=action):
+                consent = Consent(True, action, params)
+                result = executor.execute(action, params, consent=consent)
+                self.assertEqual(result.ok, action == "focus")
+                if action == "focus":
+                    self.assertEqual(result.output["kind"], "focus")
+                else:
+                    self.assertIn(f"does not support '{kind}'", result.detail)
+                if action == "submit_irreversible":
+                    self.assertEqual(consent.spent, frozenset())
+
+        self.assertEqual(calls, [("focus", None, "window")])
+
+    def test_executor_refuses_an_unsupported_action_before_a_custom_handler(self):
+        calls = []
+
+        def backend(kind, value=None, target=None):
+            calls.append(("backend", kind))
+            return True, "sent"
+
+        backend.supported_kinds = ("focus",)
+        registry = ExecutorRegistry(
+            {"click": lambda action, params: calls.append(("handler", params))},
+            input_backend=backend)
+        executor = Executor(vocabulary=DEFAULT_VOCABULARY, registry=registry,
+                            audit=MemoryAuditLog())
+
+        result = executor.execute(
+            "click", {"target": "OK"},
+            consent=Consent(True, "click", {"target": "OK"}))
+
+        self.assertFalse(result.ok)
+        self.assertIn("does not support 'click'", result.detail)
+        self.assertEqual(calls, [])
+
+    def test_missing_backend_refuses_even_in_dry_run(self):
+        calls = []
+        registry = ExecutorRegistry(
+            {"click": lambda action, params: calls.append(params)},
+            input_backend=None)
+        executor = Executor(vocabulary=DEFAULT_VOCABULARY, registry=registry,
+                            dry_run=True, audit=MemoryAuditLog())
+
+        result = executor.execute(
+            "click", {"target": "OK"},
+            consent=Consent(True, "click", {"target": "OK"}))
+
+        self.assertFalse(result.ok)
+        self.assertIn("no registered backend", result.detail)
+        self.assertEqual(calls, [])
+
+    def test_empty_action_parameters_fail_before_backend_selection(self):
+        calls = []
+
+        def backend(kind, value=None, target=None):
+            calls.append(kind)
+            return True, "sent"
+
+        registry = ExecutorRegistry({"click": lambda action, params: None},
+                                    input_backend=backend)
+        executor = Executor(vocabulary=DEFAULT_VOCABULARY, registry=registry,
+                            audit=MemoryAuditLog())
+
+        with self.assertRaises(VocabularyError) as ctx:
+            executor.execute("click", {}, consent=Consent(True, "click", {}))
+
+        self.assertIn("missing required parameter", str(ctx.exception))
+        self.assertEqual(calls, [])
+
+    def test_dispatch_rechecks_capability_after_backend_replacement(self):
+        called = []
+
+        def initially_supported(kind, value=None, target=None):
+            called.append(("initial", kind))
+            return True, "sent"
+
+        initially_supported.supported_kinds = ("click",)
+
+        def replacement(kind, value=None, target=None):
+            called.append(("replacement", kind))
+            return True, "sent"
+
+        replacement.supported_kinds = ("focus",)
+        platform = osal.platform_name()
+        osal.register_input_backend(platform, initially_supported)
+        original_send_input = osal.send_input
+
+        def replace_before_dispatch(kind, value=None, *, target=None,
+                                    backend=osal.USE_REGISTERED_INPUT_BACKEND):
+            osal.register_input_backend(platform, replacement)
+            return original_send_input(kind, value, target=target,
+                                       backend=backend)
+
+        driver = _driver(allow_write=True, action="click")
+        with mock.patch.object(osal, "send_input", replace_before_dispatch):
+            result = driver.step(
+                "test", consent=Consent(True, "click", {"target": "OK"}),
+                params={"target": "OK"})
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.reason, "execution_refused")
+        self.assertIn("does not support 'click'", result.detail)
+        self.assertEqual(called, [])
 
 
 if __name__ == "__main__":

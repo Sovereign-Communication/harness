@@ -1,5 +1,7 @@
 """Judge selection and lane demotion policy (regression-pinned model ids)."""
+import os
 import unittest
+from unittest import mock
 
 from harness._http import HttpTransport
 from harness.config import (DEFAULT_JUDGE_PAID, FREE_JUDGE,
@@ -7,11 +9,32 @@ from harness.config import (DEFAULT_JUDGE_PAID, FREE_JUDGE,
 from harness.spend import SpendGovernor
 
 
+def _live_catalog_enabled():
+    """A key alone must not turn the hermetic suite into a live probe."""
+    return (os.environ.get("HARNESS_TEST_ALLOW_NETWORK") == "1"
+            and bool(resolve_api_key()))
+
+
+class LiveCatalogOptInTests(unittest.TestCase):
+    def test_live_catalog_requires_explicit_network_opt_in(self):
+        with mock.patch.dict(os.environ,
+                             {"OPENROUTER_API_KEY": "fake-test-key"},
+                             clear=True):
+            self.assertFalse(_live_catalog_enabled())
+
+        with mock.patch.dict(os.environ,
+                             {"HARNESS_TEST_ALLOW_NETWORK": "1"},
+                             clear=True), \
+                mock.patch(f"{__name__}.resolve_api_key",
+                           return_value="fake-test-key"):
+            self.assertTrue(_live_catalog_enabled())
+
+
 class ShippedModelFreshnessTests(unittest.TestCase):
     """Shipped default lanes: shape/fixture pins here cover what is hermetic;
     LIVE catalog contact is machine-checked by `capabilities --check-shipped`
-    and auto-run below when a key is present (the stale-id defect class
-    recurred twice before that check existed)."""
+    and runs below only with explicit network opt-in and a key (the stale-id
+    defect class recurred twice before that check existed)."""
 
     def test_no_shipped_id_is_byok_denylisted(self):
         """A denylisted shipped id would hard-fatal at check_byok on every
@@ -33,11 +56,11 @@ class ShippedModelFreshnessTests(unittest.TestCase):
                    | {DEFAULT_APPLY_MODEL_PAID} | set(SPECIALIST_POOL_PAID))
         self.assertTrue(shipped <= shipped_model_ids())
 
-    @unittest.skipUnless(resolve_api_key(), "live catalog check needs an API key")
+    @unittest.skipUnless(
+        _live_catalog_enabled(),
+        "live catalog check needs HARNESS_TEST_ALLOW_NETWORK=1 and an API key")
     def test_shipped_ids_resolve_in_live_catalog(self):
-        """The real freshness gate, auto-run wherever a key exists (this
-        includes the dev machine and any keyed CI): a shipped id missing from
-        today's /models fails here exactly as `--check-shipped` would."""
+        """The opt-in live freshness gate mirrors `--check-shipped`."""
         from harness.config import shipped_model_ids
         gov = SpendGovernor(HttpTransport(), resolve_api_key())
         catalog = {m["id"] for m in gov.fetch_models(refresh=True)}
