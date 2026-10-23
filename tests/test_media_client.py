@@ -258,5 +258,47 @@ class JobIdQuotingTests(unittest.TestCase):
         self.assertEqual(env["job_id"], "job-1")
 
 
+class OpaqueJobIdTests(unittest.TestCase):
+    def test_reserved_and_unicode_characters_are_one_segment(self):
+        cases = (("a/b?c#d%", "a%2Fb%3Fc%23d%25"),
+                 ("job ü", "job%20%C3%BC"), ("a\\b", "a%5Cb"),
+                 ("%2F", "%252F"))
+        for raw, encoded in cases:
+            for method in ("job", "wait"):
+                with self.subTest(raw=raw, method=method):
+                    opener = _fake_opener([{"id": raw, "status": "succeeded"}])
+                    adapter = MediaAdapter(base_url="http://media.local", opener=opener)
+                    getattr(adapter, method)(raw)
+                    self.assertEqual(opener.calls, [("GET", "http://media.local/v1/jobs/" + encoded)])
+
+    def test_invalid_ids_refuse_before_dispatch_even_with_zero_timeout(self):
+        for raw in (None, 1, [], "", " ", ".", "..", "...", "a\n", "a\x00", "a\x7f", "a\x85"):
+            for method in ("job", "wait"):
+                with self.subTest(raw=raw, method=method):
+                    opener = _fake_opener([])
+                    adapter = MediaAdapter(base_url="http://media.local", opener=opener)
+                    kwargs = {"timeout": 0} if method == "wait" else {}
+                    with self.assertRaisesRegex(MediaUnavailable, "invalid media job id"):
+                        getattr(adapter, method)(raw, **kwargs)
+                    self.assertEqual(opener.calls, [])
+
+    def test_invalid_service_returned_id_is_refused_before_polling(self):
+        opener = _fake_opener([{"id": "..", "status": "queued"}])
+        adapter = MediaAdapter(base_url="http://media.local", opener=opener)
+        with self.assertRaisesRegex(MediaUnavailable, "invalid media job id"):
+            adapter.image("test")
+        self.assertEqual(opener.calls, [("POST", "http://media.local/v1/jobs")])
+
+    def test_cli_invalid_id_uses_existing_honest_failure_exit(self):
+        opener = _fake_opener([])
+        adapter = MediaAdapter(base_url="http://media.local", opener=opener)
+        with mock.patch("harness.media_client.MediaAdapter", return_value=adapter), \
+                redirect_stderr(io.StringIO()) as stderr:
+            code = run_cli(["job", ".."])
+        self.assertEqual(code, 4)
+        self.assertIn("invalid media job id", stderr.getvalue())
+        self.assertEqual(opener.calls, [])
+
+
 if __name__ == "__main__":
     unittest.main()

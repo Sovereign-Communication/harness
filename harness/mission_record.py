@@ -37,7 +37,6 @@ Failures raise ``HarnessError``. JSONL appends and file rewrites follow the
 history/ledger append style and ``filesafety._atomic_write``.
 """
 import json
-import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -98,23 +97,41 @@ def pack_dir_for(root: Any, mission_id: str) -> Path:
     return Path(root) / mid
 
 
-def resolve_missions_root(raw: Any) -> str:
-    """Validate a caller-supplied missions root, jailed under ``./missions``.
+def resolve_missions_root(raw: Any, *, allowed_roots=None) -> str:
+    """Resolve the exact path consumed, within server-declared read roots.
 
-    Mission packs live in a directory tree rooted at the missions base
-    directory. To prevent path traversal (``..``) or absolute-path escapes
-    (``/etc``), the resolved root must stay inside the base. Symlinks are
-    resolved, so a symlink inside the base pointing outside is rejected too.
-    Returns the input unchanged on success; raises HarnessError on escape.
-    Callers: the server ``?root=`` endpoints and the MCP ``mission_status``
-    tool's ``root`` argument.
+    HTTP servers pass their pinned allowlist. MCP passes its startup-pinned
+    missions root. CLI callers retain their existing local filesystem authority.
     """
-    raw = raw or "missions"
-    base = os.path.realpath("missions")
-    candidate = os.path.realpath(os.path.join(base, str(raw)))
-    if candidate != base and not candidate.startswith(base + os.sep):
-        raise HarnessError("invalid missions root: {!r}".format(raw))
-    return raw
+    from . import osal
+    roots = tuple(allowed_roots) if allowed_roots is not None else (osal.norm_path("missions"),)
+    if not roots or any(osal.norm_path(base) != base for base in roots):
+        raise HarnessError("invalid missions root: configured root identity changed")
+    try:
+        candidate = Path(roots[0] if not raw else raw).resolve()
+    except (OSError, ValueError, RuntimeError):
+        raise HarnessError("invalid missions root: cannot resolve path") from None
+    if not any(osal.is_within(candidate, base) for base in roots):
+        raise HarnessError("invalid missions root: outside configured allowed roots")
+    return str(candidate)
+
+
+def check_mission_pack_paths(root, mission_id, *, refresh=False):
+    """Check every summary read, and projection path if refreshing, before I/O.
+
+    Remote-facing callers use this boundary; local CLI pack operations retain
+    their existing authority. This is a pathname check, not an OS sandbox or
+    protection against a local filesystem actor racing the subsequent opens.
+    """
+    from . import osal
+    pack = MissionPack(root, mission_id)
+    paths = (pack.dir, pack.mission_yaml, pack.budget_path, pack.resume_path,
+             pack.receipts_path, pack.jev_evals_path)
+    if refresh:
+        paths += (pack.status_md, pack.index_md, pack.artifacts_dir)
+    if not all(osal.is_within(path, root) for path in paths):
+        raise HarnessError("invalid mission pack: path escapes missions root")
+    return pack
 
 
 def _require_mapping(value: Any, what: str) -> Dict[str, Any]:

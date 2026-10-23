@@ -71,3 +71,12 @@ result = media.video("ocean waves", provider="higgsfield",
 
 `status` ∈ `succeeded | failed | refused | service_unavailable | timeout`
 (`queued | running` only with `wait=False`). Budget refusals carry `math`.
+
+## Job identifier boundary
+
+`media job <id>` and polling encode the opaque ID as one path segment (including
+slashes, percent signs, query/fragment punctuation and Unicode). Empty, dot-only
+or control-containing IDs are refused before a GET. IDs received from the
+service use the same validation; a bad response cannot redirect polling to a
+different resource. This is client-side request containment, not a guarantee
+that a service performing repeated URL decoding handles IDs correctly.

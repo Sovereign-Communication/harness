@@ -43,7 +43,8 @@ class ServerHarness(unittest.TestCase):
 
     def setUp(self):
         self.httpd = make_server("127.0.0.1", 0,
-                                 auth_token=getattr(self, "token", None))
+                                 auth_token=getattr(self, "token", None),
+                                 mission_roots=getattr(self, "mission_roots", None))
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever,
                                        daemon=True)
@@ -1545,15 +1546,11 @@ class MissionsEndpointTests(ServerHarness):
     mission_status MCP tool and `harness mission status` use."""
 
     def setUp(self):
-        super().setUp()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        # The missions endpoints jail ?root= inside ./missions, so the
-        # fixture pack tree lives under a temp working directory.
-        self._old_cwd = os.getcwd()
-        os.chdir(self.tmp.name)
-        self.addCleanup(os.chdir, self._old_cwd)
-        self.root = "missions"
+        self.root = os.path.join(self.tmp.name, "missions")
+        self.mission_roots = (self.root,)
+        super().setUp()
 
     def _init_pack(self, mission_id):
         from harness import mission_record as mr
@@ -1714,6 +1711,154 @@ class MissionsEndpointTests(ServerHarness):
             conn.close()
         self.assertEqual(status, 200)
         self.assertEqual(data["total"], 1)
+
+
+class MissionRootPolicyTests(MissionsEndpointTests):
+    """Real HTTP reads use the path validated against a startup allowlist."""
+
+    def test_sibling_root_is_refused_before_directory_read(self):
+        sibling = os.path.join(self.tmp.name, "outside")
+        os.makedirs(sibling)
+        from urllib.parse import quote
+        with mock.patch.object(ui_server, "_list_missions",
+                               side_effect=AssertionError("unapproved root read")):
+            for raw in (sibling, self.root + "-sibling", "outside", "../outside"):
+                with self.subTest(root=raw):
+                    conn = self._conn()
+                    try:
+                        status, _ = _request(conn, "GET", "/api/missions?root=" + quote(raw))
+                    finally:
+                        conn.close()
+                    self.assertEqual(status, 400)
+
+    def test_missing_root_uses_pinned_startup_default(self):
+        self._init_pack("m-root-default")
+        conn = self._conn()
+        try:
+            status, data = _request(conn, "GET", "/api/missions")
+        finally:
+            conn.close()
+        self.assertEqual(status, 200)
+        self.assertTrue(ui_server.osal.same_path(data["root"], self.root))
+        self.assertEqual(data["missions"][0]["id"], "m-root-default")
+
+    def test_nested_allowed_root_is_the_actual_read_path(self):
+        nested = os.path.join(self.root, "nested")
+        original = self.root
+        self.root = nested
+        self._init_pack("m-nested")
+        self.root = original
+        from urllib.parse import quote
+        conn = self._conn()
+        try:
+            status, data = _request(conn, "GET", "/api/missions?root=" + quote(nested))
+        finally:
+            conn.close()
+        self.assertEqual(status, 200)
+        self.assertTrue(ui_server.osal.same_path(data["root"], nested))
+        self.assertEqual(data["missions"][0]["id"], "m-nested")
+
+    def test_pack_directory_escape_is_refused_before_loading(self):
+        self._init_pack("m-escape")
+        real = ui_server.osal.norm_path
+        escaped = real(os.path.join(self.root, "m-escape"))
+        outside = real(os.path.join(self.tmp.name, "outside"))
+
+        def resolve(path):
+            actual = real(path)
+            return outside + actual[len(escaped):] if actual.startswith(escaped) else actual
+
+        from harness import mission_record as mr
+        with mock.patch.object(ui_server.osal, "norm_path", side_effect=resolve), \
+                mock.patch.object(mr, "load_mission_pack",
+                                  side_effect=AssertionError("escaping pack read")):
+            conn = self._conn()
+            try:
+                status, _ = _request(conn, "GET", f"/api/missions/m-escape?root={self.root}")
+            finally:
+                conn.close()
+        self.assertEqual(status, 400)
+
+    def test_each_persisted_file_escape_is_refused_for_list_and_detail(self):
+        self._init_pack("m-file")
+        real = ui_server.osal.norm_path
+        outside = real(os.path.join(self.tmp.name, "outside"))
+        for filename in ("mission.yaml", "budget.json", "resume.json",
+                         "receipts.jsonl", "jev_evals.jsonl"):
+            escaped = real(os.path.join(self.root, "m-file", filename))
+
+            def resolve(path):
+                actual = real(path)
+                return outside if actual == escaped else actual
+
+            with self.subTest(filename=filename), \
+                    mock.patch.object(ui_server.osal, "norm_path", side_effect=resolve):
+                conn = self._conn()
+                try:
+                    status, data = _request(conn, "GET", f"/api/missions?root={self.root}")
+                finally:
+                    conn.close()
+                self.assertEqual(status, 200)
+                self.assertEqual(data["total"], 0)
+                conn = self._conn()
+                try:
+                    status, _ = _request(conn, "GET", f"/api/missions/m-file?root={self.root}")
+                finally:
+                    conn.close()
+                self.assertEqual(status, 400)
+
+    def test_root_symlink_escape_is_denied(self):
+        outside = os.path.join(self.tmp.name, "outside")
+        os.makedirs(self.root)
+        os.makedirs(outside)
+        link = os.path.join(self.root, "escape")
+        try:
+            os.symlink(outside, link, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("platform: symlinks unavailable")
+        conn = self._conn()
+        try:
+            status, _ = _request(conn, "GET", f"/api/missions?root={link}")
+        finally:
+            conn.close()
+        self.assertEqual(status, 400)
+
+
+class MissionRootStartupTests(unittest.TestCase):
+    def test_allowlist_is_explicit_and_default_is_pinned(self):
+        state = ui_server.UiState()
+        self.assertEqual(state.mission_roots, (ui_server.osal.norm_path("missions"),))
+        for invalid in ([], "missions", b"missions", [""], [None]):
+            with self.subTest(roots=invalid), self.assertRaises(HarnessError):
+                ui_server.UiState(mission_roots=invalid)
+
+    def test_second_explicit_root_is_admitted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            roots = [os.path.join(tmp, "a"), os.path.join(tmp, "b")]
+            state = ui_server.UiState(mission_roots=roots)
+            self.assertEqual(ui_server._missions_root_param({"root": [roots[1]]}, state.mission_roots),
+                             str(Path(roots[1]).resolve()))
+
+    def test_invalid_query_path_is_a_clean_refusal(self):
+        state = ui_server.UiState()
+        with self.assertRaisesRegex(HarnessError, "cannot resolve"):
+            ui_server._missions_root_param({"root": ["bad\x00root"]}, state.mission_roots)
+
+    def test_startup_options_forward_the_explicit_allowlist(self):
+        fake = mock.Mock()
+        fake.server_address = ("127.0.0.1", 0)
+        fake.ui.auth_token = None
+        with mock.patch.object(ui_server, "make_server", return_value=fake) as build,                 mock.patch("sys.stderr", io.StringIO()):
+            ui_server.main(["--mission-root", "missions", "--mission-root", "extra"])
+        self.assertEqual(build.call_args.kwargs["mission_roots"], ["missions", "extra"])
+        fake.serve_forever.assert_called_once()
+
+    def test_replaced_startup_root_identity_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = ui_server.UiState(mission_roots=[tmp])
+            with mock.patch.object(ui_server.osal, "norm_path", return_value=tmp + "-escape"):
+                with self.assertRaisesRegex(HarnessError, "identity changed"):
+                    ui_server._missions_root_param({}, state.mission_roots)
 
 
 if __name__ == "__main__":

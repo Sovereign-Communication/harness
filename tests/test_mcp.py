@@ -1201,6 +1201,131 @@ class MissionStatusToolTests(unittest.TestCase):
         self.assertEqual(result["id"], "m-mcp-2")
 
 
+    def _boundary_pack(self, root=None):
+        from harness import mission_record as mr
+        root = self.root if root is None else root
+        spec = mr.build_mission_spec(
+            mission_id="m-boundary", request="Check the mission root boundary",
+            success_definition="Only authorized paths are consumed",
+            max_cost_usd=0.50, terminal_reserve_cost_usd=0.05,
+            in_scope=["mission status"], out_of_scope=["external paths"],
+            persistence_root=root, verifier_kind="hermetic-local")
+        return mr.init_mission_pack(root, spec)
+
+    def test_root_checked_is_the_exact_reader_path(self):
+        from harness import mission_record as mr
+        from harness.errors import HarnessError
+        os.makedirs(os.path.join(self.root, "outside"))
+        self._boundary_pack("outside")
+        _, server = make_server()
+        with mock.patch.object(mr, "load_mission_pack",
+                               side_effect=AssertionError("outside read")):
+            with self.assertRaises(HarnessError):
+                server._invoke("mission_status", {"mission_id": "m-boundary", "root": "outside"})
+
+    def test_nested_and_absolute_authorized_paths_are_consumed(self):
+        nested = os.path.join(self.root, "nested")
+        self._boundary_pack(nested)
+        _, server = make_server()
+        for root in (nested, os.path.abspath(nested)):
+            with self.subTest(root=root):
+                result = server._invoke("mission_status", {"mission_id": "m-boundary", "root": root})
+                self.assertEqual(result["id"], "m-boundary")
+                self.assertEqual(os.path.realpath(result["pack_dir"]),
+                                 os.path.realpath(os.path.join(nested, "m-boundary")))
+
+    def test_default_root_is_pinned_before_cwd_changes(self):
+        pack = self._boundary_pack()
+        _, server = make_server()
+        elsewhere = os.path.join(self.tmp.name, "elsewhere")
+        os.makedirs(elsewhere)
+        os.chdir(elsewhere)
+        try:
+            result = server._invoke("mission_status", {"mission_id": "m-boundary"})
+        finally:
+            os.chdir(self.tmp.name)
+        self.assertEqual(os.path.realpath(result["pack_dir"]), os.path.realpath(pack.dir))
+
+    def test_pack_and_each_refresh_path_escape_is_refused_before_io(self):
+        from harness import mission_record as mr, osal
+        from harness.errors import HarnessError
+        pack = self._boundary_pack()
+        _, server = make_server()
+        real = osal.norm_path
+        outside = real(os.path.join(self.tmp.name, "outside"))
+        for path in (pack.dir, pack.mission_yaml, pack.budget_path, pack.resume_path,
+                     pack.receipts_path, pack.jev_evals_path, pack.status_md,
+                     pack.index_md, pack.artifacts_dir):
+            escaped = real(path)
+            def resolve(candidate):
+                actual = real(candidate)
+                return outside if actual == escaped else actual
+            with self.subTest(path=path), mock.patch.object(osal, "norm_path", side_effect=resolve), \
+                    mock.patch.object(mr, "load_mission_pack", side_effect=AssertionError("escaped read")), \
+                    mock.patch.object(mr, "write_status", side_effect=AssertionError("escaped write")):
+                with self.assertRaises(HarnessError):
+                    server._invoke("mission_status", {"mission_id": "m-boundary"})
+
+    def test_replaced_root_identity_is_refused(self):
+        from harness import mission_record as mr, osal
+        from harness.errors import HarnessError
+        self._boundary_pack()
+        _, server = make_server()
+        real = osal.norm_path
+        def resolve(candidate):
+            actual = real(candidate)
+            return actual + "-replaced" if actual == server.missions_root else actual
+        with mock.patch.object(osal, "norm_path", side_effect=resolve), \
+                mock.patch.object(mr, "load_mission_pack", side_effect=AssertionError("root replaced")):
+            with self.assertRaisesRegex(HarnessError, "identity changed"):
+                server._invoke("mission_status", {"mission_id": "m-boundary"})
+
+    def test_real_pack_symlink_cannot_read_or_refresh_outside_tree(self):
+        pack = self._boundary_pack("outside")
+        os.makedirs(self.root, exist_ok=True)
+        link = os.path.join(self.root, "m-boundary")
+        try:
+            os.symlink(os.path.abspath(pack.dir), link, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest("symlink unavailable on this host: " + str(exc))
+        before = {p.name: p.read_bytes() for p in pack.dir.iterdir() if p.is_file()}
+        _, server = make_server()
+        frames = _serve(server, json.dumps({"jsonrpc": "2.0", "id": 201, "method": "tools/call",
+            "params": {"name": "mission_status", "arguments": {"mission_id": "m-boundary"}}}) + "\n")
+        self.assertEqual(len(frames), 1)
+        self.assertTrue(frames[0]["result"]["isError"])
+        self.assertEqual(frames[0]["result"]["errorKind"], "harness_error")
+        self.assertIn("escapes missions root", str(frames[0]))
+        self.assertEqual(before, {p.name: p.read_bytes() for p in pack.dir.iterdir() if p.is_file()})
+
+    def test_protocol_escape_returns_error_without_reading_or_refreshing(self):
+        from harness import mission_record as mr, osal
+        pack = self._boundary_pack()
+        _, server = make_server()
+        real = osal.norm_path
+        escaped = real(pack.budget_path)
+        outside = real(os.path.join(self.tmp.name, "outside"))
+        def resolve(path):
+            actual = real(path)
+            return outside if actual == escaped else actual
+        with mock.patch.object(osal, "norm_path", side_effect=resolve), \
+                mock.patch.object(mr, "load_mission_pack", side_effect=AssertionError("outside read")), \
+                mock.patch.object(mr, "write_status", side_effect=AssertionError("outside refresh")):
+            frames = _serve(server, json.dumps({"jsonrpc": "2.0", "id": 202, "method": "tools/call",
+                "params": {"name": "mission_status", "arguments": {"mission_id": "m-boundary"}}}) + "\n")
+        self.assertEqual(len(frames), 1)
+        self.assertTrue(frames[0]["result"]["isError"])
+        self.assertEqual(frames[0]["result"]["errorKind"], "harness_error")
+        self.assertIn("escapes missions root", str(frames[0]))
+
+    def test_shared_resolver_rejects_empty_allowlist_and_unresolvable_path(self):
+        from harness import mission_record as mr
+        from harness.errors import HarnessError
+        for raw, roots in ((None, ()), ("bad" + chr(0) + "path", (os.path.realpath(self.root),))):
+            with self.subTest(raw=raw), self.assertRaises(HarnessError):
+                mr.resolve_missions_root(raw, allowed_roots=roots)
+
+
 def _write_jev_repo(root, status_line):
     """Minimal repo fixture jev_completion.collect_phase_evidence can read
     (same shape tests/test_jev_completion.py uses): STATUS row only, no

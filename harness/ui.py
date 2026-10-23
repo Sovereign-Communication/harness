@@ -92,6 +92,8 @@ def main(argv=None):
     ap.add_argument("--port", type=int, default=8766)
     ap.add_argument("--auth-token", default=None,
                     help="UI auth token (default: generated per session)")
+    ap.add_argument("--mission-root", action="append", dest="mission_roots",
+                    help="allowed mission-pack root (repeatable; default: ./missions)")
     ap.add_argument("--browser", action="store_true",
                     help="skip the pywebview window and open the browser")
     opts = ap.parse_args(argv)
@@ -106,7 +108,8 @@ def main(argv=None):
         if not token:
             token = secrets.token_urlsafe(24)
             _write_token_file(token_file, token)
-    httpd = make_server(opts.host, opts.port, auth_token=token)
+    httpd = make_server(opts.host, opts.port, auth_token=token,
+                        mission_roots=opts.mission_roots)
     host, port = httpd.server_address[:2]
     url = f"http://{host}:{port}/"
     print(f"[OK] harness desktop at {url} (token-protected)", file=sys.stderr)
