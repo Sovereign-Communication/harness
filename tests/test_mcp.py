@@ -137,7 +137,11 @@ def gated_cancellation_server(*, gate_post, posts, tool_timeout=None,
             self._count += 1
             if self._count == gate_post:
                 self.gated.set()
-                self.release.wait(10)
+                # Must exceed deadline_expired's poll budget (2500 iters):
+                # if the gate times out first the run completes and
+                # forgets the deadline stamp, so the tail polls see None
+                # and the test flakes (trace-slowed iterations hit this).
+                self.release.wait(60)
             return super().post(*args, **kwargs)
 
     transport = GatedTransport(models=[m(JUDGE), m(P1), m(P2), m(APPLY)],

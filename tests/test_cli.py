@@ -430,10 +430,28 @@ class EngineKeyWiringTests(unittest.TestCase):
             captured = {}
 
             def fake_governor(settings, max_cost_override=None):
+                import threading
                 gov = mock.Mock()
                 gov.verify_key.return_value = None
                 gov.spent = 0.0
                 gov.preflight.return_value = (0.0, [])
+                # Second-lane dispatch (harness/fireworks.py) owns real
+                # seams a bare Mock cannot supply: a lock for the endpoint
+                # cache, the cache itself, the settled-response registry,
+                # and a transport serving the priced-endpoints shape.
+                gov._spend_lock = threading.Lock()
+                gov._endpoint_cache = {}
+                gov._accounted_responses = {}
+                gov.route_comparisons = []
+
+                class _EndpointsStub:
+                    def get(self, url, api_key, timeout=15):
+                        return {"data": {"endpoints": [
+                            {"provider_name": "confirmed-provider",
+                             "pricing": {"prompt": 1e-8,
+                                         "completion": 2e-8}}]}}
+
+                gov.transport = _EndpointsStub()
                 gov.fetch_models.return_value = [
                     {"id": "google/gemma-4-31b-it:free",
                      "pricing": {"prompt": "0", "completion": "0"}}]
@@ -487,6 +505,10 @@ class EngineKeyWiringTests(unittest.TestCase):
                 settings.jev_api_key = None
                 return real_policy_for(settings, **kwargs)
 
+            from datetime import date as _date
+            _clock = mock.patch("harness.endpoint_pricing.date", wraps=_date)
+            _clock.start().today.return_value = _date(2026, 10, 10)
+            self.addCleanup(_clock.stop)
             with mock.patch.object(session, "governor_for", side_effect=fake_governor), \
                  mock.patch.object(session, "HttpTransport", TransportStub), \
                  mock.patch.object(session, "ledger_for", return_value=led), \
