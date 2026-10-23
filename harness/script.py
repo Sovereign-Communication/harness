@@ -22,6 +22,13 @@ boundary is the runner, not the judge:
   are dropped; only PATH/HOME/TMP/locale survive.
 * **A hard bound.** ``osal.run_tree`` gives the child its own process group and
   kills the whole tree on timeout; output is capped.
+* **The product is importable.** The runner runs the same interpreter, pins
+  ``PYTHONPATH`` to the package's own parent, and passes the scrubbed
+  environment, so a script can call Harness's fetch ladder or Playwright
+  instead of re-implementing them. The operator's shell cannot inject modules:
+  the environment is rebuilt from an allowlist and ``PYTHONPATH`` is a value
+  the runner sets. (No ``-s``/``-I``: a user-site Playwright is the point of
+  "drive the browser from a script".)
 
 What this is *not*: an OS sandbox. A script that opens a socket is not blocked
 by the runner (there is no namespace or firewall here), and the interpreter can
@@ -63,6 +70,10 @@ MAX_SOURCE_CHARS = 200_000
 _ENV_ALLOW = (
     "PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "WINDIR", "COMSPEC",
     "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "PYTHONIOENCODING",
+    # Windows profile directories: site.py finds the user site through
+    # APPDATA, and Playwright finds its browsers through LOCALAPPDATA. Without
+    # them a script silently loses whichever capability lives there.
+    "APPDATA", "LOCALAPPDATA",
 )
 
 _RUN_DIR_NAME = ".harness"
@@ -128,8 +139,18 @@ def script_sha256(source: str) -> str:
     return hashlib.sha256((source or "").encode("utf-8")).hexdigest()
 
 
+def _package_root() -> str:
+    """The directory that holds the importable ``harness`` package.
+
+    Editable installs resolve to the checkout; wheel installs resolve to
+    site-packages. Either way a script can ``import harness``.
+    """
+    return str(Path(__file__).resolve().parent.parent)
+
+
 def _scrubbed_env(policy: ScriptPolicy) -> Dict[str, str]:
     env = {key: os.environ[key] for key in _ENV_ALLOW if key in os.environ}
+    env["PYTHONPATH"] = _package_root()
     env["HARNESS_SCRIPT_NETWORK"] = "1" if policy.allow_network else "0"
     # Keep the child honest about buffering: an interactive-looking script in a
     # pipe is the classic "my prints disappeared" report.
@@ -235,8 +256,11 @@ def run_script(source: str, *, root, goal: str = "", allow_exec: bool = False,
     emit("script_start", path=str(script_path), sha256=sha, timeout_s=timeout,
          root=str(root_path), task_id=task_id)
     started = time.monotonic()
+    # Same interpreter, scrubbed environment, PYTHONPATH pinned to the product
+    # root: a script that could not ``import harness`` (or Playwright) could not
+    # use the capabilities this product already owns.
     result = osal.run_tree(
-        [sys.executable, "-I", str(script_path)],
+        [sys.executable, str(script_path)],
         cwd=str(root_path), timeout=timeout, env=_scrubbed_env(policy))
     duration_s = round(time.monotonic() - started, 3)
     stdout, out_truncated = _capped(result.stdout, policy.max_output_bytes)

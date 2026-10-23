@@ -214,6 +214,16 @@ class ExecutionTests(unittest.TestCase):
         self.assertTrue(receipt["truncated"])
         self.assertLessEqual(len(receipt["stdout"]), 1000)
 
+    def test_a_script_can_import_the_product(self):
+        # The whole point of one generic surface: a script reuses the fetch
+        # ladder this package owns instead of re-implementing it. -s keeps the
+        # user site off; the runner pins PYTHONPATH to the package root.
+        receipt = script.run_script(
+            "import harness, os\n"
+            "print(bool(harness.__version__), 'PYTHONPATH' in os.environ)",
+            root=self.root, allow_exec=True, policy=self.policy)
+        self.assertEqual(receipt["stdout"].strip(), "True True")
+
     def test_the_environment_is_scrubbed(self):
         os.environ["HARNESS_TEST_SECRET"] = "sk-should-never-reach-the-script"
         self.addCleanup(os.environ.pop, "HARNESS_TEST_SECRET", None)
