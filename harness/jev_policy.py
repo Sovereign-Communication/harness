@@ -105,7 +105,18 @@ from .jev_packs import (
     validate_repo_summary_pack,
 )
 
-JEV_MAX_INPUT_TOKENS = 1024
+# One input budget per judgment. It was 1024 tokens, and the answer field was
+# clipped to 1,800 characters independently of it -- so a complete 4,000-char
+# audit or plan was judged as a document that stops mid-sentence (measured
+# 2026-10-23: a substantive site audit scored answer_sufficient 0.30 and was
+# marked needs_iteration). The judge must see the answer it is judging.
+JEV_MAX_INPUT_TOKENS = 4096
+
+# Per-field share of that budget (chars ~ tokens * 3.5 for English and code).
+# The answer gets the largest slice because it is the thing being judged.
+JEV_REQUEST_MAX_CHARS = 1400
+JEV_CONTEXT_MAX_CHARS = 2400
+JEV_ANSWER_MAX_CHARS = 7000
 
 # Safety net: a fallback row never lands without a reason. Sites name their
 # own; this value only ever appears if a new path forgets to.
@@ -1259,9 +1270,9 @@ class JevPolicy:
         allowed to look like a sufficient/native answer.
         """
         state = {
-            "request": str(prompt or "")[:1400],
-            "candidate_answer": str(answer or "")[:1800],
-            "retained_context": str(context or "")[:1400],
+            "request": str(prompt or "")[:JEV_REQUEST_MAX_CHARS],
+            "candidate_answer": str(answer or "")[:JEV_ANSWER_MAX_CHARS],
+            "retained_context": str(context or "")[:JEV_CONTEXT_MAX_CHARS],
         }
         questions = answer_question_pack()
 

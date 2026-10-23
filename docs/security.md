@@ -55,6 +55,20 @@ is unchanged and still no sandbox.
   in a separate browser process with a fresh profile — it is evidence
   gathering, not a sandbox boundary; disable it with
   `HARNESS_FETCH_BROWSER=0`.
+- **Script execution (`harness script`, `harness/script.py`).** Off by default
+  (`HARNESS_SCRIPT_ENABLED=1` opts in). Consent is bound to the sha256 of the
+  exact source, so an edited script cannot ride an earlier approval; the script
+  runs with `cwd` set to the explicitly selected workspace, writes only under
+  `<root>/.harness/scripts/<run>/`, sees a scrubbed environment (PATH/HOME/TMP/
+  locale only — provider keys and every other inherited variable are dropped),
+  gets its own process group with a hard wall-clock bound that kills the tree,
+  and has stdout/stderr capped. Jev scores the script against the requested
+  goal, but that score is evidence, not the boundary: a low score marks the run
+  `revise` while a consented run proceeds. **Known limit:** this is not an OS
+  sandbox. `allow_network` is recorded and exported to the script as
+  `HARNESS_SCRIPT_NETWORK`; the runner cannot block a socket, and the script can
+  read whatever the Harness user can read. Run it only in a workspace you would
+  let the model edit.
 - **Scope limit.** These checks constrain Harness file paths; they are not an
   operating-system sandbox. In particular, an explicitly approved verification
   command still runs as the Harness process user, as described below.

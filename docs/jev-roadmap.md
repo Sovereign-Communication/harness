@@ -404,6 +404,40 @@ longer blocked by the pin. #276 stays open for the structural fix.
 
 ---
 
+### Governed scripting (`SCR-1`) — 2026-10-23 (#357)
+
+Prime Agent's lesson applied natively: one governed execution surface instead of
+a tool per task. `harness/script.py` is that surface and `harness script` is
+its CLI face.
+
+- Off by default (`HARNESS_SCRIPT_ENABLED=1` opts in); consent is bound to the
+  source sha256, so an edited script needs a fresh approval.
+- Runs `[sys.executable, -I, script]` through `osal.run_tree` (process-tree
+  kill) with `cwd` = the explicit workspace root, a scrubbed environment (no
+  provider keys or inherited tokens), 30 s default / 120 s cap, capped
+  stdout/stderr, and a receipt (`script_path`, `script_sha256`, `exit_code`,
+  `killed`, `truncated`, `duration_s`).
+- Refusals are typed and machine-readable: disabled, no consent, no or invalid
+  root, empty source, oversized source, syntax error with a line number,
+  consent-sha mismatch, unwritable run dir, run-dir escape.
+- `--score` asks Jev (the calibrated `answer_sufficiency` pack with the script
+  as candidate) whether the script implements `--goal`; the score is recorded,
+  never used as the sandbox. A Jev outage cannot fail a completed run.
+- Known limit (documented in `docs/security.md`): this is not an OS sandbox —
+  `allow_network` is recorded and exported, not enforced.
+
+**Planned before implementing.** The plan was scored through the Jev planning
+gate: `answer_sufficient` **0.81 twice** (bar 0.70), `iteration_required` false,
+`plan_required` true. Getting there exposed a real judge defect: `evaluate_answer`
+clipped the candidate to 1,800 characters independently of its input budget, so
+a 4,342-character plan scored **0.23** (judged as a truncated document) and a
+complete site audit scored **0.30** → `needs_iteration`. The field caps now share
+one 4,096-token budget (`JEV_ANSWER_MAX_CHARS` 7,000); the same plan then scored
+0.81 twice, deterministically, and a live script run scored 0.96.
+
+P2 (next slice, tracked on #357): MCP `script_run`, the GUI approval card, and
+`kind=script` evidence in the chat lane.
+
 ### Web evidence ladder — 2026-10-23 (#355)
 
 Operator repro: `audit www.freeoffgridcalculator.com for user friendliness and

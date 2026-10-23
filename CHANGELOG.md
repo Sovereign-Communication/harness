@@ -11,6 +11,22 @@ break APIs between minor versions).
 
 ### Added
 
+- **Governed scripting (`harness script`, `harness/script.py`).** An agent lane can now
+  author and run one Python script for the current request — scrape a page, parse a file,
+  drive Playwright, compute a result — instead of needing a new tool per task (the shape
+  Prime Agent made popular: one execution surface, the model's own code). Off by default
+  (`HARNESS_SCRIPT_ENABLED=1` opts in); consent is bound to the source sha256; the script
+  runs in the selected workspace with a scrubbed environment (no provider keys), a hard
+  wall-clock bound that kills the process tree, and a capped output. `--score` asks Jev
+  whether the script aligns with `--goal` (sufficiency probability, recorded on the
+  receipt, never used as the sandbox).
+- **The Jev judge now sees the answer it judges.** `evaluate_answer` clipped the candidate
+  to 1,800 characters independently of its input budget, so a complete 4,000-character
+  audit was judged by its opening paragraphs and scored `answer_sufficient` 0.30 → the run
+  reported `needs_iteration` on a good answer. The field caps now share one 4,096-token
+  budget (`JEV_ANSWER_MAX_CHARS` 7,000), and a live re-score of the same plan moved 0.61
+  → 0.81 and 0.23 → 0.81 (twice, deterministically).
+
 - **Dynamic model rotation is now wired.** `rank_models_dynamically` shipped with the
   Dynamic Resource Allocation Engine but had no production caller and no producer for its
   `health_status` input, so the dynamic-model half of the engine was inert. `harness/router.py`

@@ -9,7 +9,12 @@ traced suite never executed fail the audit. Like the corpus
 manifest, this file is generated only by this script and committed
 as a reviewable diff (see CONTRIBUTING.md, "Coverage baseline").
 
-  python audits/self/refresh_coverage_baseline.py
+  python audits/self/refresh_coverage_baseline.py [--ref REF]
+
+``--ref`` is the commit D12 will diff against; default ``HEAD``. A PR must
+pass the merge-base with ``main`` here (``--ref $(git merge-base HEAD
+origin/main)``): a PR-branch SHA is squashed away on merge and the next CI
+run then fails closed on an unreachable baseline.
 
 Cost: one traced battery run, roughly two to four minutes -- run
 this when landing substantive code changes, not per audit.
@@ -127,8 +132,16 @@ def main():
         baseline[rel] = sorted(executed.get(rel, []))
     out = HERE / "coverage_baseline.json"
     old = out.read_bytes() if out.exists() else None
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(ROOT),
+    ref = "HEAD"
+    if "--ref" in sys.argv[1:]:
+        idx = sys.argv.index("--ref")
+        if idx + 1 < len(sys.argv):
+            ref = sys.argv[idx + 1]
+    head = subprocess.run(["git", "rev-parse", ref], cwd=str(ROOT),
                           capture_output=True, text=True)
+    if head.returncode != 0 or not head.stdout.strip():
+        print(f"[FATAL] cannot resolve --ref {ref}: {head.stderr.strip()}")
+        return 2
     doc = {"_comment": "Lines executed by the full battery under stdlib "
                        "trace; regenerate only via "
                        "refresh_coverage_baseline.py and commit as a "

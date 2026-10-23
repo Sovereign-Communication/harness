@@ -1231,6 +1231,98 @@ class AskCliTests(unittest.TestCase):
             force_conversation=True)
 
 
+class ScriptCommandTests(unittest.TestCase):
+    """`harness script` is a thin face: policy, consent and execution live in
+    harness/script.py, and the CLI only reads the source and renders the
+    envelope (SCR-1)."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        self._td = tempfile.TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        self.root = Path(self._td.name)
+        self.script_file = self.root / "s.py"
+        self.script_file.write_text("print('from file')\n", encoding="utf-8")
+        self.out = self.root / "out.json"
+
+    def _main(self, argv, env=None):
+        from unittest import mock as _mock
+        with _mock.patch.dict(os.environ, env or {}, clear=False):
+            return cli.main(argv)
+
+    def test_disabled_is_a_fatal_refusal(self):
+        stderr = io.StringIO()
+        env = {"HARNESS_SCRIPT_ENABLED": "0"}
+        with contextlib.redirect_stderr(stderr), \
+             self.assertRaises(SystemExit) as ctx:
+            self._main(["script", "--file", str(self.script_file),
+                        "--root", str(self.root), "--allow-exec"], env)
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertIn("script refused", stderr.getvalue())
+
+    def test_a_file_runs_and_writes_the_receipt(self):
+        self._main(["script", "--file", str(self.script_file),
+                    "--root", str(self.root), "--allow-exec",
+                    "--goal", "print", "--out", str(self.out)],
+                   {"HARNESS_SCRIPT_ENABLED": "1"})
+        receipt = json.loads(self.out.read_text(encoding="utf-8"))
+        self.assertEqual(receipt["status"], "ok")
+        self.assertIn("from file", receipt["stdout"])
+        self.assertEqual(receipt["goal"], "print")
+
+    def test_stdin_is_an_accepted_source(self):
+        stdin = io.StringIO("print('from stdin')\n")
+        with contextlib.redirect_stdout(io.StringIO()):
+            with mock.patch.object(cli.sys, "stdin", stdin):
+                self._main(["script", "--stdin", "--root", str(self.root),
+                            "--allow-exec", "--out", str(self.out)],
+                           {"HARNESS_SCRIPT_ENABLED": "1"})
+        receipt = json.loads(self.out.read_text(encoding="utf-8"))
+        self.assertIn("from stdin", receipt["stdout"])
+
+    def test_a_failing_script_exits_nonzero_and_still_reports(self):
+        failing = self.root / "bad.py"
+        failing.write_text("raise SystemExit(4)\n", encoding="utf-8")
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as ctx:
+                self._main(["script", "--file", str(failing), "--root",
+                            str(self.root), "--allow-exec",
+                            "--out", str(self.out)],
+                           {"HARNESS_SCRIPT_ENABLED": "1"})
+        self.assertEqual(ctx.exception.code, 1)
+        receipt = json.loads(self.out.read_text(encoding="utf-8"))
+        self.assertEqual(receipt["exit_code"], 4)
+
+    def test_score_and_allow_network_reach_the_owner(self):
+        seen = {}
+
+        def fake_run(source, **kwargs):
+            seen.update(kwargs)
+            return {"status": "ok", "exit_code": 0, "stdout": "",
+                    "stderr": "", "truncated": False, "killed": False,
+                    "duration_s": 0.0, "script_path": "p",
+                    "script_sha256": "0" * 64, "goal": kwargs.get("goal"),
+                    "root": str(self.root), "timeout_s": 5,
+                    "policy": kwargs["policy"].as_dict()}
+
+        jev = object()
+        with mock.patch.object(cli._script, "run_script", side_effect=fake_run), \
+             mock.patch.object(cli, "policy_for", return_value=jev) as pol, \
+             mock.patch.object(cli, "_governor",
+                               return_value=(None, mock.Mock())), \
+             mock.patch.object(cli, "_ledger", return_value=mock.Mock()):
+            self._main(["script", "--file", str(self.script_file), "--root",
+                        str(self.root), "--allow-exec", "--score",
+                        "--allow-network", "--timeout", "5",
+                        "--out", str(self.out)],
+                       {"HARNESS_SCRIPT_ENABLED": "1"})
+        self.assertIs(seen["jev_policy"], jev)
+        self.assertTrue(seen["policy"].allow_network)
+        self.assertEqual(seen["timeout_s"], 5)
+        pol.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
 

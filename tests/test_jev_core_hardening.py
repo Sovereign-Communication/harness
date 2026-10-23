@@ -20,10 +20,16 @@ from harness.jev import (CircuitBreakers, JevCache, JevEvaluator,
                          PROCESS_CACHE, jev_cost)
 from harness.jev_policy import (BREAKER_FAILURE_THRESHOLD,
                                 FALLBACK_DISTINCT_ROW_CAP,
+                                JEV_MAX_INPUT_TOKENS,
                                 UNATTRIBUTED_FALLBACK, policy_for)
 from harness.ledger import AutonomyLedger
 from harness.spend import SpendGovernor
 from tests._fake import FakeTransport, m
+
+# Usage that deliberately exceeds one judgment's reservation, whatever the
+# configured input budget is (JEV_MAX_INPUT_TOKENS moved 1024 -> 4096, so a
+# hardcoded 5000 stopped being an overrun).
+OVERRUN_TOKENS = int(JEV_MAX_INPUT_TOKENS * 1.2)
 
 DIFF = "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n"
 PACK = {"id": "ladder-v1", "rungs": [
@@ -1257,11 +1263,11 @@ class FanOutHardeningTests(_Base):
 
     def test_post_dispatch_overrun_is_not_labelled_a_preflight_refusal(self):
         big = {"model": "jev-test",
-               "usage": {"input_tokens": 5000, "output_tokens": 3}}
+               "usage": {"input_tokens": OVERRUN_TOKENS, "output_tokens": 3}}
 
         def respond(payload):
             return dict(big, answers=answers_for(payload["questions"]))
-        gov = self.governor(max_cost=jev_cost(1024) * 1.5)
+        gov = self.governor(max_cost=jev_cost(JEV_MAX_INPUT_TOKENS) * 1.1)
         policy = self.keyed(CountingTransport(respond), governor=gov)
         result, structural = policy.evaluate_route("x", ["a.py"])
         self.assertFalse(result.is_fallback)          # the paid answer stands
@@ -1444,9 +1450,9 @@ class SettlementOverrunTests(_Base):
     def run_site(self, call):
         def respond(payload):
             return {"model": "jev-test",
-                    "usage": {"input_tokens": 5000, "output_tokens": 1},
+                    "usage": {"input_tokens": OVERRUN_TOKENS, "output_tokens": 1},
                     "answers": answers_for(payload["questions"])}
-        gov = self.governor(max_cost=jev_cost(1024) * 1.5)
+        gov = self.governor(max_cost=jev_cost(JEV_MAX_INPUT_TOKENS) * 1.1)
         policy = self.keyed(CountingTransport(respond), governor=gov)
         return policy, gov, call(policy)
 
@@ -1455,13 +1461,13 @@ class SettlementOverrunTests(_Base):
             with self.subTest(site=name):
                 self.setUp()
                 _, gov, _ = self.run_site(SITES[name])
-                self.assertAlmostEqual(gov.spent, jev_cost(5000))
+                self.assertAlmostEqual(gov.spent, jev_cost(OVERRUN_TOKENS))
                 self.assertEqual(gov.overruns, 1)
                 self.assertEqual(gov.outstanding, 0.0)
                 rows = self.rows()
                 self.assertEqual(len(rows), 1)             # the billed row only
-                self.assertAlmostEqual(rows[0]["cost"], jev_cost(5000))
-                self.assertEqual(rows[0]["input_tokens"], 5000)
+                self.assertAlmostEqual(rows[0]["cost"], jev_cost(OVERRUN_TOKENS))
+                self.assertEqual(rows[0]["input_tokens"], OVERRUN_TOKENS)
                 self.assertTrue(rows[0]["settlement_overrun"])
                 self.assertFalse(rows[0]["is_fallback"])
 
@@ -1472,10 +1478,10 @@ class SettlementOverrunTests(_Base):
 
                 def respond(payload, noul=noul):
                     return {"model": "jev-test",
-                            "usage": {"input_tokens": 5000, "output_tokens": 1},
+                            "usage": {"input_tokens": OVERRUN_TOKENS, "output_tokens": 1},
                             "answers": {"instruction_matches": {
                                 "type": "noul", "noul": noul}}}
-                gov = self.governor(max_cost=jev_cost(1024) * 1.5)
+                gov = self.governor(max_cost=jev_cost(JEV_MAX_INPUT_TOKENS) * 1.1)
                 policy = self.keyed(CountingTransport(respond), governor=gov)
                 result, structural = policy.evaluate_diff(DIFF, "set x", "x.py")
                 self.assertEqual(result.verdict, verdict)
@@ -1518,7 +1524,7 @@ class SingleFlightTests(_Base):
         return out
 
     def test_followers_neither_reserve_nor_send(self):
-        gov = self.governor(max_cost=jev_cost(1024) * 1.5)
+        gov = self.governor(max_cost=jev_cost(JEV_MAX_INPUT_TOKENS) * 1.1)
         transport = CountingTransport(
             noul_resp(tokens=100), delay={("instruction_matches",): 0.3})
         policy = self.keyed(transport, governor=gov)
@@ -2013,7 +2019,7 @@ class SpendInvariantTests(_Base):
         self.assertEqual(gov.outstanding, 0.0)
 
     def test_cache_hit_after_an_overrun_stays_a_cache_hit(self):
-        gov = self.governor(max_cost=jev_cost(1024) * 3)
+        gov = self.governor(max_cost=jev_cost(JEV_MAX_INPUT_TOKENS) * 3)
         transport = CountingTransport(echo(100))
         policy = self.keyed(transport, governor=gov)
         policy.evaluate_route("A", ["a.py"])
@@ -2026,8 +2032,8 @@ class SpendInvariantTests(_Base):
         self.assertEqual(len(transport.calls), 1)
 
     def test_refused_site_after_an_overrun_books_no_phantom_overrun(self):
-        gov = self.governor(max_cost=jev_cost(1024) * 1.5)
-        policy = self.keyed(CountingTransport(echo(5000)), governor=gov)
+        gov = self.governor(max_cost=jev_cost(JEV_MAX_INPUT_TOKENS) * 1.1)
+        policy = self.keyed(CountingTransport(echo(OVERRUN_TOKENS)), governor=gov)
         policy.evaluate_route("fix loop", ["a.py"])
         self.assertEqual(gov.overruns, 1)
         policy.evaluate_hourglass_stage("context_intake", {"request": "x"})
@@ -2140,8 +2146,8 @@ class OverrunEverywhereTests(_Base):
         for name in all_sites(0):
             with self.subTest(site=name):
                 self.setUp()
-                gov = self.governor(max_cost=jev_cost(1024) * 1.5)
-                policy = self.keyed(CountingTransport(echo(5000)), governor=gov)
+                gov = self.governor(max_cost=jev_cost(JEV_MAX_INPUT_TOKENS) * 1.1)
+                policy = self.keyed(CountingTransport(echo(OVERRUN_TOKENS)), governor=gov)
                 all_sites(0)[name](policy)               # must not raise
                 self.assertEqual(gov.outstanding, 0.0)
                 billed = sum(r["cost"] for r in self.rows()
