@@ -6,6 +6,7 @@ and key files are never read, and a socket guard proves nothing here opens a
 connection.
 """
 import io
+import json
 import os
 import socket
 import tempfile
@@ -17,6 +18,7 @@ from unittest import mock
 from harness import config
 from harness.chat import chat_for_route
 from harness.config import FIREWORKS_CHAT_URL, OPENROUTER_CHAT_URL, load_settings
+from harness.endpoint_pricing import fireworks_offers
 from harness.errors import HarnessError
 from harness.fireworks import (PROVIDER_FIREWORKS, PROVIDER_OPENROUTER,
                                cost_estimate, resolve_offer, resolve_route)
@@ -270,6 +272,22 @@ class BudgetTests(unittest.TestCase):
         offer = resolve_offer(NEMO)
         self.assertAlmostEqual(cost_estimate(offer, 1_000_000, 0), 0.05)
         self.assertAlmostEqual(cost_estimate(offer, 0, 1_000_000), 0.20)
+
+
+class PackErrorTests(unittest.TestCase):
+    def test_missing_pack_raises_instead_of_reading_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "no-such-pack.json"
+            with self.assertRaisesRegex(HarnessError, "price pack missing"):
+                fireworks_offers(pack_path=missing)
+
+    def test_pack_without_a_model_list_raises_instead_of_guessing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "pack.json"
+            bad.write_text(json.dumps({"models": {"not": "a list"}}),
+                           encoding="utf-8")
+            with self.assertRaisesRegex(HarnessError, "no model list"):
+                fireworks_offers(pack_path=bad)
 
 
 class NoNetworkTests(unittest.TestCase):

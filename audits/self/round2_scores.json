@@ -3,67 +3,67 @@
     "A": 10.0,
     "R": 10.0,
     "SM": 10.0,
-    "SD": 10.0
+    "SD": 8.33
   },
   "jev_scores": {
-    "A": 10.0,
-    "R": 10.0,
-    "SM": 10.0,
-    "SD": 10.0
+    "A": 7.5,
+    "R": 7.5,
+    "SM": 7.5,
+    "SD": 7.5
   },
-  "jev_gate_pass": true,
+  "jev_gate_pass": false,
   "jev_eval": {
     "dimensions": {
       "A": {
         "name": "Security",
-        "level_index": 4,
-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
-        "score": 10.0,
-        "bar_met": true,
-        "confidence": 0.99,
+        "level_index": 1,
+        "level": "at_risk \u2014 partial satisfaction with significant gaps (7.0-8.4)",
+        "score": 7.5,
+        "bar_met": false,
+        "confidence": 0.57,
         "evaluated": true
       },
       "R": {
         "name": "Reliability",
-        "level_index": 4,
-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
-        "score": 10.0,
-        "bar_met": true,
-        "confidence": 0.99,
+        "level_index": 1,
+        "level": "at_risk \u2014 partial satisfaction with significant gaps (7.0-8.4)",
+        "score": 7.5,
+        "bar_met": false,
+        "confidence": 0.5,
         "evaluated": true
       },
       "SM": {
         "name": "Structural hygiene & maintainability",
-        "level_index": 4,
-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
-        "score": 10.0,
-        "bar_met": true,
-        "confidence": 0.99,
+        "level_index": 1,
+        "level": "at_risk \u2014 partial satisfaction with significant gaps (7.0-8.4)",
+        "score": 7.5,
+        "bar_met": false,
+        "confidence": 0.52,
         "evaluated": true
       },
       "SD": {
         "name": "Documentation & release integrity",
-        "level_index": 4,
-        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
-        "score": 10.0,
-        "bar_met": true,
-        "confidence": 0.97,
+        "level_index": 1,
+        "level": "at_risk \u2014 partial satisfaction with significant gaps (7.0-8.4)",
+        "score": 7.5,
+        "bar_met": false,
+        "confidence": 0.99,
         "evaluated": true
       }
     },
     "scores": {
-      "A": 10.0,
-      "R": 10.0,
-      "SM": 10.0,
-      "SD": 10.0
+      "A": 7.5,
+      "R": 7.5,
+      "SM": 7.5,
+      "SD": 7.5
     },
-    "bar_95_pass": true,
-    "min_score": 10.0,
+    "bar_95_pass": false,
+    "min_score": 7.5,
     "is_fallback": false,
     "reasons": [],
     "model": "jev-1.13.0",
-    "cost": 5.5566e-05,
-    "input_tokens": 1323,
+    "cost": 5.5524e-05,
+    "input_tokens": 1322,
     "output_tokens": 60
   },
   "checks": {
@@ -144,7 +144,7 @@
         "id": "A13",
         "label": "hard config ceilings + fail-clean load",
         "score": 1.0,
-        "evidence": "11 numeric settings range-validated; hard ceilings enforced in load_settings; unknown keys warned; load inside CLI try"
+        "evidence": "12 numeric settings range-validated; hard ceilings enforced in load_settings; unknown keys warned; load inside CLI try"
       }
     ],
     "R": [
@@ -212,7 +212,7 @@
         "id": "R11",
         "label": "config validation ranges + unknown-key warning",
         "score": 1.0,
-        "evidence": "range-validated: ['apply_max_tokens', 'max_cost', 'max_panelists', 'max_rotations', 'max_tokens', 'mcp_tool_timeout', 'min_confidence', 'reasoning_token_budget', 'task_max_cost', 'token_budget_input', 'token_budget_output']; unknown-key warning present"
+        "evidence": "range-validated: ['apply_max_tokens', 'fireworks_budget_usd', 'max_cost', 'max_panelists', 'max_rotations', 'max_tokens', 'mcp_tool_timeout', 'min_confidence', 'reasoning_token_budget', 'task_max_cost', 'token_budget_input', 'token_budget_output']; unknown-key warning present"
       },
       {
         "id": "R12",
@@ -224,7 +224,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 3948 tests in 232.428s\n\nOK (env scrubbed: HARNESS_JEV_KEY, HARNESS_USE_FREE; empty home)"
+        "evidence": "unittest: Ran 4141 tests in 260.602s\n\nOK (env clean; empty home)"
       },
       {
         "id": "R14",
@@ -268,7 +268,7 @@
         "id": "S6",
         "label": "test tree mirrors product tree",
         "score": 1.0,
-        "evidence": "84/84 modules imported by tests"
+        "evidence": "86/86 modules imported by tests"
       },
       {
         "id": "S7",
@@ -306,7 +306,7 @@
         "id": "D4",
         "label": "config table keys real",
         "score": 1.0,
-        "evidence": "24 README config keys all resolve to real settings (45 configurable)"
+        "evidence": "24 README config keys all resolve to real settings (48 configurable)"
       },
       {
         "id": "D5",
@@ -324,7 +324,7 @@
         "id": "D7",
         "label": "docs reference only real modules",
         "score": 1.0,
-        "evidence": "all module references across 29 docs resolve to real files"
+        "evidence": "all module references across 30 docs resolve to real files"
       },
       {
         "id": "D8",
@@ -341,8 +341,8 @@
       {
         "id": "D10",
         "label": "CONTRIBUTING current",
-        "score": 1.0,
-        "evidence": "CONTRIBUTING covers every public module; layering rules present"
+        "score": 0.0,
+        "evidence": "stale: []; uncovered: ['fireworks']"
       },
       {
         "id": "D11",
@@ -353,8 +353,8 @@
       {
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
-        "score": 1.0,
-        "evidence": "changed harness lines are suite-executed (changed-line coverage 39/41 = 95% (bar 95%) vs baseline 219754e71c; untested: apply_policy.py:403; jev_completion.py:984)"
+        "score": 0.0,
+        "evidence": "changed-line coverage 427/505 = 85% (bar 95%) vs baseline 7a3cbdedae; untested: chat.py:16,286,287,433,451,452,453,454...; config.py:36,37,42,495,559,560,564,566...; endpoint_pricing.py:39,299,300,301,308,309,310,314...; fireworks.py:14,15,17,18,19,21,22,27...; spend.py:549,584"
       }
     ]
   }
