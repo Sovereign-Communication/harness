@@ -1527,9 +1527,11 @@ class JevPolicy:
           near-unanimity from a three-way question and escalated on almost
           every well-evidenced action. The disposition's concentration is
           still reported as ``disposition_confidence`` for telemetry;
-        - ``advances_goal`` < threshold -> escalate. This one stays absolute
-          because ``advances_goal`` is a Noul, whose value is a real
-          yes-probability;
+        - ``advances_goal`` < threshold -> investigate (Jev Gate Policy v1
+          rule 6). A Noul is a real yes-probability, but it carries
+          evidence-thoroughness bias: a low value says "gather evidence", not
+          "harm is likely". The caller proceeds with a documented note if the
+          investigation finds no risk, and escalates if it does;
         - disposition ``needs_improvement`` -> revise: the caller fixes the
           action and re-gates (bounded by ``DECISION_MAX_REVISIONS``);
         - otherwise -> proceed.

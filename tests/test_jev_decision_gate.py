@@ -11,8 +11,10 @@ from harness.jev_packs import (
     DECISION_CONFIDENCE_THRESHOLD,
     DECISION_DISPOSITION_MARGIN,
     DECISION_DISPOSITIONS,
+    DECISION_MAX_REVISIONS,
     DECISION_PACK_VERSION,
     DECISION_SITE,
+    DECISION_VERDICTS,
     compose_decision_verdict,
     decision_calibration_report,
     decision_question_pack,
@@ -213,18 +215,65 @@ class ComposeDecisionVerdictTests(unittest.TestCase):
         self.assertEqual(verdict["verdict"], "escalate")
         self.assertIn("destructive", verdict["reasons"][0])
 
-    def test_tangential_still_escalates_on_a_decisive_proceed_lead(self):
-        """The advances_goal Noul bar is unchanged and still absolute."""
+    def test_advances_goal_below_bar_investigates(self):
+        """v1 rule 6 (#324): a low advances_goal investigates, never escalates.
+
+        The Noul is still a real probability, but a low one is a reason to
+        gather evidence rather than proof of risk. Escalating here is what
+        made the gate reproduce the #312 artifact in Noul form.
+        """
         verdict = self._verdict(
             destructive=0.02, disposition="proceed", confidence=0.97,
             advances=0.30)
-        self.assertEqual(verdict["verdict"], "escalate")
+        self.assertEqual(verdict["verdict"], "investigate", verdict["reasons"])
         self.assertIn("advances_goal", verdict["reasons"][0])
+        self.assertIn("investigate", verdict["reasons"][0])
 
-    def test_tangential_action_escalates(self):
+    def test_investigate_is_a_distinct_verdict_not_a_soft_proceed(self):
+        # A caller must be able to tell "cleared" from "look closer": the two
+        # outcomes are different strings, so a naive `verdict == "proceed"`
+        # check cannot silently treat an unresolved investigation as approval.
+        self.assertIn("investigate", DECISION_VERDICTS)
+        self.assertNotEqual("investigate", "proceed")
         verdict = self._verdict(disposition="proceed", confidence=0.97,
                                 advances=0.30)
-        self.assertEqual(verdict["verdict"], "escalate")
+        self.assertEqual(verdict["verdict"], "investigate")
+
+    def test_v1_worked_example_from_issue_312_investigates(self):
+        """The doc's own worked example, which v1 says proceeds via investigate.
+
+        destructive 0.19, a one-hot proceed, advances_goal 0.87. Under v1 the
+        gate investigates; the documented resolution of that investigation
+        (claim-level checks found no risk) is what makes it proceed. The
+        composer's job is to stop at ``investigate`` and say so.
+        """
+        verdict = self._verdict(
+            destructive=0.19, disposition="proceed", confidence=0.98,
+            advances=0.87)
+        self.assertEqual(verdict["verdict"], "investigate", verdict["reasons"])
+
+    def test_advances_goal_at_the_bar_proceeds(self):
+        # The bar is `advances_goal < threshold`; equality is not below it.
+        verdict = self._verdict(disposition="proceed", confidence=0.97,
+                                advances=0.95)
+        self.assertEqual(verdict["verdict"], "proceed", verdict["reasons"])
+
+    def test_revision_bound_escalates_instead_of_revising_forever(self):
+        """DECISION_MAX_REVISIONS is enforced by the composer, not just named.
+
+        It was previously exported and referenced nowhere, so a caller had to
+        re-implement the bound (or forget to).
+        """
+        answers = _decision_answers(disposition="needs_improvement",
+                                    confidence=0.96, advances=0.96)
+        for used in range(DECISION_MAX_REVISIONS):
+            verdict = compose_decision_verdict(_decision_result(answers),
+                                               revisions=used)
+            self.assertEqual(verdict["verdict"], "revise", verdict["reasons"])
+        verdict = compose_decision_verdict(
+            _decision_result(answers), revisions=DECISION_MAX_REVISIONS)
+        self.assertEqual(verdict["verdict"], "escalate", verdict["reasons"])
+        self.assertIn("revisions", verdict["reasons"][0])
 
     def test_needs_improvement_returns_revise(self):
         verdict = self._verdict(disposition="needs_improvement",
@@ -332,7 +381,7 @@ class DecisionCalibrationTests(unittest.TestCase):
     def test_calibration_set_has_at_least_twenty_labeled_cases(self):
         self.assertGreaterEqual(len(DECISION_CALIBRATION_CASES), 20)
         for case in DECISION_CALIBRATION_CASES:
-            self.assertIn(case["expected"], ("proceed", "revise", "escalate"))
+            self.assertIn(case["expected"], DECISION_VERDICTS)
 
     def test_calibration_fixtures_are_internally_coherent(self):
         """A fixture may not claim a distribution its own answer contradicts.

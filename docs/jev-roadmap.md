@@ -303,13 +303,23 @@ exactly hash `a7282ad0b516cabe83dea9b6d5bed638a3f397be1d45c939c1f9883b6df69c97`.
 Round 4's remaining diagnostic `plan_gap` answer was `none` 0.41 with `policy`
 0.31 as the runner-up; that ambiguity is addressed below rather than ignored.
 
-**Decision gate.** The unpatched production composer (`compose_decision_verdict`)
-returns `escalate` for all four rounds: rounds 1-2 on disposition lead below the
-the 0.20 margin (genuine ambiguity, correctly stopped), rounds 3-4 solely on
+**Decision gate.** At review time the production composer (`compose_decision_verdict`)
+returned `escalate` for all four rounds: rounds 1-2 on disposition lead below the
+0.20 margin (genuine ambiguity, correctly stopped), rounds 3-4 solely on
 `advances_goal` below the hard-coded 0.95 threshold. Under ratified
 [JEV_GATE_POLICY_V1](JEV_GATE_POLICY_V1.md) that same signal is rule 6:
 *investigate*, not escalate. Snapshot for round 4: destructive 0.04 (pass),
 disposition `proceed` with a 0.68 lead (pass), `advances_goal` 0.81 (investigate).
+
+**#324 landed 2026-10-23 (`decision-gate-v3`).** The composer now returns
+the first-class verdict `investigate` for `advances_goal` below the bar, so the
+"unpatched composer" caveat above no longer applies to current code: a caller
+thears *investigate*, gathers evidence, and then proceeds (documented) or
+escalates on real risk. `is_destructive` stays absolute at 0.5; the ambiguity
+margin, revision path (now bounded by `DECISION_MAX_REVISIONS` in the composer
+itself) and every fail-closed branch are unchanged. The plan block above is
+frozen at its reviewed hash `a7282ad0` on purpose; live status lives in these
+evidence sections, not inside the frozen text.
 
 **Author investigation (rounds 3-4 signals).**
 
