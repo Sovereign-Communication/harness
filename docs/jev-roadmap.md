@@ -438,6 +438,31 @@ one 4,096-token budget (`JEV_ANSWER_MAX_CHARS` 7,000); the same plan then scored
 P2 (next slice, tracked on #357): MCP `script_run`, the GUI approval card, and
 `kind=script` evidence in the chat lane.
 
+### Governed scripting faces (`SCR-2`) — 2026-10-23 (#357)
+
+SCR-1 shipped the runner and a CLI face; SCR-2 makes it reachable where work
+starts without adding a second execution path. `harness/script.py` owns the new
+edges too: `parse_script_request` reads only a message beginning with
+`/script` (one fenced Python block), `propose_script` compiles and returns a
+consent payload but never writes or runs, `script_evidence` gives the chat lane
+a `kind=script` row in the same vocabulary as `web_sources`, and `ScriptRefused`
+carries a machine-readable `reason` (`disabled`, `no_consent`, `sha_missing`,
+`sha_invalid`, `sha_mismatch`, `empty`, `too_large`, `root`, `syntax`, `write`,
+`cancel`) so no face matches prose. The GUI shows the source and sha256, and
+approval posts kind `script` to `/api/runs`; `script_start` / `script_end`
+become first-class steps and the receipt becomes the message body. MCP exposes
+the same call as `script_run` on the mutation lane. `osal.run_tree` gained an
+optional `cancel_check` (default unchanged), so Stop kills the process tree and
+the receipt says `cancelled` (exit 125).
+
+**Planned before implementing.** The plan was scored through the same Jev
+sufficiency pack used for SCR-1: `answer_sufficient` **0.87** (bar 0.70),
+`iteration_required` false, `plan_required` true, deterministic on repeat. Two
+earlier drafts scored 0.41/0.43 because they exceeded the candidate budget
+(>7,000 characters): the judge again saw a truncated document, which is the
+same defect SCR-1 fixed on the input side and a reminder that a plan must fit
+the reader it is judged by.
+
 ### Web evidence ladder — 2026-10-23 (#355)
 
 Operator repro: `audit www.freeoffgridcalculator.com for user friendliness and

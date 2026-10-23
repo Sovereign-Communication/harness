@@ -9,6 +9,7 @@ run the current interpreter for the process-level properties.
 """
 import os
 import sys
+import threading
 import time
 import unittest
 from unittest import mock
@@ -93,6 +94,25 @@ class RunTreeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 124)
         self.assertIn("timed out", result.stdout)
         self.assertLess(elapsed, 15, "run_tree must return near its timeout")
+
+    def test_a_cancel_check_kills_the_tree_and_returns_125(self):
+        flag = {"stop": False}
+        timer = threading.Timer(0.25, lambda: flag.update(stop=True))
+        timer.start()
+        self.addCleanup(timer.cancel)
+        started = time.monotonic()
+        result = osal.run_tree(
+            [osal.python_exe(), "-c", "import time; time.sleep(20)"],
+            timeout=30, cancel_check=lambda: flag["stop"])
+        self.assertEqual(result.returncode, 125)
+        self.assertIn("cancelled", result.stdout)
+        self.assertLess(time.monotonic() - started, 10,
+                        "a cancelled wait must not run to the timeout")
+
+    def test_without_a_cancel_check_the_call_still_blocks_and_returns(self):
+        result = osal.run_tree([osal.python_exe(), "-c", "print(5)"])
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.strip(), "5")
 
     def test_exit_codes_output_cwd_and_env(self):
         here = os.path.realpath(os.path.dirname(os.path.abspath(__file__)))

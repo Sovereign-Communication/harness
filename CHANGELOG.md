@@ -11,6 +11,20 @@ break APIs between minor versions).
 
 ### Added
 
+- **Governed scripting reaches the chat box and MCP (`SCR-2`, #357).** `harness/script.py`
+  stays the one execution owner; the new faces are thin. A chat message that starts with
+  `/script` is parsed and *proposed* — the source is compiled, shown with its sha256 in a
+  consent card, and nothing is written or executed until the operator approves those exact
+  bytes; the proposal makes no provider call. Approval posts kind `script` to `/api/runs`,
+  and `script_start`/`script_end` land as steps with a receipt (exit code, duration, stdout,
+  stderr, sha, Jev alignment) in the same message, stored with the turn as `kind=script`
+  evidence in the same vocabulary as web sources. MCP clients list and call `script_run`
+  over stdio; disabled, no-consent, missing-sha and sha-mismatch calls refuse with
+  `errorKind: "script_refused"` (a mismatch is hostile trust evidence). `osal.run_tree`
+  gained an optional `cancel_check`, so Stop kills a script's process tree (exit 125) the way
+  it stops a provider call. `tests/test_script_faces.py` covers the trigger, refusals, MCP
+  loop and dispatch; the plan was scored through the Jev pack at `answer_sufficient` 0.87
+  against the 0.70 bar before implementation.
 - **Governed scripting (`harness script`, `harness/script.py`).** An agent lane can now
   author and run one Python script for the current request — scrape a page, parse a file,
   drive Playwright, compute a result — instead of needing a new tool per task (the shape

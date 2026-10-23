@@ -72,14 +72,24 @@ reviewed by Jev. It accepts a natural-language request and runs the shared
 simple-action lifecycle; it does not escalate to the general model router.
 Results include machine-readable structured content and an `isError` flag for
 tool failures.
+
+`script_run` is the MCP face of the one governed execution owner
+(`harness/script.py`), not a second runner. It requires `source`, an allowed
+`root`, `allow_exec=true` and `consent_sha` equal to `sha256(source)`; a wrong
+sha is a hostile trust-gate refusal (`script_refused`, reason `sha_mismatch`),
+and disabled/absent-consent calls are soft refusals. Scripting is off unless
+the server starts with `HARNESS_SCRIPT_ENABLED=1`. The receipt is the same
+shape the CLI and the GUI show: status, exit code, stdout/stderr, sha, duration
+and optional Jev alignment. The process tree is killed on timeout or
+cancellation (exit code 125).
 Response frames correlate by request id, never by position: lanes run
 concurrently, so a later request may answer first.
 
 ## Scheduling: lanes and deadlines
 
-Tools run on three serial lanes -- `mutation` (`apply_edit`), `spendy`
-(`panel_verify`, `offer_work`), and `observe` (everything else, including
-unknown tool names before they fail validation). Each lane stays serial,
+Tools run on three serial lanes -- `mutation` (`apply_edit`, `script_run`),
+`spendy` (`panel_verify`, `offer_work`), and `observe` (everything else,
+including unknown tool names before they fail validation). Each lane stays serial,
 so a long apply or panel never head-of-line-blocks status queries, and
 the engine is still driven from exactly one lane.
 

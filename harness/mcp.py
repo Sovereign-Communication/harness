@@ -16,6 +16,7 @@ from pathlib import Path
 
 from . import __version__
 from . import events as _events
+from . import script as _script
 from . import trust as trust_policy
 from .agent import AutonomousAgent
 from .request_intent import is_site_check_prompt
@@ -544,19 +545,23 @@ class McpServer:
         return TOOL_SCHEMAS
 
     def _refuse(self, reason, message, task_id=None, model=None,
-                severity="soft"):
+                severity="soft", script_reason=None):
         """Ledger a trust-boundary refusal (the evidence loop) and raise it.
 
         Every safety denial is itself trust evidence: a host that keeps
         pushing refused writes/execs accrues negative host trust, so the
         gates tighten the more they are probed. First-use friction
         (missing allow-flags) is soft; escape attempts are hostile.
+        ``script_reason`` keeps the scripting face typed: the raised error is
+        a ``ScriptRefused`` with that reason, not a bare HarnessError.
         """
         try:
             self.ledger.append("trust_gate", task_id=task_id, model=model,
                                reason=reason, severity=severity)
         except Exception:
             pass
+        if script_reason is not None:
+            raise _script.ScriptRefused(script_reason, message)
         raise HarnessError(message)
 
     def _invoke(self, name, args, cancel_check=None):
@@ -813,6 +818,86 @@ class McpServer:
                 options=BatchOptions(
                     instruction=instruction, verify_cmd=effective_verify_cmd,
                     max_rounds=max_rounds, continuation=continuation))
+
+        if name == "script_run":
+            source = args.get("source")
+            if not isinstance(source, str) or not source.strip():
+                raise HarnessError(
+                    "script_run requires 'source' (the Python text to run)")
+            if len(source) > _script.MAX_SOURCE_CHARS:
+                raise HarnessError(
+                    f"script_run source is larger than "
+                    f"{_script.MAX_SOURCE_CHARS} characters")
+            goal = str(args.get("goal") or "")[:2000]
+            allow_exec = validate_mcp_bool(
+                args.get("allow_exec", False), "allow_exec")
+            raw_sha = args.get("consent_sha")
+            consent_sha = (str(raw_sha).strip().lower()
+                           if isinstance(raw_sha, str) and raw_sha.strip()
+                           else None)
+            timeout_s = args.get("timeout_s")
+            if timeout_s is not None:
+                timeout_s = bounded_int(timeout_s, "timeout_s", 1,
+                                        _script.MAX_TIMEOUT_S)
+            score = validate_mcp_bool(args.get("score", True), "score")
+            task_id_arg = (validate_mcp_task_id(args.get("task_id"))
+                           if args.get("task_id") is not None else None)
+            policy = _script.resolve_script_policy(
+                getattr(self, "settings", None))
+            if not policy.enabled:
+                self._refuse(
+                    "mcp script without scripting enabled",
+                    "script_run is disabled on this server; start it with "
+                    "HARNESS_SCRIPT_ENABLED=1 to allow governed execution",
+                    task_id=task_id_arg, script_reason="disabled")
+            if not allow_exec:
+                self._refuse(
+                    "mcp script without consent",
+                    "script_run requires allow_exec=true (explicit consent to "
+                    "execute this source)",
+                    task_id=task_id_arg, script_reason="no_consent")
+            if not consent_sha:
+                self._refuse(
+                    "mcp script without consent sha",
+                    "script_run requires consent_sha: the sha256 of the exact "
+                    "source the operator approved",
+                    task_id=task_id_arg, script_reason="sha_missing")
+            if not self.allowed_roots:
+                self._refuse(
+                    "mcp script with no allowed roots configured",
+                    "script_run requires at least one configured allowed root",
+                    task_id=task_id_arg, script_reason="root")
+            try:
+                root = self._workspace_for(args.get("root"))
+            except HarnessError as exc:
+                self._refuse(
+                    "mcp script root outside allowed roots", str(exc),
+                    task_id=task_id_arg, severity="hostile",
+                    script_reason="root")
+            jev = None
+            settings = getattr(self, "settings", None)
+            if score and settings is not None:
+                jev = policy_for(settings, transport=self.transport,
+                                 governor=self.governor, ledger=self.ledger)
+            try:
+                return _script.run_script(
+                    source, root=root, goal=goal, allow_exec=True,
+                    consent_sha=consent_sha, timeout_s=timeout_s,
+                    policy=policy, cancel_check=cancel_check,
+                    jev_policy=jev, task_id=task_id_arg)
+            except _script.ScriptRefused as exc:
+                if exc.reason == "sha_mismatch":
+                    # An approval for other bytes is an attempt to run code
+                    # nobody approved: ledger it as hostile, keep the typed
+                    # refusal so the client sees script_refused.
+                    try:
+                        self.ledger.append(
+                            "trust_gate", task_id=task_id_arg,
+                            reason="mcp script consent sha mismatch",
+                            severity="hostile")
+                    except Exception:
+                        pass
+                raise
 
         if name == "offer_work":
             task = validate_mcp_task(args.get("task"))

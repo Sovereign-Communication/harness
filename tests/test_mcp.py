@@ -1234,6 +1234,7 @@ class LaneSchedulingTests(unittest.TestCase):
             {"apply_edit": "mutation",
              "plan_and_execute": "mutation",
              "continue_work": "mutation",
+             "script_run": "mutation",
              "jev_freeze": "mutation",
              "dogfood": "mutation",
              "ask": "spendy",

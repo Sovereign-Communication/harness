@@ -64,7 +64,17 @@ is unchanged and still no sandbox.
   gets its own process group with a hard wall-clock bound that kills the tree,
   and has stdout/stderr capped. Jev scores the script against the requested
   goal, but that score is evidence, not the boundary: a low score marks the run
-  `revise` while a consented run proceeds. **Known limit:** this is not an OS
+  `revise` while a consented run proceeds.  **Reach.** The same owner is now callable from the GUI chat box (`/script`),
+  the `POST /api/runs` kind `script` route and the MCP `script_run` tool. The
+  chat message only *proposes*: the card shows the exact source and sha256, and
+  nothing is written or executed until the operator approves those bytes — and
+  the runner re-checks the sha, so an edited script needs a new approval. A
+  proposal never calls a model. The UI route sits behind the same loopback and
+  `X-Harness-Auth` guard as every other `/api` route; MCP inherits the launching
+  user's authority as it already did for writes and verify gates, and `root`
+  must be one of the configured allowed roots. Stop cancels a running script by
+  killing its process tree (receipt status `cancelled`, exit code 125).
+  **Known limit:** this is not an OS
   sandbox. `allow_network` is recorded and exported to the script as
   `HARNESS_SCRIPT_NETWORK`; the runner cannot block a socket, and the script can
   read whatever the Harness user can read. Run it only in a workspace you would

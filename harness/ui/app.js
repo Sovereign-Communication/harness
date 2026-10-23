@@ -1019,6 +1019,26 @@ function handleLiveEvent(ev, agentMsg) {
     label = ev.phase === "start" ? `Fetching allowlisted page: ${ev.url || ""}` : `Retrieved ${ev.chars || 0} chars from primary source`;
     icon = "📖";
     activateModularAspect(agentMsg, "web_fetch", ev.phase === "start" ? "Fetch Source" : `Source (${ev.chars || 0} chars)`, "📖");
+  } else if (ev.type === "script_proposed") {
+    const sha = String(ev.sha256 || "").slice(0, 12);
+    label = `Script proposed (sha ${sha}…, ${ev.chars || 0} chars) — waiting for approval`;
+    icon = "🔐";
+    agentMsg.stepperTitleText.textContent = "Script ready for approval";
+    activateModularAspect(agentMsg, "script", "Script proposal", "🔐");
+  } else if (ev.type === "script_start") {
+    const sha = String(ev.sha256 || "").slice(0, 12);
+    label = `Running the approved script (sha ${sha}…, timeout ${ev.timeout_s || "?"}s)`;
+    icon = "⚙️";
+    active = true;
+    agentMsg.stepperTitleText.textContent = "Running the approved script...";
+    activateModularAspect(agentMsg, "script", "Script running", "⚙️");
+  } else if (ev.type === "script_end") {
+    const secs = Number(ev.duration_s || 0).toFixed(2);
+    const aligned = ev.aligned === true ? " — Jev aligned" : "";
+    label = `Script ${ev.status} (exit ${ev.exit_code}) in ${secs}s${aligned}`;
+    icon = ev.status === "ok" ? "✓" : ev.status === "cancelled" ? "⏹" : "▲";
+    agentMsg.stepperTitleText.textContent = "Script finished";
+    activateModularAspect(agentMsg, "script", `Script ${ev.status}`, icon);
   } else if (ev.type === "intent_classified") {
     label = `Classified intent: ${ev.intent || "general"}`;
     activateModularAspect(agentMsg, "intent", `Intent: ${ev.intent || "plan"}`, "🧠");
@@ -1186,6 +1206,24 @@ function renderFinalResult(runRecord, agentMsg) {
     return;
   }
 
+  // Governed script: a proposal is a consent card, a result is its receipt.
+  // Both live in this message so the run is a first-class step, not a detour.
+  if (res.kind === "script" && res.script) {
+    agentMsg.body.innerHTML = "";
+    if (res.status === "awaiting_consent") {
+      renderScriptProposal(agentMsg, res.script);
+    } else {
+      renderScriptReceipt(agentMsg, res.script);
+    }
+    agentMsg.footer.innerHTML = `
+      <span>Model: script-runner</span>
+      <span>Spend: ${fmtCost(res.cost ?? 0)}</span>
+    `;
+    agentMsg.footer.hidden = false;
+    scrollToBottom();
+    return;
+  }
+
   // Render Markdown Body
   agentMsg.body.innerHTML = renderSimpleMarkdown(responseText);
   // An honest deferral is an outcome, not an error: show the reason and the
@@ -1241,6 +1279,115 @@ function renderFinalResult(runRecord, agentMsg) {
   }
 
   scrollToBottom();
+}
+
+// Governed script surfaces (same owner as `harness script` / MCP script_run)
+function renderScriptProposal(agentMsg, proposal) {
+  const card = document.createElement("div");
+  card.className = "script-card";
+  const sha = String(proposal.sha256 || "");
+  const goal = String(proposal.goal || "").trim();
+  card.innerHTML = `
+    <div class="script-head">
+      <span class="script-state pending">approval required</span>
+      <strong>Run this script once?</strong>
+    </div>
+    <div class="script-meta">
+      ${goal ? `<div>goal: ${esc(goal)}</div>` : ""}
+      <div>sha256 <code>${esc(sha)}</code></div>
+      <div>${Number(proposal.chars || 0)} characters · root <code>${esc(proposal.root || "")}</code> · timeout ${Number(proposal.timeout_s || 0)}s</div>
+    </div>
+    <pre class="script-source">${esc(proposal.source || "")}</pre>
+    <div class="script-actions">
+      <button type="button" class="btn-consent approve" data-role="approve">Approve &amp; run</button>
+      <button type="button" class="btn-consent deny" data-role="cancel">Cancel</button>
+      <span class="muted small" data-role="status">Nothing runs until you approve the exact source above.</span>
+    </div>`;
+  agentMsg.body.appendChild(card);
+
+  const approve = card.querySelector('[data-role="approve"]');
+  const cancel = card.querySelector('[data-role="cancel"]');
+  const status = card.querySelector('[data-role="status"]');
+
+  approve.addEventListener("click", () => {
+    approve.disabled = true;
+    cancel.disabled = true;
+    status.textContent = "Approved — starting the governed run...";
+    status.style.color = "var(--fg)";
+    runApprovedScript(agentMsg, proposal);
+  });
+  cancel.addEventListener("click", () => {
+    approve.disabled = true;
+    cancel.disabled = true;
+    card.querySelector(".script-state").textContent = "cancelled";
+    card.querySelector(".script-state").className = "script-state";
+    status.textContent = "Cancelled — nothing was written or executed.";
+  });
+}
+
+async function runApprovedScript(agentMsg, proposal) {
+  const generation = ++runGeneration;
+  currentRunId = null;
+  eventSeq = 0;
+  activeAgentMessage = agentMsg;
+  setInFlight(true);
+  try {
+    const run = await api("/api/runs", {
+      method: "POST",
+      body: JSON.stringify({
+        kind: "script",
+        args: {
+          source: proposal.source,
+          goal: proposal.goal || "",
+          root_dir: proposal.root,
+          consent_sha: proposal.sha256,
+          allow_exec: true,
+          session_id: sessionId,
+          score: true,
+        },
+      }),
+    });
+    if (generation !== runGeneration || activeAgentMessage !== agentMsg) return;
+    currentRunId = run.id;
+    pollExecution(run.id, agentMsg, generation);
+  } catch (err) {
+    if (generation !== runGeneration || activeAgentMessage !== agentMsg) return;
+    agentMsg.body.innerHTML = `<p style="color:var(--red);">Could not start the script: ${esc(err.message)}</p>`;
+    activeAgentMessage = null;
+    setInFlight(false);
+  }
+}
+
+function renderScriptReceipt(agentMsg, receipt) {
+  const card = document.createElement("div");
+  card.className = "script-card";
+  const status = String(receipt.status || "failed");
+  const statusClass = status === "ok" ? "ok" : status === "failed" ? "bad" : "warn";
+  const align = receipt.alignment || {};
+  const pct = typeof align.sufficient === "number"
+    ? ` (${Math.round(align.sufficient * 100)}%)` : "";
+  const alignText = align.available
+    ? `Jev alignment: ${esc(align.verdict || "")}${pct}`
+    : (align.reason ? `Jev unavailable: ${esc(align.reason)}` : "");
+  const stdout = String(receipt.stdout || "");
+  const stderr = String(receipt.stderr || "");
+  card.innerHTML = `
+    <div class="script-head">
+      <span class="script-state ${statusClass}">${esc(status)}</span>
+      <strong>Script receipt</strong>
+      ${receipt.truncated ? `<span class="script-state warn">truncated</span>` : ""}
+      ${receipt.cancelled ? `<span class="script-state warn">cancelled</span>` : ""}
+    </div>
+    <div class="script-meta">
+      <div>sha256 <code>${esc(String(receipt.script_sha256 || ""))}</code></div>
+      <div>exit ${Number(receipt.exit_code)} · ${Number(receipt.duration_s || 0).toFixed(2)}s · timeout ${Number(receipt.timeout_s || 0)}s</div>
+      <div>root <code>${esc(String(receipt.root || ""))}</code></div>
+      ${alignText ? `<div>${alignText}</div>` : ""}
+    </div>
+    ${stdout.trim() ? `<pre class="script-output">${esc(stdout)}</pre>` : ""}
+    ${stderr.trim() ? `<pre class="script-output err">${esc(stderr)}</pre>` : ""}
+    ${!stdout.trim() && !stderr.trim() ? `<div class="script-meta">(no output)</div>` : ""}`;
+  agentMsg.body.appendChild(card);
 }
 
 // DOM Builders
@@ -1367,7 +1514,11 @@ async function loadHistory() {
         if (turn.prompt) appendUserMessage(turn.prompt);
         const card = createAgentMessageCard();
         card.stepper.hidden = true;
-        card.body.innerHTML = renderSimpleMarkdown(turn.response || "");
+        if (turn.kind === "script" && turn.script_state === "ran" && turn.script) {
+          renderScriptReceipt(card, turn.script);
+        } else {
+          card.body.innerHTML = renderSimpleMarkdown(turn.response || "");
+        }
         if (turn.diff) {
           const diffContainer = document.createElement("div");
           diffContainer.className = "diff-container";

@@ -295,6 +295,40 @@ TOOL_SCHEMAS = [
         }, "required": ["continuation"]},
     },
     {
+        "name": "script_run",
+        "title": "Run one Python script inside an allowed workspace",
+        "description": "The governed scripting surface (harness/script.py) over "
+                       "MCP: writes the source under <root>/.harness/scripts/, "
+                       "runs it with the product's interpreter and a scrubbed "
+                       "environment, kills the whole process tree on timeout or "
+                       "cancellation, and returns a receipt (exit code, stdout, "
+                       "stderr, sha, duration, optional Jev alignment). Consent "
+                       "is bound to the exact bytes: consent_sha must equal "
+                       "sha256(source) or the call is refused. Scripting must be "
+                       "enabled on the server (HARNESS_SCRIPT_ENABLED=1) and "
+                       "root must be one of the configured allowed roots.",
+        "inputSchema": {"type": "object", "properties": {
+            "source": {"type": "string",
+                       "description": "Python source to run (<=200,000 chars)"},
+            "root": {"type": "string",
+                     "description": "Workspace root; must be one of the allowed roots"},
+            "allow_exec": {"type": "boolean",
+                           "description": "Explicit consent to execute this source"},
+            "consent_sha": {"type": "string",
+                            "description": "sha256 of source; approval for different "
+                                           "bytes is refused"},
+            "goal": {"type": "string",
+                     "description": "What the script is for (<=2000 chars)"},
+            "timeout_s": {"type": "integer", "minimum": 1, "maximum": 120},
+            "score": {"type": "boolean",
+                      "description": "Ask Jev to score alignment with goal "
+                                     "(default: true)"},
+            "task_id": {"type": "string"},
+        }, "required": ["source", "root", "allow_exec", "consent_sha"]},
+        "annotations": {"readOnlyHint": False, "destructiveHint": True,
+                        "openWorldHint": True},
+    },
+    {
         "name": "log_judgment",
         "title": "Single-pass log-factor analysis against a frozen operator pack",
         "description": "JEV-LOG: code extracts log items ($0), the ONE Jev policy "
