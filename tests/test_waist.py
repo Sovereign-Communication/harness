@@ -21,7 +21,8 @@ from harness.sliding_scale import resolve_frontier_model
 from harness.spend import SpendGovernor
 from harness.capability import source_budget_for
 from harness.validation import MAX_INSTRUCTION_CHARS
-from harness.waist import (chunk_oversized_nodes, compose_plan, confirm_plan,
+from harness.waist import (chunk_oversized_nodes, compose_plan,
+                           composed_worst_case, confirm_plan,
                            node_apply_kwargs, plan_task_id, read_window,
                            resolve_waist_ladder)
 
@@ -418,6 +419,30 @@ class ChunkOversizedNodesTests(unittest.TestCase):
                           for n in fitted.nodes.values())
         self.assertEqual(" ".join(bodies.split()), " ".join(text.split()))
 
+    def test_split_dependent_waits_for_split_prerequisite(self):
+        long_instruction = "Inspect each relevant module and preserve its contracts. " * 60
+        dag = TaskDAG(nodes={
+            "task_1": DAGNode(
+                node_id="task_1", instruction=long_instruction,
+                target_files=("first.py",)),
+            "task_11": DAGNode(
+                node_id="task_11", instruction=long_instruction,
+                target_files=("second.py",), dependencies=("task_1",)),
+        })
+
+        fitted = chunk_oversized_nodes(dag)
+        prerequisite_chunks = [
+            node_id for node_id in fitted.nodes if node_id.startswith("task_1.")
+        ]
+        dependent_first = fitted.nodes["task_11.1"]
+
+        self.assertEqual(dependent_first.dependencies,
+                         (prerequisite_chunks[-1],))
+        self.assertNotIn("task_1", fitted.nodes)
+        self.assertEqual(len(fitted.topological_batches()), len(prerequisite_chunks)
+                         + len([node_id for node_id in fitted.nodes
+                                if node_id.startswith("task_11.")]))
+
     def test_normal_instruction_is_unchanged(self):
         dag = TaskDAG(nodes={"task_1": DAGNode(
             node_id="task_1", instruction="Add a docstring to tokens.py",
@@ -515,6 +540,28 @@ class ChunkOversizedNodesTests(unittest.TestCase):
 
 
 class ComposePlanTests(_WaistFixture):
+    def test_composed_ceiling_reports_the_active_request_cap(self):
+        with self.gov.task_scope(0.005, label="plan_and_execute"):
+            envelope = composed_worst_case(
+                {"total_cost_ceiling": 0.001}, governor=self.gov,
+                task_max_cost=0.005)
+
+        self.assertEqual(envelope["plan_ceiling"], 0.005)
+        self.assertEqual(envelope["remaining"], 0.005)
+
+    def test_blank_goal_is_rejected_before_jev_fanout(self):
+        from types import SimpleNamespace
+        from harness.jev_policy import JevPolicy
+
+        policy = JevPolicy(SimpleNamespace(jev_disabled=True))
+        with patch.object(policy, "fan_out",
+                          side_effect=AssertionError("Jev ran before validation")) as fan_out:
+            with self.assertRaisesRegex(HarnessError, "goal cannot be empty"):
+                compose_plan(
+                    transport=None, api_key="k", governor=self.gov,
+                    ledger=self.ledger, opts_goal="  \t\n", jev_policy=policy)
+        fan_out.assert_not_called()
+
     def test_waist_gate_resolves_its_own_frontier_rung(self):
         """Two truths the default-ON hourglass depends on: (1) an unset
         --frontier-model resolves through the same owner the Router binds
@@ -567,10 +614,34 @@ class ComposePlanTests(_WaistFixture):
         plan = compose_plan(transport=None, api_key="k", governor=self.gov,
                             ledger=self.ledger, opts_goal="Split the work",
                             decompose_llm=True, execute=False, confirm=True,
-                            chat_fn=broken, allow_heuristic_preview=True)
+                            chat_fn=broken, allow_heuristic_preview=True,
+                            plan_consensus=True)
         self.assertEqual(plan["decomposition"], "heuristic")
         self.assertEqual(plan["status"], "planned")
+        self.assertTrue(plan["preview_only"])
+        self.assertTrue(plan["degraded"])
+        self.assertEqual(plan["degrade_reason"], "decomposition_unavailable")
         self.assertEqual(plan["confirmation"]["verdict"], "skipped")
+        self.assertTrue(plan["consensus"]["skipped"])
+
+    def test_explicit_heuristic_preview_cannot_be_jev_confirmed(self):
+        with patch("harness.waist.confirm_plan") as confirm, \
+                patch("harness.waist.plan_consensus_check") as consensus:
+            plan = compose_plan(
+                transport=None, api_key="k", governor=self.gov,
+                ledger=self.ledger, opts_goal="Split the work",
+                decompose_llm=False, execute=False, confirm=True,
+                plan_consensus=True)
+
+        self.assertEqual(plan["status"], "planned")
+        self.assertEqual(plan["decomposition"], "heuristic")
+        self.assertTrue(plan["preview_only"])
+        self.assertTrue(plan["degraded"])
+        self.assertEqual(plan["degrade_reason"], "heuristic_decomposition_selected")
+        self.assertEqual(plan["confirmation"]["verdict"], "skipped")
+        self.assertTrue(plan["consensus"]["skipped"])
+        confirm.assert_not_called()
+        consensus.assert_not_called()
 
     def test_execute_falls_back_to_heuristic_with_note(self):
         def broken(prompt):
@@ -713,11 +784,20 @@ class ComposePlanTests(_WaistFixture):
         def broken(transport, api_key, governor, model, prompt, tokens, label=None):
             raise HarnessError("HTTP 429: Provider returned error")
 
+        def decomposed(prompt):
+            return json.dumps({
+                "nodes": [{
+                    "node_id": "n1", "instruction": "Inspect the plan",
+                    "target_files": [], "dependencies": [],
+                }]
+            }), 0.0
+
         with patch("harness.waist.governed_text", side_effect=broken):
             with self.assertRaises(HarnessError) as ctx:
                 compose_plan(
                     transport=None, api_key="k", governor=self.gov, ledger=None,
                     opts_goal="Split the work", candidate_files=["harness/sync.py"],
+                    decompose_llm=True, chat_fn=decomposed,
                     confirm=True, execute=False)
         self.assertIn("waist confirmation could not run on", str(ctx.exception))
         self.assertIn("plan NOT executed", str(ctx.exception))

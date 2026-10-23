@@ -563,9 +563,9 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
                        return_value=(200, self._mock_resp())) as m, \
                  patch("harness.conversation_lifecycle.governor_for",
                        return_value=(None, MagicMock())):
-                res = agent.run_prompt(
+                res = agent._handle_conversation(
                     "https://www.anthropic.com/research/riemann-zeta",
-                    session_id="w2", web=True)
+                    "w2", web=True)
                 sysmsg = m.call_args[1]["messages"][0]["content"]
         self.assertEqual(res["status"], "ok")
         self.assertIn("SOURCE (fetch) FAILED", sysmsg)
@@ -616,7 +616,8 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
             with patch("harness.web.search_web", return_value=fake_results) as ms, \
                  patch("harness.conversation_lifecycle.chat", return_value=(200, self._mock_resp())) as mc, \
                  patch("harness.conversation_lifecycle.governor_for", return_value=(None, MagicMock())):
-                res = agent.run_prompt("search for the riemann bound", session_id="w2", web=True)
+                res = agent._handle_conversation(
+                    "search for the riemann bound", "w2", web=True)
                 ms.assert_called_once()
                 sysmsg = mc.call_args[1]["messages"][0]["content"]
                 self.assertIn("Web tool results for this turn", sysmsg)
@@ -631,7 +632,8 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
             with patch("harness.web.fetch_url", return_value=page) as mf, \
                  patch("harness.conversation_lifecycle.chat", return_value=(200, self._mock_resp())) as mc, \
                  patch("harness.conversation_lifecycle.governor_for", return_value=(None, MagicMock())):
-                agent.run_prompt("https://www.anthropic.com/r", session_id="w3", web=True)
+                agent._handle_conversation(
+                    "https://www.anthropic.com/r", "w3", web=True)
                 mf.assert_called_once()
                 sysmsg = mc.call_args[1]["messages"][0]["content"]
         self.assertIn("page body", sysmsg)
@@ -643,7 +645,7 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
             with patch("harness.web.search_web", side_effect=_HE("web search failed: down")), \
                  patch("harness.conversation_lifecycle.chat", return_value=(200, self._mock_resp())) as mc, \
                  patch("harness.conversation_lifecycle.governor_for", return_value=(None, MagicMock())):
-                res = agent.run_prompt("search the web", session_id="w4", web=True)
+                res = agent._handle_conversation("search the web", "w4", web=True)
                 sysmsg = mc.call_args[1]["messages"][0]["content"]
                 self.assertIn("FAILED", sysmsg)
                 self.assertIn("web search failed: down", sysmsg)
@@ -655,7 +657,7 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
             with patch("harness.web.search_web", side_effect=RuntimeError("boom")), \
                  patch("harness.conversation_lifecycle.chat", return_value=(200, self._mock_resp())) as mc, \
                  patch("harness.conversation_lifecycle.governor_for", return_value=(None, MagicMock())):
-                res = agent.run_prompt("search the web", session_id="w5", web=True)
+                res = agent._handle_conversation("search the web", "w5", web=True)
         self.assertEqual(res["status"], "ok")
         self.assertIn("web tools error", mc.call_args[1]["messages"][0]["content"])
 
@@ -675,8 +677,8 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
                                       "title": "X", "snippet": "s"}]), \
                  patch("harness.conversation_lifecycle.chat", return_value=(200, self._mock_resp())) as mc, \
                  patch("harness.conversation_lifecycle.governor_for", return_value=(None, MagicMock())):
-                res = agent.run_prompt("https://www.anthropic.com/x",
-                                       session_id="w6", web=True)
+                res = agent._handle_conversation(
+                    "https://www.anthropic.com/x", "w6", web=True)
                 sysmsg = mc.call_args[1]["messages"][0]["content"]
         self.assertIn("FAILED", sysmsg)
         self.assertIn("web fetch refused", sysmsg)
@@ -684,21 +686,19 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
         self.assertTrue(res["web_used"])
 
     def test_cancel_during_web_gather_raises(self):
-        # Cancellation observed at the web-gather checkpoint specifically:
-        # the flag flips False -> True after the outer (force_conversation)
-        # checkpoint has already passed, so only the in-web branch fires.
-        calls = {"n": 0}
-
-        def flip_late():
-            calls["n"] += 1
-            return calls["n"] > 1
-
+        # Exercise the conversation lane's web checkpoint directly. The
+        # request-router checkpoint is covered by its own route tests.
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(Path(tmp))
-            with patch("harness.conversation_lifecycle.governor_for", return_value=(None, MagicMock())):
+            with patch("harness.conversation_lifecycle.governor_for",
+                       return_value=(None, MagicMock())), \
+                 patch.object(agent, "_gather_web_context",
+                              side_effect=AssertionError("cancel before fetch")) as gather:
                 with self.assertRaises(ToolCancelled):
-                    agent.run_prompt("search stuff", session_id="w7", web=True,
-                                     cancel_check=flip_late)
+                    agent._handle_conversation(
+                        "search stuff", "w7", cancel_check=lambda: True,
+                        web=True)
+            gather.assert_not_called()
 
 
 class TestChatLadderRotation(unittest.TestCase):
@@ -965,8 +965,8 @@ class TestChatDeferral(unittest.TestCase):
                        return_value={"url": "https://www.anthropic.com/rz",
                                      "title": "Riemann",
                                      "text": "the bound moved to 67.2%"}):
-                res = agent.run_prompt("verify the claim", session_id="d5",
-                                       web=True, force_conversation=True)
+                res = agent._handle_conversation(
+                    "verify the claim", "d5", web=True)
         self.assertEqual(res["status"], "ok")
         fake_ledger.append.assert_not_called()
 

@@ -162,6 +162,58 @@ class LiteralGreetingFastPathTests(unittest.TestCase):
 
 
 class FallbackChatContinuationTests(unittest.TestCase):
+    def test_fallback_chat_does_not_search_from_a_web_hint_without_jev(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(
+                settings=_lane_settings(), history_dir=Path(tmp))
+            response = {"choices": [{"message": {"content": "I cannot verify that."}}],
+                        "usage": {"cost": 0.0}}
+            with patch("harness.web.search_web",
+                       side_effect=AssertionError("Jev did not approve search")) as search, \
+                 patch("harness.conversation_lifecycle.chat",
+                       return_value=(200, response)) as chat, \
+                 patch("harness.conversation_lifecycle.governor_for",
+                       return_value=(None, MagicMock())), \
+                 patch("harness.conversation_lifecycle.ledger_for",
+                       return_value=MagicMock()):
+                result = agent.run_prompt(
+                    "Search for the latest solar inverter update",
+                    session_id="no-jev-web", force_conversation=True, web=True)
+
+            search.assert_not_called()
+            self.assertFalse(result.get("web_used", False))
+            self.assertIn("NO web tools", chat.call_args.kwargs["messages"][0]["content"])
+            state = agent.lifecycle.load("no-jev-web")
+            self.assertFalse(state["data"].get("web_requested"))
+
+    def test_fallback_resume_ignores_legacy_web_requested_checkpoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(
+                settings=_lane_settings(), history_dir=Path(tmp))
+            response = {"choices": [{"message": {"content": "I cannot verify that."}}],
+                        "usage": {"cost": 0.0}}
+            state = agent.lifecycle.begin(
+                "chat", "legacy-web",
+                "Search for the latest solar inverter update",
+                stage="answer",
+                data={"route": "conversation", "web_requested": True})
+            with patch("harness.web.search_web",
+                       side_effect=AssertionError("legacy checkpoint cannot approve search")) as search, \
+                 patch("harness.conversation_lifecycle.chat",
+                       return_value=(200, response)), \
+                 patch("harness.conversation_lifecycle.governor_for",
+                       return_value=(None, MagicMock())), \
+                 patch("harness.conversation_lifecycle.ledger_for",
+                       return_value=MagicMock()):
+                result = agent._run_fallback_conversation(
+                    "Search for the latest solar inverter update",
+                    "legacy-web", web=True, lifecycle_state=state)
+
+            search.assert_not_called()
+            self.assertFalse(result.get("web_used", False))
+            state = agent.lifecycle.load("legacy-web")
+            self.assertFalse(state["data"].get("web_requested"))
+
     def test_cancelled_no_jev_chat_resumes_from_shared_lifecycle(self):
         with tempfile.TemporaryDirectory() as tmp:
             history_dir = Path(tmp)

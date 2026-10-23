@@ -10,7 +10,6 @@ from typing import Any, Dict, List, Optional
 
 from .chat_policy import (
     DEFAULT_CHAT_SYSTEM_PROMPT, DEFAULT_RUN_WALL_SECONDS, TRUNCATION_NOTICE,
-    is_research_question,
     _DEFAULT_HOURGLASS_CONFIDENCE,
     _MAX_HOURGLASS_ANSWER_ROUNDS,
     _MAX_HOURGLASS_CONTEXT_CHARS,
@@ -55,13 +54,20 @@ from .repo_scope import (
 from .session import governor_for, ledger_for
 from .simple_request import (
     is_comprehensive_workspace_inspection_request,
-    is_current_information_request,
     is_workspace_inspection_request,
     relevant_history as simple_relevant_history,
 )
 from .token_budget import resolve_lane_max_tokens as _resolve_lane_max_tokens
 from .web import resolve_fetch_allowlist
 from .workspace import resolve_workspace_path
+
+
+def _jev_approved_web_route(route_preflight):
+    """Web retrieval requires a native Jev route choice for this request."""
+    if (not isinstance(route_preflight, dict)
+            or route_preflight.get("native") is not True):
+        return False
+    return route_preflight.get("choice") in {"web-research", "web_research"}
 
 
 class HourglassLifecycleMixin:
@@ -442,10 +448,9 @@ class HourglassLifecycleMixin:
             })
             return result
 
-        # Current-data requests earn web retrieval; workspace references are
-        # handled from the selected local tree and never become web searches.
-        web = (bool(web) or is_research_question(prompt)
-               or is_current_information_request(prompt))
+        # The caller's web hint must never start retrieval before the request's
+        # native Jev workflow judgment is available.
+        web = False
         wall_budget = (DEFAULT_RUN_WALL_SECONDS if max_wall_seconds is None
                        else float(max_wall_seconds))
         deadline = time.monotonic() + max(0.0, wall_budget)
@@ -457,7 +462,8 @@ class HourglassLifecycleMixin:
             checkpoint = {
                 "route": "hourglass", "status": "running", "stage": "route",
                 "prompt": prompt, "intent": intent,
-                "web_requested": web, "workspace_root": str(self.root_dir or ""),
+                "web_requested": False,
+                "workspace_root": str(self.root_dir or ""),
                 "workspace_context_used": False,
                 "known_cost": round(initial_cost, 8),
                 "unknown_liability": 0.0,
@@ -596,12 +602,8 @@ class HourglassLifecycleMixin:
             # Explicit local-workspace intent is stronger evidence than an
             # advisory Jev route: never send a repo audit to web search.
             web = False
-        elif (bool(route_preflight.get("native"))
-              and route_preflight.get("choice") == "web-research"):
-            web = True
-        elif (route_preflight.get("source") == "simple_strategy"
-              and route_preflight.get("choice") == "web_research"):
-            web = True
+        else:
+            web = _jev_approved_web_route(route_preflight)
         if (route_preflight.get("choice") in {
                 "workspace-inspection", "workspace_inspection"}
                 and self.root_dir is None):

@@ -4,7 +4,6 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, Optional
 
-from .chat_policy import is_research_question
 from .chat import governed_completion
 from .config import effective_lane_policy
 from .errors import HarnessError, ToolCancelled
@@ -16,7 +15,6 @@ from .session import governor_for, ledger_for
 from .simple_request import (
     answer_clock as simple_clock_answer,
     answer_prompt as simple_answer_prompt,
-    is_current_information_request,
     is_simple_answer_request,
     relevant_history as simple_relevant_history,
     resolve_answer_retry as resolve_simple_answer_retry,
@@ -211,10 +209,7 @@ class SimpleAnswerLifecycleMixin:
                     if (strategy == "workspace_inspection"
                             and self.root_dir is None):
                         return self._workspace_context_deferred(prompt, sid)
-                    needs_web = bool(
-                        strategy in {"needs_tool", "web_research"}
-                        or is_research_question(prompt)
-                        or is_current_information_request(prompt))
+                    needs_web = strategy == "web_research"
                     if self._live_jev_available():
                         return self.run_hourglass_request(
                             prompt, session_id=sid, cancel_check=cancel_check,
@@ -229,7 +224,9 @@ class SimpleAnswerLifecycleMixin:
                             token_budget=token_budget)
                     return self._handle_conversation(
                         prompt, sid, cancel_check,
-                        web=needs_web,
+                        # A stored strategy cannot authorize retrieval when
+                        # the live Jev gate is no longer available.
+                        web=False,
                         max_tokens=max_tokens, reasoning_effort=reasoning_effort,
                         token_budget=token_budget)
                 reason = "request needs clarification"

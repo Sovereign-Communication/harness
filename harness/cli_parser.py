@@ -251,9 +251,9 @@ def build_parser():
                          "to degrade to heuristic decomposition when LLM "
                          "decomposition fails twice, instead of the fail-closed "
                          "default (a non-zero exit). The degraded preview is "
-                         "labeled decomposition='heuristic', prints a loud "
-                         "stderr note, and is never reported as confirmed "
-                         "(waist confirmation is skipped on the degraded path). "
+                         "labeled preview_only/degraded, prints a loud stderr "
+                         "note, and is never Jev-confirmed (plan consensus and "
+                         "waist confirmation are skipped on the degraded path). "
                          "--execute is unaffected: it always falls back to the "
                          "heuristic on decomposition failure, opt-in or not.")
     pp.add_argument("--stages", dest="stages", default=None,

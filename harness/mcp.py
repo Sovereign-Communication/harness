@@ -560,6 +560,25 @@ class McpServer:
         raise HarnessError(message)
 
     def _invoke(self, name, args, cancel_check=None):
+        if (name != "plan_and_execute" or not isinstance(args, dict)
+                or args.get("max_cost") is None):
+            return self._invoke_unscoped(name, args, cancel_check)
+        raw_max_cost = args["max_cost"]
+        if isinstance(raw_max_cost, bool) or not isinstance(
+                raw_max_cost, (int, float)):
+            raise HarnessError("max_cost must be a number")
+        max_cost = finite_number(raw_max_cost, "max_cost", 0.0,
+                                 HARD_MAX_COST)
+        if self.governor is None:
+            raise HarnessError(
+                "plan_and_execute max_cost requires a spend governor")
+        scoped_args = dict(args)
+        scoped_args["max_cost"] = max_cost
+        with self.governor.task_scope(
+                max_cost, label="plan_and_execute", allow_zero=True):
+            return self._invoke_unscoped(name, scoped_args, cancel_check)
+
+    def _invoke_unscoped(self, name, args, cancel_check=None):
         if name == "ask":
             prompt = validate_mcp_prompt(args.get("prompt"))
             settings = self.settings or load_settings()
@@ -1049,6 +1068,9 @@ class McpServer:
             decompose_llm = validate_mcp_bool(
                 args.get("decompose_llm", self.hourglass["decompose"]),
                 "decompose_llm")
+            allow_heuristic_preview = validate_mcp_bool(
+                args.get("allow_heuristic_preview", False),
+                "allow_heuristic_preview")
             confirm = validate_mcp_bool(
                 args.get("confirm", self.hourglass["confirm"]), "confirm")
             plan_consensus = validate_mcp_bool(
@@ -1136,7 +1158,10 @@ class McpServer:
                 root=str(root) if root else None,
                 allow_escalation=allow_escalation,
                 plan_consensus=plan_consensus,
-                jev_policy=jev_policy, **composition)
+                jev_policy=jev_policy,
+                max_cost=args.get("max_cost"),
+                allow_heuristic_preview=allow_heuristic_preview,
+                **composition)
             if plan_result.get("status") == "refused":
                 # Waist refusal / composed-ceiling / unreachable-waist is
                 # terminal evidence: the plan never executes.

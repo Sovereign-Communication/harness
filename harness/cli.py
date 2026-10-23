@@ -1207,6 +1207,8 @@ def _resolve_hourglass(opts, settings):
 
 def _cmd_plan(opts, settings):
     # Decompose a high-level goal into an executable TaskDAG and optionally execute
+    if not isinstance(getattr(opts, "goal", None), str) or not opts.goal.strip():
+        raise HarnessError("goal cannot be empty")
     candidate_files = getattr(opts, "file", None)
     frontier_model = getattr(opts, "frontier_model", None) or getattr(settings, "frontier_model", None)
     execute = getattr(opts, "execute", False)

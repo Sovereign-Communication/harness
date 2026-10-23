@@ -58,6 +58,10 @@ class ChatLifecycleMixin(
         lifecycle_state: Optional[LifecycleState] = None,
     ) -> Dict[str, Any]:
         """Run the no-Jev chat route under the same persisted lifecycle."""
+        # This route has no native Jev judgment, so a web flag cannot authorize
+        # retrieval here. Public request paths use the hourglass route when a
+        # native Jev web-research choice is available.
+        web = False
         state = lifecycle_state or self.lifecycle.begin(
             "chat",
             session_id,
@@ -65,6 +69,9 @@ class ChatLifecycleMixin(
             stage="answer",
             data={"route": "conversation", "web_requested": bool(web)},
         )
+        if state["data"].get("web_requested") is not False:
+            state["data"]["web_requested"] = False
+            self.lifecycle.save(state)
 
         def owned_state():
             current = self.lifecycle.load(session_id)

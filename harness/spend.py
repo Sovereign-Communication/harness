@@ -16,6 +16,7 @@ which delegates the formula here — no second governor.
 """
 import threading
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 import time
@@ -153,8 +154,10 @@ class SpendGovernor:
             raise HarnessError(
                 "terminal_reserve must not exceed max_cost")
         self._phase = PHASE_ATTEMPT
-        # Nested per-task scopes; the innermost one narrows _phase_ceiling.
-        self._task_scopes = []
+        # Task caps are request-local. Context propagation keeps a cap in the
+        # worker threads submitted for that request without leaking it into a
+        # concurrent MCP lane that shares this governor.
+        self._task_scopes = ContextVar("harness_spend_task_scopes", default=())
         self.spent = 0.0
         self.overruns = 0  # billed calls booked past the ceiling
         self._outstanding = 0.0
@@ -268,13 +271,15 @@ class SpendGovernor:
                 ceiling = float(self.max_cost)
             else:
                 ceiling = max(0.0, float(self.max_cost) - float(self.terminal_reserve))
-            scope = self._task_scopes[-1] if self._task_scopes else None
-            if scope is not None:
-                ceiling = min(ceiling, scope.baseline + scope.max_cost)
+            scopes = self._task_scopes.get()
+            if scopes:
+                ceiling = min(
+                    ceiling,
+                    *(scope.baseline + scope.max_cost for scope in scopes))
             return ceiling
 
     @contextmanager
-    def task_scope(self, task_max_cost, label="task"):
+    def task_scope(self, task_max_cost, label="task", *, allow_zero=False):
         """Bound this block of work to its own per-task ceiling.
 
         The dual-budget contract is "extend the one governor, not fork it", so
@@ -283,17 +288,16 @@ class SpendGovernor:
         chain all keep reading one truth, and the cap simply refuses earlier.
         """
         cap = finite_number(task_max_cost, "task_max_cost", 0.0)
-        if cap <= 0.0:
+        if cap == 0.0 and not allow_zero:
             raise HarnessError("task_max_cost must be greater than zero")
-        scope = _TaskScope(self, cap, label)
         with self._spend_lock:
-            self._task_scopes.append(scope)
+            scope = _TaskScope(self, cap, label, baseline=float(self.spent))
+        scopes = self._task_scopes.get()
+        token = self._task_scopes.set(scopes + (scope,))
         try:
             yield scope
         finally:
-            with self._spend_lock:
-                if scope in self._task_scopes:
-                    self._task_scopes.remove(scope)
+            self._task_scopes.reset(token)
 
     def snapshot(self):
         """Return the synchronized spend state for result envelopes.

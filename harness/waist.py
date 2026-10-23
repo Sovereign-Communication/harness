@@ -278,6 +278,25 @@ def chunk_oversized_nodes(
         chunked[node_id] = chunks
         replacements[node_id] = chunks[-1].node_id
 
+    # The first chunk inherits the original node's dependencies. If a
+    # prerequisite was also split, that original node no longer exists in
+    # the returned graph; make the first chunk wait for the prerequisite's
+    # final chunk just like every unsplit dependent does below.
+    for chunks in chunked.values():
+        first = chunks[0]
+        dependencies = tuple(replacements.get(dep, dep)
+                             for dep in first.dependencies)
+        if dependencies != first.dependencies:
+            chunks[0] = DAGNode(
+                node_id=first.node_id,
+                instruction=first.instruction,
+                target_files=first.target_files,
+                dependencies=dependencies,
+                local_gate=first.local_gate,
+                complexity_tier=first.complexity_tier,
+                backend=first.backend,
+            )
+
     if not chunked and not single_pass_hints:
         return dag
 
@@ -719,6 +738,7 @@ def composed_worst_case(
     use_free: bool = True,
     allow_escalation: bool = False,
     plan_consensus: bool = False,
+    task_max_cost: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Composed pyramid ceiling: decompose + consensus + waist + node sum.
 
@@ -789,6 +809,9 @@ def composed_worst_case(
     if governor is not None and getattr(governor, "max_cost", None) is not None:
         try:
             plan_ceiling = round(float(governor.max_cost), 6)
+            if task_max_cost is not None:
+                plan_ceiling = min(
+                    plan_ceiling, float(task_max_cost))
         except (TypeError, ValueError):
             plan_ceiling = None
     return {
@@ -1489,16 +1512,14 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
     * ``execute=True`` -- always fall back loudly to the heuristic
       (decomposition='heuristic'; an orchestration event + stderr note).
       The run spends anyway, so a loud fallback keeps it going.
-    * ``execute=False`` (plan-only preview) -- FAILS CLOSED by default: the
-      operator asked for LLM planning, and silently handing back the
-      heuristic plan would be dishonest (raises HarnessError, non-zero
-      exit). Passing ``allow_heuristic_preview=True`` (CLI:
-      ``--allow-heuristic-preview``) opts into the same loud heuristic
-      fallback as execute mode instead -- decomposition='heuristic', a
-      loud stderr note, and the waist confirmation step (``confirm``) is
-      skipped rather than confirming a plan the operator never got the
-      LLM decomposition they asked for: the envelope's ``confirmation``
-      is explicitly ``verdict: "skipped"``, never ``"approved"``.
+    * ``execute=False`` (plan-only preview) -- LLM decomposition still
+      fails closed by default. Passing ``allow_heuristic_preview=True``
+      (CLI: ``--allow-heuristic-preview``) opts into a loud heuristic
+      fallback. Every heuristic preview is marked ``preview_only`` and
+      ``degraded``; Jev plan consensus and waist confirmation are skipped.
+      A planning ``defer/no_evidence_cited`` also returns an advisory,
+      degraded preview, while execution remains refused until evidence is
+      available.
 
     Fail-closed rules (hourglass composition):
     * confirm=True and EVERY waist rung unreachable on execute -> REFUSE
@@ -1535,6 +1556,8 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
     it does not perform them, so a caller that actually produced the
     artifact is the one that can say the stage is done.
     """
+    if not isinstance(opts_goal, str) or not opts_goal.strip():
+        raise HarnessError("goal cannot be empty")
     if (decompose_llm or confirm or plan_consensus) and governor is None:
         raise HarnessError("LLM plan features require a governor")
 
@@ -1595,11 +1618,6 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
     decomposed = None
     decomposition = "heuristic"
     last_exc = None
-    # DF-HG-3b: set only when a plan-only preview degraded to the heuristic
-    # after an opted-in LLM decomposition failure -- the waist confirmation
-    # step is then skipped rather than confirming (and reporting as
-    # approved) a plan the operator never got the LLM decomposition for.
-    _degraded_preview_heuristic = False
     if decompose_llm:
         if chat_fn is None:
             if not decompose_model:
@@ -1678,8 +1696,6 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
             eprint(f"[plan] LLM decomposition failed ({last_exc}); loud heuristic fallback")
             decomposition = "heuristic"
             decomposed = None
-            if not execute:
-                _degraded_preview_heuristic = True
 
     plan_result = plan_task(
         goal=plan_goal, candidate_files=candidate_files,
@@ -1708,50 +1724,147 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
     if plan_issue_sort is not None:
         plan_result["issue_sort"] = plan_issue_sort
 
+    preview_ineligible_reason = None
+    if (not execute and plan_result.get("status") != "refused"
+            and decomposition == "heuristic"):
+        # Every heuristic plan-only result is advisory, whether heuristic
+        # decomposition was explicitly selected or followed an opted-in LLM
+        # failure. It is never a Jev-confirmed plan or an execution permit.
+        preview_ineligible_reason = "heuristic_decomposition"
+        plan_result["preview_only"] = True
+        plan_result["degraded"] = True
+        if not plan_result.get("degrade_reason"):
+            plan_result["degrade_reason"] = "heuristic_decomposition_selected"
+
+    # Resolve the evidence gate before Jev reviews the plan. A non-sufficient
+    # planning result already decides whether this run may proceed; calling
+    # consensus/confirmation first can spend on a plan that is then refused.
+    stage_composition = None
+    planning_payload = None
+    planning_ran = False
+    precomposed = None
+    early_ceiling_refusal = False
+    if (execute and governor is not None
+            and plan_result.get("status") != "refused"):
+        # Check the deterministic ceiling before a selected planning stage
+        # can spend its own allowance. Confirmation may amend the DAG, so a
+        # successful preview is still checked again against the final plan.
+        precomposed = composed_worst_case(
+            plan_result, governor=governor, decompose_llm=decompose_llm,
+            confirm=confirm, decompose_model=decompose_model,
+            frontier_model=frontier_model, use_free=use_free,
+            allow_escalation=allow_escalation,
+            plan_consensus=plan_consensus,
+            task_max_cost=max_cost)
+        if precomposed.get("exceeds_remaining"):
+            plan_result = _refuse_composed_ceiling(plan_result, precomposed)
+            preview_ineligible_reason = "composed_budget"
+            early_ceiling_refusal = True
+    if token_budget is not None:
+        stage_composition = compose_stages(
+            budget=token_budget, declared=stages,
+            supplied_brief=supplied_brief, supplied_plan=supplied_plan,
+            brief=brief, brief_tokens=brief_tokens, reader=reader)
+        planning_stage = next(
+            (entry for entry in stage_composition["stages"]
+             if entry["stage"] == STAGE_PLANNING), None)
+        if planning_stage is not None and plan_result.get("status") != "refused":
+            planning_payload = run_planning(
+                goal=opts_goal,
+                budget=token_budget,
+                stage_budget=planning_stage["budget"],
+                files=candidate_files or (), reader=reader, brief=brief,
+                jev_policy=jev_policy).to_dict()
+            planning_ran = True
+            kind = (planning_payload.get("kind")
+                    if isinstance(planning_payload, dict) else None)
+            if kind != OUTCOME_SUFFICIENT:
+                reason = None
+                if kind == OUTCOME_DEFER:
+                    reason = (planning_payload.get("reason")
+                              or "planning deferred execution")
+                elif kind == OUTCOME_EVIDENCE_REQUEST:
+                    reason = (planning_payload.get("reason")
+                              or "planning requires additional evidence")
+                elif kind == OUTCOME_PLAN:
+                    reason = (
+                        "planning produced a separate plan without an adapter "
+                        "to the composed execution DAG")
+                else:
+                    reason = "planning returned an unsupported outcome"
+
+                if (not execute and kind == OUTCOME_DEFER
+                        and reason == "no_evidence_cited"):
+                    # A preview can still show the proposed DAG without
+                    # evidence, but it must not look approved or executable.
+                    plan_result["status"] = "planned"
+                    plan_result["preview_only"] = True
+                    plan_result["degraded"] = True
+                    plan_result.setdefault("degrade_reason", "no_evidence_cited")
+                    preview_ineligible_reason = "no_evidence_cited"
+                else:
+                    plan_result["status"] = "refused"
+                    plan_result["confirmation"] = {
+                        "verdict": "refused",
+                        "model": "planning-outcome",
+                        "rounds": 0,
+                        "reason": reason,
+                        "cost": 0.0,
+                    }
+                    preview_ineligible_reason = "planning_outcome"
+
     # HG-plan-consensus: optional cheap soundness check BEFORE the waist.
     # It always uses its OWN governed call (or an injected consensus seam),
     # never the decompose chat_fn -- those are different contracts.
     consensus = None
     if plan_consensus and confirm:
-        consensus_model = decompose_model
-        if not consensus_model:
-            try:
-                consensus_model = resolve_scout_ladder(
-                    use_free=use_free, custom_frontier=frontier_model)[0]
-            except Exception:
-                consensus_model = frontier_model
-        try:
-            # chat_fn=None -> plan_consensus builds the governed_text call.
-            consensus = plan_consensus_check(
-                transport=transport, api_key=api_key, governor=governor,
-                ledger=ledger, plan_result=plan_result,
-                model=consensus_model, chat_fn=None)
-        except HarnessError as exc:
-            # Fail closed on unparseable consensus when the operator armed it.
-            if not execute:
-                raise
-            eprint(f"[plan] plan consensus failed ({exc}); continuing to waist")
-            consensus = {"sound": True, "reasons": [f"consensus_unavailable: {exc}"],
-                         "cost": 0.0, "model": consensus_model}
-        if consensus is not None:
+        if preview_ineligible_reason:
+            consensus = {
+                "skipped": True,
+                "reason": "preview is not eligible for Jev plan review",
+            }
             plan_result["consensus"] = consensus
+        else:
+            consensus_model = decompose_model
+            if not consensus_model:
+                try:
+                    consensus_model = resolve_scout_ladder(
+                        use_free=use_free, custom_frontier=frontier_model)[0]
+                except Exception:
+                    consensus_model = frontier_model
+            try:
+                # chat_fn=None -> plan_consensus builds the governed_text call.
+                consensus = plan_consensus_check(
+                    transport=transport, api_key=api_key, governor=governor,
+                    ledger=ledger, plan_result=plan_result,
+                    model=consensus_model, chat_fn=None)
+            except HarnessError as exc:
+                # Fail closed on unparseable consensus when the operator armed it.
+                if not execute:
+                    raise
+                eprint(f"[plan] plan consensus failed ({exc}); continuing to waist")
+                consensus = {"sound": True, "reasons": [f"consensus_unavailable: {exc}"],
+                             "cost": 0.0, "model": consensus_model}
+            if consensus is not None:
+                plan_result["consensus"] = consensus
 
-    if confirm and _degraded_preview_heuristic:
-        # DF-HG-3b: the operator opted into a heuristic-degraded preview,
-        # which never ran the LLM decomposition the waist would confirm.
-        # Report the skip explicitly -- never "approved" for a plan that
-        # was not actually reviewed against the requested decomposition.
+    if preview_ineligible_reason and plan_result.get("status") != "refused":
+        if preview_ineligible_reason == "no_evidence_cited":
+            reason = (
+                "no cited evidence is available; this is an advisory preview "
+                "and cannot be Jev-confirmed or executed")
+        else:
+            reason = (
+                "heuristic decomposition is advisory in preview mode and "
+                "cannot be Jev-confirmed or executed")
         plan_result["confirmation"] = {
             "verdict": "skipped",
             "model": None,
             "rounds": 0,
-            "reason": "plan-only preview degraded to heuristic decomposition "
-                      "via --allow-heuristic-preview; waist confirmation "
-                      "over an LLM decomposition never happened, so it is "
-                      "skipped rather than confirming an unreviewed plan.",
+            "reason": reason,
             "cost": 0.0,
         }
-    elif confirm:
+    elif confirm and plan_result.get("status") != "refused":
         ladder = resolve_waist_ladder(
             use_free=use_free, custom_frontier=frontier_model,
             allow_escalation=allow_escalation)
@@ -1933,17 +2046,21 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
 
     # HG-composed-ceiling: ALWAYS compute the pyramid envelope; refuse execute
     # when the composed worst case cannot fit the governor's remaining budget.
-    composed = composed_worst_case(
-        plan_result,
-        governor=governor,
-        decompose_llm=decompose_llm,
-        confirm=confirm,
-        decompose_model=decompose_model,
-        frontier_model=frontier_model,
-        use_free=use_free,
-        allow_escalation=allow_escalation,
-        plan_consensus=plan_consensus,
-    )
+    composed = (precomposed if early_ceiling_refusal and precomposed is not None
+                else composed_worst_case(
+                    plan_result,
+                    governor=governor,
+                    decompose_llm=decompose_llm,
+                    confirm=confirm,
+                    decompose_model=decompose_model,
+                    frontier_model=frontier_model,
+                    use_free=use_free,
+                    allow_escalation=allow_escalation,
+                    plan_consensus=plan_consensus,
+                    task_max_cost=max_cost,
+                ))
+    if max_cost is not None:
+        composed["task_max_cost"] = round(float(max_cost), 6)
     plan_result["composed_worst_case"] = composed
     if (execute and governor is not None
             and plan_result.get("status") != "refused"
@@ -1958,60 +2075,15 @@ def compose_plan(*, transport, api_key, governor, ledger, opts_goal,
         # HV-4: the composition decision is evidence, so it rides on the
         # envelope rather than living only in the caller's head. Attached
         # last, so it survives the degraded/refused envelope copies above.
-        composition = compose_stages(
-            budget=token_budget, declared=stages,
-            supplied_brief=supplied_brief, supplied_plan=supplied_plan,
-            brief=brief, brief_tokens=brief_tokens, reader=reader)
+        composition = stage_composition
         states = stage_states(composition)
-        planning_stage = next(
-            (entry for entry in composition["stages"]
-             if entry["stage"] == STAGE_PLANNING), None)
-        if planning_stage is not None and plan_result.get("status") != "refused":
-            # HV-5: composition selects and budgets the planning stage; the
-            # waist remains its sole production owner. Give it the composed
-            # child allowance and the same intake artifact/reader the lane
-            # used to make the composition decision.
-            planning = run_planning(
-                goal=opts_goal,
-                budget=token_budget,
-                stage_budget=planning_stage["budget"],
-                files=candidate_files or (), reader=reader, brief=brief,
-                jev_policy=jev_policy)
-            planning_payload = planning.to_dict()
+        if planning_ran:
             plan_result["planning"] = planning_payload
             if isinstance(planning_payload, dict) and planning_payload.get("jev_signals"):
                 if "stage_judgments" not in plan_result:
                     plan_result["stage_judgments"] = {}
                 plan_result["stage_judgments"]["planning"] = planning_payload["jev_signals"]
             states[STAGE_PLANNING] = STATE_COMPLETED
-            # Only sufficiency authorizes the already-composed outer DAG.
-            # A proposed planning DAG has no adapter into that outer plan,
-            # and an evidence request/defer explicitly says the available
-            # evidence cannot support execution. Fail closed while preserving
-            # the full typed result for the caller.
-            kind = (planning_payload.get("kind")
-                    if isinstance(planning_payload, dict) else None)
-            if kind != OUTCOME_SUFFICIENT:
-                if kind == OUTCOME_DEFER:
-                    reason = (planning_payload.get("reason")
-                              or "planning deferred execution")
-                elif kind == OUTCOME_EVIDENCE_REQUEST:
-                    reason = (planning_payload.get("reason")
-                              or "planning requires additional evidence")
-                elif kind == OUTCOME_PLAN:
-                    reason = (
-                        "planning produced a separate plan without an adapter "
-                        "to the composed execution DAG")
-                else:
-                    reason = "planning returned an unsupported outcome"
-                plan_result["status"] = "refused"
-                plan_result["confirmation"] = {
-                    "verdict": "refused",
-                    "model": "planning-outcome",
-                    "rounds": 0,
-                    "reason": reason,
-                    "cost": 0.0,
-                }
         ctx_judge = kwargs.get("context_judgment") or context_judgment
         if ctx_judge:
             if "stage_judgments" not in plan_result:

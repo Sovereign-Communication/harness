@@ -177,6 +177,10 @@ TOOL_SCHEMAS = [
                               "description": "Author the DAG with the cheapest tier-appropriate model "
                                              "(schema-validated; default: on when the hourglass is active; "
                                              "heuristic fallback when execute=true)"},
+            "allow_heuristic_preview": {"type": "boolean", "default": False,
+                                        "description": "Allow an advisory plan-only preview to show the deterministic heuristic DAG "
+                                                       "after LLM decomposition fails. The preview is marked degraded, "
+                                                       "Jev consensus and waist confirmation are skipped, and this never authorizes execution."},
             "confirm": {"type": "boolean", "default": True, "description": "Confirm the plan at the frontier waist before execution (brief + bounded file-window rounds; approve/amend/split/refuse verdict; a refused plan never executes). Default: on"},
             "plan_consensus": {"type": "boolean", "default": False,
                                "description": "Cheap plan-soundness check before the waist "
@@ -216,7 +220,8 @@ TOOL_SCHEMAS = [
                 "minimum": 256,
                 "description": "Override output token allowance ceiling for the composed run",
             },
-            "max_cost": {"type": "number", "minimum": 0, "maximum": 0.25},
+            "max_cost": {"type": "number", "minimum": 0, "maximum": 1.0,
+                         "description": "Maximum spend for this plan request in USD; the session ceiling still applies."},
             "allow_write": {"type": "boolean", "description": "Confirm permission to write files when execute=true"},
         }, "required": ["goal"]},
     },

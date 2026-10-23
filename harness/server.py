@@ -419,8 +419,8 @@ def run_bench_task(task_id, args, cancel_check):
     return run_bench(engine, tasks)
 
 
-# Web access for chat is opt-in per run ("web": true) and host-restricted.
-# The allowlist lives in harness/web.py (ONE owner); the boundary consumes it.
+# A chat web flag is only a route candidate: native Jev must select web
+# research before retrieval runs. The allowlist lives in harness/web.py.
 
 
 

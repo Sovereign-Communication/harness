@@ -119,6 +119,205 @@ class WorkspaceMcpBoundaryTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertIsNone(compose.call_args.kwargs["root"])
 
+    def test_plan_heuristic_preview_opt_in_reaches_composer(self):
+        with mock.patch("harness.mcp.compose_plan", return_value={
+                "status": "planned", "goal": "plan safely",
+                "dag": {"nodes": []}}) as compose:
+            result = self.server._invoke("plan_and_execute", {
+                "goal": "plan safely", "allow_heuristic_preview": True,
+                "execute": False})
+        self.assertEqual(result["status"], "planned")
+        self.assertTrue(compose.call_args.kwargs["allow_heuristic_preview"])
+
+    def test_plan_max_cost_is_scoped_and_released_after_preview(self):
+        before = self.server.governor.remaining()
+        observed = {}
+
+        def compose(**kwargs):
+            observed["remaining"] = kwargs["governor"].remaining()
+            observed["max_cost"] = kwargs["max_cost"]
+            return {"status": "planned", "goal": "plan safely",
+                    "composed_worst_case": {"remaining": observed["remaining"]}}
+
+        with mock.patch("harness.mcp.compose_plan", side_effect=compose):
+            result = self.server._invoke("plan_and_execute", {
+                "goal": "plan safely", "max_cost": 0.005,
+                "decompose_llm": False, "confirm": False,
+                "plan_consensus": False,
+            })
+
+        self.assertEqual(observed["max_cost"], 0.005)
+        self.assertLessEqual(observed["remaining"], 0.005)
+        self.assertEqual(result["composed_worst_case"]["remaining"], 0.005)
+        self.assertAlmostEqual(self.server.governor.remaining(), before, places=6)
+
+    def test_plan_max_cost_zero_and_session_limit_boundaries_are_accepted(self):
+        before = self.server.governor.remaining()
+        for value in (0.0, 1.0):
+            with self.subTest(max_cost=value), \
+                    mock.patch("harness.mcp.compose_plan", return_value={
+                        "status": "planned", "goal": "plan safely"}) as compose:
+                result = self.server._invoke("plan_and_execute", {
+                    "goal": "plan safely", "max_cost": value,
+                    "decompose_llm": False, "confirm": False,
+                    "plan_consensus": False,
+                })
+                self.assertEqual(result["status"], "planned")
+                self.assertEqual(compose.call_args.kwargs["max_cost"], value)
+                self.assertAlmostEqual(self.server.governor.remaining(), before)
+
+    def test_plan_max_cost_scope_is_released_when_composer_fails(self):
+        before = self.server.governor.remaining()
+        frame = json.dumps({
+            "jsonrpc": "2.0", "id": 40, "method": "tools/call",
+            "params": {"name": "plan_and_execute", "arguments": {
+                "goal": "plan safely", "max_cost": 0.005,
+                "decompose_llm": False, "confirm": False,
+                "plan_consensus": False,
+            }},
+        }) + "\n"
+        with mock.patch("harness.mcp.compose_plan",
+                        side_effect=HarnessError("plan unavailable")):
+            frames = _serve(self.server, frame)
+
+        self.assertNotIn("error", frames[0])
+        self.assertTrue(frames[0]["result"]["isError"])
+        self.assertEqual(frames[0]["result"]["errorKind"], "harness_error")
+        self.assertAlmostEqual(self.server.governor.remaining(), before, places=6)
+
+    def test_plan_max_cost_refuses_a_reservation_above_the_request_cap(self):
+        before = self.server.governor.remaining()
+
+        def compose(**kwargs):
+            kwargs["governor"].reserve(0.006, "over-cap plan call")
+
+        with mock.patch("harness.mcp.compose_plan", side_effect=compose):
+            with self.assertRaisesRegex(HarnessError, "over ceiling"):
+                self.server._invoke("plan_and_execute", {
+                    "goal": "plan safely", "max_cost": 0.005,
+                    "decompose_llm": False, "confirm": False,
+                    "plan_consensus": False,
+                })
+
+        self.assertAlmostEqual(self.server.governor.remaining(), before, places=6)
+
+    def test_plan_max_cost_is_inherited_by_execution_workers(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from harness.events import submit_with_context
+
+        self.server.settings = object()
+        self.server.allow_write = True
+        self.server.engine.governor.max_cost = 1.0
+        observed = {}
+        plan = {
+            "status": "planned", "goal": "plan safely",
+            "dag": {"nodes": [{
+                "node_id": "n1", "instruction": "inspect the sample",
+                "target_files": [str(self.file)],
+            }]},
+            "nodes": [{"node_id": "n1", "local_gate": None}],
+        }
+
+        def execute(_executor, _dag, **_kwargs):
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                observed["worker_remaining"] = submit_with_context(
+                    pool, self.server.governor.remaining).result()
+            return {"n1": {"status": "ok", "cost": 0.0}}
+
+        with (mock.patch("harness.mcp.compose_arguments", return_value={}),
+              mock.patch("harness.mcp.compose_plan", return_value=plan),
+              mock.patch("harness.mcp.PlanExecutor.execute", execute)):
+            result = self.server._invoke("plan_and_execute", {
+                "goal": "plan safely", "execute": True,
+                "root": str(self.root), "allow_write": True,
+                "max_cost": 0.005, "decompose_llm": False,
+                "confirm": False, "plan_consensus": False,
+            })
+
+        self.assertEqual(result["status"], "ok")
+        self.assertLessEqual(observed["worker_remaining"], 0.005)
+        self.assertAlmostEqual(self.server.governor.remaining(), 1.0, places=6)
+
+    def test_invalid_plan_max_cost_is_rejected_before_planning(self):
+        for value in (True, "0.005", -0.001, 1.001,
+                      float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value), \
+                    mock.patch("harness.mcp.compose_plan") as compose:
+                with self.assertRaises(HarnessError):
+                    self.server._invoke("plan_and_execute", {
+                        "goal": "plan safely", "max_cost": value})
+                compose.assert_not_called()
+
+    def test_plan_preview_wire_flow_is_advisory_and_never_executes(self):
+        from harness.token_budget import TokenBudget
+        self.server.settings = object()
+        args = {
+            "goal": "Inspect the preview path", "execute": False,
+            "decompose_llm": False, "confirm": True,
+            "plan_consensus": True,
+        }
+        frame = json.dumps({
+            "jsonrpc": "2.0", "id": 41, "method": "tools/call",
+            "params": {"name": "plan_and_execute", "arguments": args},
+        }) + "\n"
+        with (mock.patch("harness.mcp.compose_arguments", return_value={
+                    "token_budget": TokenBudget("run"),
+                    "stages": ["planning"],
+                }),
+              mock.patch("harness.mcp.PlanExecutor") as executor,
+              mock.patch("harness.waist.confirm_plan") as confirm,
+              mock.patch("harness.waist.plan_consensus_check") as consensus):
+            frames = _serve(self.server, frame)
+
+        self.assertNotIn("error", frames[0])
+        result = frames[0]["result"]["structuredContent"]
+        self.assertEqual(result["status"], "planned")
+        self.assertTrue(result["preview_only"])
+        self.assertTrue(result["degraded"])
+        self.assertEqual(result["planning"]["reason"], "no_evidence_cited")
+        self.assertEqual(result["confirmation"]["verdict"], "skipped")
+        self.assertTrue(result["consensus"]["skipped"])
+        executor.assert_not_called()
+        confirm.assert_not_called()
+        consensus.assert_not_called()
+        self.assertNotIn(41, self.server._inflight)
+        self.assertNotIn(41, self.server._starts)
+        self.assertNotIn(41, self.server._progress)
+
+    def test_plan_execution_empty_evidence_refuses_before_executor(self):
+        from harness.token_budget import TokenBudget
+        self.server.settings = object()
+        args = {
+            "goal": "Execute only with evidence", "execute": True,
+            "allow_write": True, "root": str(self.root),
+            "decompose_llm": False, "confirm": True,
+            "plan_consensus": True, "allow_heuristic_preview": True,
+        }
+        frame = json.dumps({
+            "jsonrpc": "2.0", "id": 42, "method": "tools/call",
+            "params": {"name": "plan_and_execute", "arguments": args},
+        }) + "\n"
+        with (mock.patch("harness.mcp.compose_arguments", return_value={
+                    "token_budget": TokenBudget("run"),
+                    "stages": ["planning"],
+                }),
+              mock.patch("harness.mcp.PlanExecutor") as executor,
+              mock.patch("harness.waist.confirm_plan") as confirm,
+              mock.patch("harness.waist.plan_consensus_check") as consensus):
+            frames = _serve(self.server, frame)
+
+        self.assertNotIn("error", frames[0])
+        result = frames[0]["result"]["structuredContent"]
+        self.assertEqual(result["status"], "refused")
+        self.assertEqual(result["planning"]["reason"], "no_evidence_cited")
+        self.assertEqual(result["confirmation"]["verdict"], "refused")
+        executor.assert_not_called()
+        confirm.assert_not_called()
+        consensus.assert_not_called()
+        self.assertNotIn(42, self.server._inflight)
+        self.assertNotIn(42, self.server._starts)
+        self.assertNotIn(42, self.server._progress)
+
     def test_plan_execution_defensively_requires_workspace(self):
         with (mock.patch.object(self.server, "_workspace_for", return_value=None),
               mock.patch("harness.mcp.compose_plan", return_value={
@@ -390,6 +589,11 @@ class McpProtocolTests(unittest.TestCase):
         self.assertTrue(tools["ask"]["annotations"]["readOnlyHint"])
         self.assertIn("panel_verify", tools)
         self.assertIn("apply_edit", tools)
+        self.assertIn("plan_and_execute", tools)
+        plan_properties = tools["plan_and_execute"]["inputSchema"]["properties"]
+        self.assertEqual(plan_properties["allow_heuristic_preview"]["type"], "boolean")
+        self.assertFalse(plan_properties["allow_heuristic_preview"]["default"])
+        self.assertEqual(plan_properties["max_cost"]["maximum"], 1.0)
         self.assertIn("offer_work", tools)
         self.assertIn("defer_work", tools)
         self.assertIn("ledger_status", tools)
@@ -1189,13 +1393,22 @@ class PlanWaistTests(unittest.TestCase):
         return run(feed, posts=posts)
 
     def test_confirm_preview_rides_approval(self):
+        decomposition = json.dumps({
+            "nodes": [{"node_id": "n1", "instruction": "Inspect the plan",
+                       "target_files": [], "dependencies": []}]
+        })
         verdict = json.dumps({"verdict": "approve"})
-        _, frames = self._call(
-            {"goal": "Split the work", "confirm": True, "frontier_model": JUDGE,
-             "decompose_llm": False},
-            posts=[{"choices": [{"message": {"content": verdict},
-                                 "finish_reason": "stop"}],
-                    "usage": {"cost": 0.0001, "is_byok": False}}])
+        with mock.patch("harness.waist.resolve_scout_ladder",
+                        return_value=[JUDGE]):
+            _, frames = self._call(
+                {"goal": "Split the work", "confirm": True,
+                 "frontier_model": JUDGE, "decompose_llm": True},
+                posts=[{"choices": [{"message": {"content": decomposition},
+                                     "finish_reason": "stop"}],
+                        "usage": {"cost": 0.0001, "is_byok": False}},
+                       {"choices": [{"message": {"content": verdict},
+                                     "finish_reason": "stop"}],
+                        "usage": {"cost": 0.0001, "is_byok": False}}])
         result = frames[0]["result"]["content"][0]["text"]
         plan = json.loads(result) if result.startswith("{") else result
         self.assertEqual(plan["confirmation"]["verdict"], "approved")
@@ -1204,16 +1417,19 @@ class PlanWaistTests(unittest.TestCase):
     def test_refusal_is_terminal(self):
         verdict = json.dumps({"verdict": "refuse", "reason": "tier mismatch",
                               "evidence": "brief: task_2 is concurrency"})
-        _, frames = self._call(
-            {"goal": "Split the work", "confirm": True, "frontier_model": JUDGE,
-             "decompose_llm": False},
-            posts=[{"choices": [{"message": {"content": verdict},
-                                 "finish_reason": "stop"}],
-                    "usage": {"cost": 0.0001, "is_byok": False}}])
+        with mock.patch("harness.mcp.PlanExecutor") as executor:
+            _, frames = self._call(
+                {"goal": "Split the work", "execute": True,
+                 "confirm": True, "frontier_model": JUDGE,
+                 "root": _TMP.name, "decompose_llm": False},
+                posts=[{"choices": [{"message": {"content": verdict},
+                                     "finish_reason": "stop"}],
+                        "usage": {"cost": 0.0001, "is_byok": False}}])
         result = frames[0]["result"]["content"][0]["text"]
         plan = json.loads(result) if result.startswith("{") else result
         self.assertEqual(plan["status"], "refused")
         self.assertEqual(plan["confirmation"]["evidence"], "brief: task_2 is concurrency")
+        executor.assert_not_called()
 
 
 class LaneSchedulingTests(unittest.TestCase):

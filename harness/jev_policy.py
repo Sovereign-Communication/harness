@@ -41,6 +41,8 @@ from .jev_packs import (
     PHASE_COMPLETION_SITE,
     PROVISION_SITE,
     REQUEST_WORKFLOW_SITE,
+    RESEARCH_PLAN_SITE,
+    RESEARCH_RESULTS_SITE,
     SITE_REACHABILITY_SITE,
     ECONOMICS_ROUTE_SITE,
     REPO_SUMMARY_SITE,
@@ -75,6 +77,8 @@ from .jev_packs import (
     hul_scope_question_pack,
     issue_sort_question_pack,
     request_workflow_question_pack,
+    research_plan_question_pack,
+    research_results_question_pack,
     site_reachability_question_pack,
     economics_route_question_pack,
     log_factor_question_pack,
@@ -3816,6 +3820,25 @@ class JevPolicy:
             site=REQUEST_WORKFLOW_SITE, task_id=task_id,
             max_input_tokens=max_input_tokens,
             fallback_reason="unkeyed Jev cannot select a request workflow")
+
+    def evaluate_research_plan(self, state, *, task_id: Optional[str] = None,
+                               max_input_tokens: int = 1800):
+        """Review a proposed research plan before any search or fetch."""
+        return self.evaluate_typed_pack(
+            state, research_plan_question_pack(),
+            site=RESEARCH_PLAN_SITE, task_id=task_id,
+            max_input_tokens=max_input_tokens,
+            fallback_reason="unkeyed Jev cannot approve a research plan")
+
+    def evaluate_research_results(self, state, *, task_id: Optional[str] = None,
+                                  max_input_tokens: int = 3000):
+        """Review one bounded batch without approving fallback judgments."""
+        candidates = state.get("candidates") if isinstance(state, dict) else None
+        return self.evaluate_typed_pack(
+            state, research_results_question_pack(candidates),
+            site=RESEARCH_RESULTS_SITE, task_id=task_id,
+            max_input_tokens=max_input_tokens,
+            fallback_reason="unkeyed Jev cannot approve research evidence")
 
     def evaluate_provision(self, state, questions, *, site: str = PROVISION_SITE,
                            task_id: Optional[str] = None,

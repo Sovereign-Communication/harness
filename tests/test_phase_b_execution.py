@@ -7,11 +7,13 @@ scope, the service wiring, and the MCP faces.
 """
 
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 from harness.errors import HarnessError
 from harness.spend import SpendGovernor
 from harness import service
+from harness.events import submit_with_context
 from tests.test_mcp import make_server
 
 
@@ -56,6 +58,29 @@ class TaskScopeExecutionTests(unittest.TestCase):
         with gov.task_scope(0.50, label="verify"):
             # min(phase ceiling 0.90, baseline 0 + 0.50)
             self.assertAlmostEqual(gov.remaining(), 0.50, places=6)
+
+    def test_nested_larger_scope_cannot_loosen_its_parent(self):
+        gov = _governor()
+        with gov.task_scope(0.05, label="outer"):
+            with gov.task_scope(0.10, label="inner"):
+                self.assertAlmostEqual(gov.remaining(), 0.05, places=6)
+
+    def test_scope_isolated_between_threads_and_propagated_to_run_workers(self):
+        gov = _governor()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            with gov.task_scope(0.05, label="request"):
+                unrelated = pool.submit(gov.remaining)
+                inherited = submit_with_context(pool, gov.remaining)
+                self.assertAlmostEqual(inherited.result(), 0.05, places=6)
+                self.assertAlmostEqual(unrelated.result(), 1.0, places=6)
+        self.assertAlmostEqual(gov.remaining(), 1.0, places=6)
+
+    def test_zero_cap_can_be_explicitly_scoped_without_spending(self):
+        gov = _governor()
+        with gov.task_scope(0.0, label="no-spend", allow_zero=True):
+            self.assertEqual(gov.remaining(), 0.0)
+            with self.assertRaises(HarnessError):
+                gov.reserve(0.001, "paid call")
 
 
 class ServiceTaskCapExecutionTests(unittest.TestCase):

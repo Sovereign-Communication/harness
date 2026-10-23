@@ -291,11 +291,50 @@ class PlanLaneWiringTests(unittest.TestCase):
 
         self.assertEqual(plan["planning"]["kind"], "defer")
         self.assertEqual(plan["planning"]["reason"], "no_evidence_cited")
+        self.assertEqual(plan["status"], "planned")
+        self.assertTrue(plan["preview_only"])
+        self.assertTrue(plan["degraded"])
+        self.assertEqual(plan["degrade_reason"], "heuristic_decomposition_selected")
+        self.assertEqual(plan["confirmation"]["verdict"], "skipped")
         stage = next(s for s in plan["composition"]["stages"]
                      if s["stage"] == STAGE_PLANNING)
         self.assertEqual(stage["state"], "completed")
         self.assertNotIn(STAGE_PLANNING, plan["composition"]["completed"])
         self.assertNotIn(STAGE_PLANNING, plan["composition"]["skipped"])
+
+    def test_empty_evidence_preview_skips_jev_review(self):
+        from unittest.mock import patch
+        budget = TokenBudget("run", max_input_tokens=20000,
+                             max_output_tokens=4000)
+        with patch("harness.waist.confirm_plan") as confirm, \
+                patch("harness.waist.plan_consensus_check") as consensus:
+            plan = self._plan(
+                token_budget=budget, stages=[STAGE_PLANNING],
+                confirm=True, plan_consensus=True)
+
+        self.assertEqual(plan["status"], "planned")
+        self.assertEqual(plan["planning"]["reason"], "no_evidence_cited")
+        self.assertTrue(plan["preview_only"])
+        self.assertEqual(plan["confirmation"]["verdict"], "skipped")
+        self.assertTrue(plan["consensus"]["skipped"])
+        confirm.assert_not_called()
+        consensus.assert_not_called()
+
+    def test_empty_evidence_execution_refuses_before_jev_review(self):
+        from unittest.mock import patch
+        budget = TokenBudget("run", max_input_tokens=20000,
+                             max_output_tokens=4000)
+        with patch("harness.waist.confirm_plan") as confirm, \
+                patch("harness.waist.plan_consensus_check") as consensus:
+            plan = self._plan(
+                execute=True, token_budget=budget, stages=[STAGE_PLANNING],
+                confirm=True, plan_consensus=True)
+
+        self.assertEqual(plan["status"], "refused")
+        self.assertEqual(plan["confirmation"]["verdict"], "refused")
+        self.assertEqual(plan["planning"]["reason"], "no_evidence_cited")
+        confirm.assert_not_called()
+        consensus.assert_not_called()
 
     def test_unselected_planning_does_not_invoke_owner(self):
         from unittest.mock import patch

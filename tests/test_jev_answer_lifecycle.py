@@ -231,6 +231,16 @@ class _FakePolicy:
             }
 
 
+class NativeWebRoutePolicy(_FakePolicy):
+    def evaluate_request_workflow(self, state, **kwargs):
+        self.route_calls += 1
+        return SimpleNamespace(
+            answers={"workflow_tier": {"choice": "web-research"}},
+            is_fallback=False, cost=0.0, model="jev-test", reasons=[]), {
+                "cost": 0.0, "native": True,
+            }
+
+
 def _ladder_settings(**overrides):
     overrides.setdefault("panel_pool", "p1,p2")
     overrides.setdefault("judge", "j1")
@@ -664,17 +674,21 @@ class AgentAnswerLoopTests(unittest.TestCase):
         agent = AutonomousAgent(settings=load_settings(), root_dir=None)
         self.assertEqual(agent._hourglass_workspace_candidates("Audit this repo"), [])
 
-    def test_native_web_research_and_simple_strategy_routes_enable_web(self):
+    def test_only_native_jev_web_research_route_enables_web(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent = AutonomousAgent(settings=_ladder_settings(),
                                     root_dir=Path(tmp), history_dir=Path(tmp))
             cases = (
                 {"source": "jev_request_workflow", "choice": "web-research",
-                 "native": True, "cost": 0.0},
+                 "native": True, "cost": 0.0, "expected_web": True},
                 {"source": "simple_strategy", "choice": "web_research",
-                 "native": False, "cost": 0.0},
+                 "native": False, "cost": 0.0, "expected_web": False},
+                {"source": "jev_request_workflow", "choice": "answer",
+                 "native": True, "cost": 0.0, "expected_web": False},
             )
             for index, route in enumerate(cases):
+                route = dict(route)
+                expected_web = route.pop("expected_web")
                 policy = _FakePolicy([(0.995, False, False)])
                 with self.subTest(route=route), \
                      patch("harness.hourglass_lifecycle.policy_for", return_value=policy), \
@@ -687,10 +701,41 @@ class AgentAnswerLoopTests(unittest.TestCase):
                          "model": "m1", "answer": "grounded answer", "cost": 0.0}), \
                      patch("harness.hourglass_lifecycle.save_chat_turn"):
                     result = agent.run_hourglass_request(
-                        "Explain a current question", session_id=f"web-{index}",
-                        request_preflight=route)
+                         "Explain a current question", session_id=f"web-{index}",
+                         web=True, request_preflight=route)
                 self.assertEqual(result["status"], "ok")
-                self.assertTrue(context.call_args.kwargs["web"])
+                self.assertEqual(context.call_args.kwargs["web"], expected_web)
+
+    def test_public_request_fetches_only_after_native_jev_web_choice(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = AutonomousAgent(
+                settings=_ladder_settings(jev_api_key="jev-test"),
+                root_dir=root, history_dir=root)
+            policy = NativeWebRoutePolicy([(0.995, False, False)])
+            source = {"kind": "web", "ok": True,
+                      "url": "https://example.com/solar",
+                      "title": "Solar update", "text": "New panel data"}
+            with patch("harness.hourglass_lifecycle.policy_for",
+                       return_value=policy), \
+                 patch("harness.hourglass_lifecycle.governor_for",
+                       return_value=(None, MagicMock())), \
+                 patch("harness.hourglass_lifecycle.ledger_for",
+                       return_value=MagicMock()), \
+                 patch.object(agent, "_gather_web_context",
+                              return_value=[source]) as gather, \
+                 patch.object(agent, "_hourglass_answer_once", return_value={
+                     "model": "m1", "answer": "New panel data.",
+                     "cost": 0.0}), \
+                 patch("harness.hourglass_lifecycle.save_chat_turn"):
+                result = agent.run_prompt(
+                    "What is the latest on solar panels?",
+                    session_id="jev-approved-web", force_conversation=True,
+                    web=True)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(policy.route_calls, 1)
+        gather.assert_called_once()
 
     def test_native_clarify_route_returns_local_question_without_generation(self):
         with tempfile.TemporaryDirectory() as tmp:

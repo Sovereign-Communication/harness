@@ -889,7 +889,7 @@ class SimpleRequestEdgeTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["response"], "world records fact")
         hourglass.assert_called_once()
-        self.assertTrue(hourglass.call_args[1].get("web"))
+        self.assertFalse(hourglass.call_args[1].get("web"))
 
     def test_strategy_needs_tool_escalates_to_handle_conversation_when_live_jev_unavailable(self):
         policy = MagicMock()
@@ -908,7 +908,63 @@ class SimpleRequestEdgeTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["response"], "direct convo fact")
         convo.assert_called_once()
-        self.assertTrue(convo.call_args[1].get("web"))
+        self.assertFalse(convo.call_args[1].get("web"))
+
+    def test_strategy_web_research_is_the_only_simple_strategy_web_authority(self):
+        policy = MagicMock()
+        policy.evaluate_simple_strategy.return_value = _pre(
+            native=True, strategy="web_research")
+        with (
+            patch("harness.simple_answer_lifecycle.governor_for",
+                  return_value=("key", self.gov)),
+            patch("harness.simple_answer_lifecycle.policy_for",
+                  return_value=policy),
+            patch.object(self.agent, "_live_jev_available", return_value=True),
+            patch.object(self.agent, "run_hourglass_request",
+                         return_value={"status": "ok"}) as hourglass,
+        ):
+            result = self.agent.run_simple_request(
+                "Explain ice?",
+                session_id="web-research")
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(hourglass.call_args.kwargs["web"])
+
+    def test_cached_web_strategy_without_live_jev_cannot_retrieve(self):
+        policy = MagicMock()
+        policy.evaluate_simple_strategy.return_value = _pre(
+            native=True, strategy="web_research")
+        with (
+            patch("harness.simple_answer_lifecycle.governor_for",
+                  return_value=("key", self.gov)),
+            patch("harness.simple_answer_lifecycle.policy_for",
+                  return_value=policy),
+            patch.object(self.agent, "_live_jev_available", return_value=False),
+            patch.object(self.agent, "_handle_conversation",
+                         return_value={"status": "ok"}) as conversation,
+        ):
+            result = self.agent.run_simple_request(
+                "Explain ice?", session_id="stale-web-strategy")
+
+        self.assertEqual(result["status"], "ok")
+        self.assertFalse(conversation.call_args.kwargs["web"])
+
+    def test_web_retrieval_route_requires_a_native_jev_choice(self):
+        from harness.hourglass_lifecycle import _jev_approved_web_route
+
+        self.assertTrue(_jev_approved_web_route({
+            "native": True, "choice": "web-research"}))
+        self.assertTrue(_jev_approved_web_route({
+            "native": True, "choice": "web_research"}))
+        for route in (
+                {"native": False, "choice": "web-research"},
+                {"native": 1, "choice": "web-research"},
+                {"native": "true", "choice": "web-research"},
+                {"native": True, "choice": "needs_tool"},
+                {"native": True, "choice": "direct_answer"},
+                None):
+            with self.subTest(route=route):
+                self.assertFalse(_jev_approved_web_route(route))
 
     def test_unknown_strategy_dispatch_is_never_replayed_by_simple_answer(self):
         prompt = "Explain ice?"

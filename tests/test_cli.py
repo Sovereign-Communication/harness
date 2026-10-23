@@ -229,6 +229,20 @@ class PlanAllowHeuristicPreviewWiringTests(unittest.TestCase):
         # jev_policy branches in _plan_compose.
         return SimpleNamespace(use_free=True, allow_escalation=False)
 
+    def test_cmd_plan_rejects_blank_goal_before_planning_setup(self):
+        from types import SimpleNamespace
+
+        for goal in ("", " \t\n"):
+            with self.subTest(goal=repr(goal)):
+                with (mock.patch.object(cli, "_resolve_hourglass") as hourglass,
+                      mock.patch.object(cli, "_governor") as governor,
+                      mock.patch.object(cli, "_plan_compose") as plan_compose):
+                    with self.assertRaisesRegex(HarnessError, "goal cannot be empty"):
+                        cli._cmd_plan(SimpleNamespace(goal=goal), self._settings())
+                hourglass.assert_not_called()
+                governor.assert_not_called()
+                plan_compose.assert_not_called()
+
     def test_flag_true_reaches_compose_plan(self):
         from types import SimpleNamespace
         captured = {}
