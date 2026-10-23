@@ -106,6 +106,10 @@ class ScriptRefused(HarnessError):
     def __init__(self, reason: str, message: str):
         super().__init__(f"script refused: {message}")
         self.reason = str(reason)
+        self.message = str(message)
+        #: The terminal receipt attached by :func:`record_refusal`, so a face
+        #: that catches the refusal has the same evidence the event carried.
+        self.receipt: Optional[Dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -242,18 +246,90 @@ def parse_script_request(prompt: str) -> Optional[Dict[str, str]]:
     return {"goal": first_line.strip(), "source": source}
 
 
+def refusal_receipt(reason: str, message: str, *, source: str = "",
+                    goal: str = "", root=None,
+                    policy: Optional[ScriptPolicy] = None,
+                    timeout_s: Optional[int] = None) -> Dict[str, Any]:
+    """The terminal receipt a refused run owes the caller.
+
+    Same keys as a completed run so every reader renders one shape and only
+    the status differs. Nothing is invented: a process that never started has
+    no exit code, no path and no duration.
+    """
+    source = str(source or "")
+    return {
+        "kind": "script",
+        "status": "refused",
+        "exit_code": None,
+        "killed": False,
+        "cancelled": reason == "cancel",
+        "stdout": "",
+        "stderr": "",
+        "truncated": False,
+        "duration_s": 0.0,
+        "script_path": None,
+        "script_sha256": script_sha256(source) if source else None,
+        "goal": str(goal or ""),
+        "root": str(root) if root is not None and str(root).strip() else None,
+        "timeout_s": (timeout_s if timeout_s is not None
+                      else (policy or ScriptPolicy()).timeout_s),
+        "policy": (policy or ScriptPolicy()).as_dict(),
+        "reason": str(reason),
+        "error": str(message),
+    }
+
+
+def record_refusal(exc: ScriptRefused, *, task_id: Optional[str] = None,
+                   source: str = "", goal: str = "", root=None,
+                   policy: Optional[ScriptPolicy] = None,
+                   timeout_s: Optional[int] = None) -> Dict[str, Any]:
+    """The ONE emitter for a refused script: attach its receipt, close the step.
+
+    A refusal happens before a process exists, so there is no ``script_start``;
+    this terminal ``script_end`` is what a reader waits for. Called by the two
+    wrappers below and by the MCP pre-checks, so no face invents its own frame
+    or a second evidence shape.
+    """
+    receipt = refusal_receipt(exc.reason, exc.message, source=source,
+                              goal=goal, root=root, policy=policy,
+                              timeout_s=timeout_s)
+    exc.receipt = receipt
+    emit("script_end", status="refused", reason=exc.reason,
+         exit_code=None, duration_s=0.0, truncated=False,
+         sha256=receipt["script_sha256"], task_id=task_id, chars=0,
+         aligned=None, sufficient=None)
+    return receipt
+
+
 def propose_script(prompt: str, *, root=None,
-                   policy: Optional[ScriptPolicy] = None) -> Optional[Dict[str, Any]]:
+                   policy: Optional[ScriptPolicy] = None,
+                   task_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Turn a ``/script`` message into a consent request -- never a run.
 
     Compiling here means the card never asks the operator to approve a script
     that cannot start. Nothing is written and nothing executes; the sha in the
-    payload is the handle the run must present.
+    payload is the handle the run must present. A refusal is recorded as the
+    terminal ``script_end`` frame before it is raised.
     """
-    request = parse_script_request(prompt)
-    if request is None:
-        return None
-    policy = policy or resolve_script_policy()
+    request = None
+    resolved = policy or resolve_script_policy()
+    try:
+        request = parse_script_request(prompt)
+        if request is None:
+            return None
+        return _proposal(request, root=root, policy=resolved)
+    except ScriptRefused as exc:
+        record_refusal(
+            exc, task_id=task_id,
+            source=(request or {}).get("source", ""),
+            goal=(request or {}).get("goal", ""),
+            root=root, policy=resolved)
+        raise
+
+
+def _proposal(request: Dict[str, str], *, root=None,
+              policy: ScriptPolicy) -> Dict[str, Any]:
+    """Build the consent payload for an already-parsed request."""
     if not policy.enabled:
         raise _refuse(
             "disabled", "scripting is disabled (set HARNESS_SCRIPT_ENABLED=1)")
@@ -298,7 +374,8 @@ def script_evidence(receipt: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """The typed evidence row the chat lane stores with the turn.
 
     Same ``kind``/``ok`` vocabulary as the web sources, so a transcript has
-    one evidence shape rather than a second, script-specific one.
+    one evidence shape rather than a second, script-specific one. A refusal is
+    a terminal row too: ``ok`` is false and ``reason`` says why.
     """
     receipt = receipt or {}
     return {
@@ -306,6 +383,7 @@ def script_evidence(receipt: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         "ok": receipt.get("status") == "ok",
         "sha256": receipt.get("script_sha256"),
         "status": receipt.get("status"),
+        "reason": receipt.get("reason"),
         "exit_code": receipt.get("exit_code"),
         "duration_s": receipt.get("duration_s"),
         "chars": len(str(receipt.get("stdout") or "")),
@@ -322,9 +400,30 @@ def run_script(source: str, *, root, goal: str = "", allow_exec: bool = False,
 
     Every refusal is a :class:`ScriptRefused` (a ``HarnessError`` with
     ``kind="script_refused"`` and a ``reason``), so a caller can classify
-    without parsing prose.
+    without parsing prose. Each refusal also leaves exactly one terminal
+    ``script_end`` frame, emitted here and nowhere else.
     """
-    policy = policy or resolve_script_policy()
+    resolved = policy or resolve_script_policy()
+    try:
+        return _execute_script(
+            source, root=root, goal=goal, allow_exec=allow_exec,
+            consent_sha=consent_sha, timeout_s=timeout_s, policy=resolved,
+            cancel_check=cancel_check, jev_policy=jev_policy, task_id=task_id)
+    except ScriptRefused as exc:
+        record_refusal(exc, task_id=task_id, source=str(source or ""),
+                       goal=goal, root=root, policy=resolved,
+                       timeout_s=timeout_s)
+        raise
+
+
+def _execute_script(source: str, *, root, goal: str = "",
+                    allow_exec: bool = False,
+                    consent_sha: Optional[str] = None,
+                    timeout_s: Optional[int] = None,
+                    policy: ScriptPolicy, cancel_check=None,
+                    jev_policy=None,
+                    task_id: Optional[str] = None) -> Dict[str, Any]:
+    """The run itself; ``run_script`` owns the refusal evidence around it."""
     if not policy.enabled:
         raise _refuse(
             "disabled", "scripting is disabled (set HARNESS_SCRIPT_ENABLED=1)")
@@ -358,7 +457,7 @@ def run_script(source: str, *, root, goal: str = "", allow_exec: bool = False,
 
     if cancel_check is not None and cancel_check():
         # Before the run directory exists: a cancelled request writes nothing.
-        raise HarnessError("script cancelled before it started")
+        raise _refuse("cancel", "the request was cancelled before it started")
 
     run_id = f"{sha[:8]}-{int(time.time() * 1000)}"
     run_dir = root_path / _RUN_DIR_NAME / "scripts" / run_id

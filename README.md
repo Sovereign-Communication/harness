@@ -530,6 +530,10 @@ Tools (`tools/list` order): `ask`, `site_check`, `panel_verify`, `apply_edit`, `
 `script_run` executes one Python script through the governed runner in `harness/script.py`: consent is the
 sha256 of the exact source, the root must be an allowed root, scripting must be enabled
 (`HARNESS_SCRIPT_ENABLED=1`), and the receipt carries exit code, output, duration and optional Jev alignment.
+A refusal (disabled, missing consent, missing or mismatched sha, bad root, syntax) is terminal evidence
+too: it raises `script_refused` with a machine-readable reason and emits one `script_end` carrying a
+receipt with `status="refused"`, so every surface closes the step and renders the same shape instead of
+leaving an open script step behind.
 `host_provision_probe` and `host_provision_plan` expose host system facts and ordered provisioning plans (PROVISION-CORE).
 `repo_cards` runs deterministic repo philosophy card generation and drift checking (REPO-CARDS).
 `jev_calibration` analyzes Jev judgment confidence distributions and recommends threshold bands (JEV-P3).

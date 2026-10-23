@@ -57,6 +57,17 @@ break APIs between minor versions).
 
 ### Fixed
 
+- **A refused script now closes its step (`SCR-2` follow-up).** A `/script` refusal
+  used to end the run with `error_kind: script_refused` but no `script_end`, so the UI
+  showed a step that never finished and had no receipt to render. Refusals now leave the
+  same terminal evidence a successful run does: one `script_end` with `status: refused`, a
+  typed `reason`, no invented exit code, and a receipt with the success shape (sha, goal,
+  root, timeout, policy) built in `harness/script.py`. `run_script` and `propose_script`
+  record it before re-raising, the server turns it into a `refused` turn that renders the
+  same receipt card (so missing `allow_exec`, missing `consent_sha` and a sha mismatch are
+  visible instead of a 400), and MCP pre-checks go through the same emitter while still
+  returning `isError: true`. A successful run still emits exactly one `script_start` and
+  one `script_end`; a refusal emits no `script_start`.
 - **Secure workspace defaults** — GUI sessions no longer inherit the server's
   working directory, Auto Apply starts off, and file-bearing UI, agent, and MCP
   paths are resolved inside an explicit workspace or configured MCP root.

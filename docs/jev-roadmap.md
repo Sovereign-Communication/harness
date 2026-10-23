@@ -476,6 +476,47 @@ step → receipt body) with the disabled, no-consent and bad-sha refusals holdin
 under the default-off flag, and a stdio MCP client that listed `script_run` and
 called it behind `allow_write`.
 
+### Script refusal evidence (`SCR-2` follow-up) — 2026-10-23 (#361)
+
+A refusal was a step that never closed. The P2 live proof caught it:
+`run_finished` carried `error_kind=script_refused`, but no `script_end
+followed, so the GUI kept a script step open and had no receipt to render. The
+fix keeps one owner and one emitter rather than adding a second event path.
+
+- `harness/script.py` gained `refusal_receipt` (the completed-run shape with
+  `status="refused"`, no invented exit code, the source sha when it is known,
+  and the typed `reason`/`error`) and `record_refusal` (emits exactly one
+  `script_end` and attaches the receipt to the exception).
+- `run_script` and `propose_script` wrap their bodies, so every engine refusal
+  records once and the raise contract is unchanged for the CLI.
+- The server turns a refusal into a `refused` turn that renders the same
+  receipt card; the POST boundary no longer pre-rejects missing `allow_exec`
+  or `consent_sha`, so those refusals happen inside the run where a frame
+  exists. A missing sha is now refused by the run task with reason
+  `sha_missing`.
+- MCP pre-checks call the same emitter and keep `isError: true` plus their
+  `trust_gate` ledger rows; a disallowed root stays hostile.
+- A successful run still emits one `script_start` and one `script_end`; a
+  refusal emits no `script_start`, so "no start + one end" is the refusal
+  signature.
+
+**Planned before implementing.** The plan was scored through the
+answer-sufficiency pack on the defect framing: `answer_sufficient` **0.75
+twice** (bar 0.70), deterministic, `plan_required` true. The first draft
+scored 0.67 twice until it named the emission point for each reason and the
+exact call chain; the judge rewards a plan that says where evidence is written,
+not one that only says it will be.
+
+**Verified.** 4930 hermetic tests green (72 skipped); a frame-capture sink
+asserts one `script_end`, zero `script_start` and the right reason for
+disabled, no-consent, missing-sha, bad-sha, syntax, empty, oversized and
+bad-root, and that success still emits exactly one of each. Self-audit
+10.00/10 on all four dimensions, D12 pass after the baseline refresh (the
+first pass measured 58/62 and named the four untested persistence lines). Live
+proof in the browser at `127.0.0.1:8765` shows the refusal as a `Script
+refused` step plus a refusal card, with scripting left enabled on that
+listener only so the feature can be retested.
+
 ### Web evidence ladder — 2026-10-23 (#355)
 
 Operator repro: `audit www.freeoffgridcalculator.com for user friendliness and

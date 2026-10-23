@@ -545,7 +545,8 @@ class McpServer:
         return TOOL_SCHEMAS
 
     def _refuse(self, reason, message, task_id=None, model=None,
-                severity="soft", script_reason=None):
+                severity="soft", script_reason=None, script_source="",
+                script_goal="", script_root=None, script_policy=None):
         """Ledger a trust-boundary refusal (the evidence loop) and raise it.
 
         Every safety denial is itself trust evidence: a host that keeps
@@ -553,7 +554,9 @@ class McpServer:
         gates tighten the more they are probed. First-use friction
         (missing allow-flags) is soft; escape attempts are hostile.
         ``script_reason`` keeps the scripting face typed: the raised error is
-        a ``ScriptRefused`` with that reason, not a bare HarnessError.
+        a ``ScriptRefused`` with that reason, and it goes through the same
+        ``record_refusal`` emitter the runner uses, so an MCP client and a
+        chat reader see one terminal evidence shape.
         """
         try:
             self.ledger.append("trust_gate", task_id=task_id, model=model,
@@ -561,7 +564,11 @@ class McpServer:
         except Exception:
             pass
         if script_reason is not None:
-            raise _script.ScriptRefused(script_reason, message)
+            exc = _script.ScriptRefused(script_reason, message)
+            _script.record_refusal(
+                exc, task_id=task_id, source=script_source,
+                goal=script_goal, root=script_root, policy=script_policy)
+            raise exc
         raise HarnessError(message)
 
     def _invoke(self, name, args, cancel_check=None):
@@ -844,36 +851,38 @@ class McpServer:
                            if args.get("task_id") is not None else None)
             policy = _script.resolve_script_policy(
                 getattr(self, "settings", None))
+            evidence = {"task_id": task_id_arg, "script_source": source,
+                        "script_goal": goal, "script_root": args.get("root"),
+                        "script_policy": policy}
             if not policy.enabled:
                 self._refuse(
                     "mcp script without scripting enabled",
                     "script_run is disabled on this server; start it with "
                     "HARNESS_SCRIPT_ENABLED=1 to allow governed execution",
-                    task_id=task_id_arg, script_reason="disabled")
+                    script_reason="disabled", **evidence)
             if not allow_exec:
                 self._refuse(
                     "mcp script without consent",
                     "script_run requires allow_exec=true (explicit consent to "
                     "execute this source)",
-                    task_id=task_id_arg, script_reason="no_consent")
+                    script_reason="no_consent", **evidence)
             if not consent_sha:
                 self._refuse(
                     "mcp script without consent sha",
                     "script_run requires consent_sha: the sha256 of the exact "
                     "source the operator approved",
-                    task_id=task_id_arg, script_reason="sha_missing")
+                    script_reason="sha_missing", **evidence)
             if not self.allowed_roots:
                 self._refuse(
                     "mcp script with no allowed roots configured",
                     "script_run requires at least one configured allowed root",
-                    task_id=task_id_arg, script_reason="root")
+                    script_reason="root", **evidence)
             try:
                 root = self._workspace_for(args.get("root"))
             except HarnessError as exc:
                 self._refuse(
                     "mcp script root outside allowed roots", str(exc),
-                    task_id=task_id_arg, severity="hostile",
-                    script_reason="root")
+                    severity="hostile", script_reason="root", **evidence)
             jev = None
             settings = getattr(self, "settings", None)
             if score and settings is not None:
