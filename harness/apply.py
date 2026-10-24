@@ -237,9 +237,12 @@ class ApplyEngine(ApplyEngineMixin):
             verify_cmd = saved_verify_cmd
             continuation_gate = saved_verify_cmd if continuation.get("verify_gate_id") else None
         if verify_cmd:
-            # Engine-boundary preflight: always shell-tokenizable. PATH
-            # existence stays opt-in (require_executable) so hermetic library
-            # stubs work; dogfood/CLI already checks PATH before spend.
+            # Engine-boundary preflight: always shell-tokenizable, and known
+            # tools (python/ruff) resolve through harness.tools so a missing
+            # interpreter is one error before any model call. PATH existence
+            # for arbitrary stubs stays opt-in (require_executable) so
+            # hermetic library tests remain usable; dogfood keeps the full
+            # PATH check at its CLI boundary.
             validate_verify_command(verify_cmd, require_executable=False)
         if backend not in ("harness", "morph", "diff"):
             raise HarnessError("backend must be 'harness', 'morph', or 'diff'")

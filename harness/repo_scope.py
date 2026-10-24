@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import List, Optional, Sequence
 
 from . import osal
-from .osal import python_exe
+from . import tools
 from .errors import HarnessError
 from .workspace import is_sensitive_path, resolve_workspace_path
 
@@ -20,14 +20,12 @@ from .workspace import is_sensitive_path, resolve_workspace_path
 def _gate_python() -> str:
     """The interpreter token for code-owned verification gate commands.
 
-    ``sys.executable`` (via :func:`osal.python_exe`) -- never a bare
-    ``python`` resolved from PATH, which need not exist on python3-only
-    systems (a derived gate then exits 127 and fails the whole edit lane).
-    Quoted when it contains whitespace so the shell-free gate tokenizer
-    keeps it a single argv element.
+    Delegates to the one tool resolver (:mod:`harness.tools`), which prefers
+    ``sys.executable`` and falls back to a python3-only PATH. Never a bare
+    ``python`` that need not exist. Quoted when it contains whitespace so the
+    shell-free gate tokenizer keeps it a single argv element.
     """
-    exe = python_exe()
-    return f'"{exe}"' if any(ch.isspace() for ch in exe) else exe
+    return tools.python_token()
 
 def discover_target_files(prompt: str, root_dir: Optional[Path] = None) -> List[str]:
     # Autonomously identify candidate target files from prompt or repository

@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from .errors import HarnessError
 from .paths import REPO_ROOT
 from . import osal
+from . import tools
 
 # The documented verify gate budget; the stage gate gets a bigger one
 # (below) because it runs a whole suite between dependent stages.
@@ -122,6 +123,15 @@ def run_gate(command, timeout=VERIFY_TIMEOUT, cwd=None, argv=None):
     """
     if argv is None:
         argv = split_command(command)
+    # One resolution point for every gate: a bare `python`/`ruff` is replaced
+    # with the checkout's interpreter/tool before the shell-free runner sees
+    # it. Explicit paths stay exactly as the caller wrote them. Resolution
+    # failure keeps the runner's exit-code vocabulary (127 + the reason);
+    # preflight is what turns it into a named exception before any spend.
+    try:
+        argv = tools.resolve_gate_argv(argv)
+    except HarnessError as exc:
+        return 127, str(exc)
     result = osal.run(argv, cwd=cwd, timeout=timeout)
     return result.returncode, result.combined
 
@@ -135,7 +145,7 @@ def validate_gate(command, require_executable=True):
     require_executable=False so hermetic library stubs stay usable;
     dogfood/CLI keep the PATH check.
     """
-    argv = split_command(command)
+    argv = tools.resolve_gate_argv(split_command(command), strict=True)
     if require_executable and osal.which(argv[0]) is None:
         raise HarnessError(
             f"gate executable not found: {argv[0]} (the gate would fail every "
@@ -165,10 +175,17 @@ class GateSpec:
 
     def argv(self, repo_root=None, **params):
         """The argv list for this platform; paths resolve from the checkout."""
-        values = {"python": osal.python_exe(),
+        values = {"python": tools.resolve_python(),
+                  "ruff": tools.ruff_argv(),
                   "root": repo_root if repo_root is not None else REPO_ROOT}
         values.update(params)
-        return [str(part).format(**values) for part in self.template]
+        out = []
+        for part in self.template:
+            if part == "{ruff}":
+                out.extend(values["ruff"])
+            else:
+                out.append(str(part).format(**values))
+        return out
 
     def command(self, repo_root=None, **params):
         """A copy-pasteable single-line form (quoting paths with spaces)."""
@@ -191,7 +208,7 @@ class GateSpec:
 GATES = {
     spec.name: spec for spec in (
         GateSpec("ruff", "lint the package, tests and audit script",
-                 ("{python}", "-m", "ruff", "check",
+                 ("{ruff}", "check",
                   "{root}/harness", "{root}/tests", "{root}/audits"),
                  requires=("harness", "tests", "audits")),
         GateSpec("compileall", "byte-compile every module (syntax gate)",
