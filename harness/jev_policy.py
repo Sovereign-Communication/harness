@@ -34,6 +34,7 @@ from .route_pack import (ROUTE_QUERY_SITE, choose_rung_for_tier, fallback_route,
                          validate_route_pack)
 from .jev_packs import (
     ANSWER_PACK_VERSION,
+    CONTEXT_RECALL_PACK_VERSION,
     SIMPLE_STRATEGY_PACK_VERSION,
     AUDIT_DIMENSIONS_SITE,
     HUL_SCOPE_SITE,
@@ -1256,6 +1257,97 @@ class JevPolicy:
             structural.update(result.answers)
             structural["native"] = False
             return result, structural
+
+    def evaluate_context_need(
+            self, prompt: str, *, facts: str = "", recent: str = "",
+            site: str = "chat-context", task_id: Optional[str] = None,
+            max_input_tokens: Optional[int] = None):
+        """Should this chat turn expand beyond the nearest relevant history?
+
+        The judgment is advisory to the chat lane's context assembly, not a
+        permission gate: code still builds the messages and still owns every
+        budget.  The reservation is sized to the state actually sent rather
+        than a fixed constant, so a long facts index is judged whole instead
+        of being silently sliced before the model sees it.
+        """
+        from .jev_packs import context_recall_question_pack
+
+        state = {
+            "request": str(prompt or ""),
+            "remembered_facts": str(facts or ""),
+            "recent_turns": str(recent or ""),
+        }
+        state_chars = sum(len(value) for value in state.values())
+        reservation_tokens = max_input_tokens or max(512, state_chars // 4 + 256)
+        structural: Dict[str, Any] = {
+            "capability": "context-recall",
+            "pack_version": CONTEXT_RECALL_PACK_VERSION,
+            "needs_earlier_context": None,
+            "target_is_remembered": None,
+            "native": False,
+        }
+        if not self.keyed:
+            structural["reason"] = "Jev unavailable (no key)"
+            return JevEvaluationResult(
+                "fail", 0.0, 0.0, dict(structural), ["Jev unavailable (no key)"],
+                is_fallback=True,
+                fallback_reason="context_recall_unavailable",
+                model=self.evaluator.model,
+            ), structural
+        reservation = None
+        try:
+            reservation = self._preflight(
+                site=site, max_input_tokens=reservation_tokens)
+            result = self.evaluator.evaluate(
+                state, context_recall_question_pack())
+            raw = result.answers if isinstance(result.answers, dict) else {}
+            values = {}
+            for key in ("needs_earlier_context", "target_is_remembered"):
+                value = raw.get(key)
+                if isinstance(value, dict):
+                    # Noul answers arrive as {"type": "noul", "noul": p}.
+                    probability = value.get("noul", value.get("probability"))
+                else:
+                    probability = value
+                if not isinstance(probability, (int, float)) or isinstance(probability, bool):
+                    values = {}
+                    break
+                values[key] = float(probability)
+            if not values or result.is_fallback:
+                raise HarnessError(
+                    str((result.reasons or ["context recall returned no usable answers"])[0]))
+            normalized = {
+                "needs_earlier_context": values["needs_earlier_context"],
+                "target_is_remembered": values["target_is_remembered"],
+                "pack_version": CONTEXT_RECALL_PACK_VERSION,
+            }
+            result = replace(result, verdict="pass",
+                             confidence=max(values.values()), answers=normalized)
+            structural.update({
+                "needs_earlier_context": values["needs_earlier_context"] >= 0.5,
+                "target_is_remembered": values["target_is_remembered"] >= 0.5,
+                "probabilities": values,
+                "native": True,
+            })
+            accounted = self._account(
+                result, site=site, task_id=task_id, reservation=reservation)
+            reservation = None
+            accounted.update(structural)
+            return result, accounted
+        except ToolCancelled:
+            raise
+        except ProviderSpendLimitError:
+            raise
+        except HarnessError as exc:
+            if reservation is not None:
+                self._release(reservation)
+            structural["reason"] = str(exc)
+            return JevEvaluationResult(
+                "fail", 0.0, 0.0, dict(structural), [str(exc)],
+                is_fallback=True,
+                fallback_reason="context_recall_unavailable",
+                model=self.evaluator.model,
+            ), structural
 
     def evaluate_answer(
             self, prompt: str, answer: str, context: str = "", *,

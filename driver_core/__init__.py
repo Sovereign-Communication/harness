@@ -30,7 +30,7 @@ Windows.
 The rule is now total: whitespace separates, quotes group, and **a backslash is
 never an escape character. There are no escapes** -- including ``\"``, because
 keeping that one exception reproduces the same bug for a path ending in a
-separator (``"C:\Users\me\"``). One behaviour change worth stating plainly for
+separator (``"%USERPROFILE%\"``). One behaviour change worth stating plainly for
 anyone who was relying on it: a POSIX operator using ``\ `` to escape a space
 must now quote it. An unquoted argument containing a space is split, and the
 resulting ``not found`` names the argv it actually attempted, so the split is

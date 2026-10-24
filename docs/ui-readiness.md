@@ -105,3 +105,21 @@ actually fits shows up.
 4. Ledger/trust views: tail + `chain` + participation/trust envelopes.
 5. Bench/capabilities matrices: bench envelope (results/statuses/calibration)
    and capabilities rows are already structured.
+
+## Chat submission recovery (2026-10-24)
+
+`POST /api/chat` is a same-origin `fetch` from the chat box. If the local
+`harness serve` process has stopped, the browser rejects the request before it
+is sent: the operator sees `Failed to fetch`, no run id is created, and no
+ledger entry exists. A long prompt can be lost that way (the 2026-10-24
+dossier request hit exactly this after its server stopped; it left no run or
+ledger record).
+
+The UI now treats that case as a transport failure, not a model failure:
+`app.js` marks the network error, names the unreachable origin, tells the
+operator to start or restart `harness serve`, and restores the exact draft to
+the composer. The failed turn stays visible for context. Reload after the
+server is back and resend; the draft is already there.
+
+This is a client-side recovery path only -- the server contract, auth guard,
+and run/ledger semantics are unchanged.

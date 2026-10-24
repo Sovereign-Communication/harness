@@ -54,15 +54,26 @@ from .repo_scope import (
     enumerate_repo_files,
     workspace_review_candidates,
 )
+from .conversation_context import (
+    assemble_history,
+    facts_block,
+    load_memory,
+    needs_earlier_context,
+    policy_recall_judge,
+    referential,
+    sole_site,
+)
+from .jev_identity import jev_identity_block, jev_mentioned
 from .session import governor_for, ledger_for
+from .site_evidence import evidence_summary, render_site_evidence
 from .simple_request import (
     is_comprehensive_workspace_inspection_request,
     is_current_information_request,
+    is_site_audit_request,
     is_workspace_inspection_request,
-    relevant_history as simple_relevant_history,
 )
 from .token_budget import resolve_lane_max_tokens as _resolve_lane_max_tokens
-from .web import resolve_fetch_allowlist
+from .web import extract_site_target, resolve_fetch_allowlist
 from .workspace import resolve_workspace_path
 
 
@@ -86,7 +97,8 @@ class HourglassLifecycleMixin:
                 max_files=_MAX_HOURGLASS_CONTEXT_FILES)
         return candidates[:_MAX_HOURGLASS_CONTEXT_FILES]
     def _hourglass_request_context(self, prompt: str, web: bool = False,
-                                  workspace: bool = True):
+                                  workspace: bool = True,
+                                  web_prompt: Optional[str] = None):
         """Gather a bounded, cheap intake brief for a non-edit request.
 
         Intake is local and deterministic: explicit paths win, then filename
@@ -145,12 +157,34 @@ class HourglassLifecycleMixin:
         web_sources = []
         if web:
             try:
-                web_sources = self._gather_web_context(prompt)
+                web_sources = self._gather_web_context(web_prompt or prompt)
             except (ToolCancelled, ProviderSpendLimitError):
                 raise
             except Exception as exc:  # context failure must not kill the lane
                 web_sources = [{"kind": "web", "ok": False,
                                 "note": f"web tools error: {type(exc).__name__}"}]
+            if (is_site_audit_request(web_prompt or prompt)
+                    or referential(prompt)):
+                target = extract_site_target(web_prompt or prompt)
+                if target:
+                    try:
+                        evidence = render_site_evidence(
+                            target,
+                            screenshot_dir=(
+                                Path(self.history_dir) / "site_evidence"
+                                if self.history_dir else None))
+                        web_sources.append({
+                            "kind": "browser", "ok": True,
+                            "url": evidence.get("final_url") or target,
+                            "title": evidence.get("title") or "",
+                            "text": evidence_summary(evidence),
+                        })
+                    except Exception as exc:  # noqa: BLE001
+                        web_sources.append({
+                            "kind": "browser", "ok": False, "url": target,
+                            "note": ("site drive unavailable: "
+                                     f"{type(exc).__name__}: {exc}"),
+                        })
             for source in web_sources:
                 if source.get("ok"):
                     body = str(source.get("text") or "")[:_MAX_WEB_CONTEXT_CHARS]
@@ -166,6 +200,7 @@ class HourglassLifecycleMixin:
                                model_offset: int = 0,
                                cancel_check=None, governor=None,
                                api_key=None, past_turns=None,
+                               remembered: str = "",
                                web: bool = False,
                                web_sources=None,
                                max_tokens: Optional[int] = None,
@@ -231,11 +266,21 @@ class HourglassLifecycleMixin:
                      + str(prior.get("feedback") or "")[:1200]
                      + "\nProduce a fresh, corrected answer. Do not mention the "
                        "review process unless it helps the user.")
+        if remembered:
+            system += "\n\n" + remembered
+        if jev_mentioned(user):
+            system += "\n\n" + jev_identity_block()
         messages = [{"role": "system", "content": system}]
         for turn in (past_turns or []):
-            if turn.get("prompt"):
+            if "role" in turn and "content" in turn:
+                messages.append({"role": str(turn["role"]),
+                                 "content": str(turn["content"])})
+            elif turn.get("prompt"):
                 messages.append({"role": "user", "content": turn["prompt"]})
-            if turn.get("response"):
+                if turn.get("response"):
+                    messages.append({"role": "assistant",
+                                     "content": turn["response"]})
+            elif turn.get("response"):
                 messages.append({"role": "assistant", "content": turn["response"]})
         messages.append({"role": "user", "content": user})
         prompt_text = user
@@ -505,6 +550,24 @@ class HourglassLifecycleMixin:
         policy = policy_for(
             self.settings, transport=self.transport, governor=gov,
             ledger=ledger_for(self.settings, caller="agent"))
+        # Durable context is assembled once, before the route decides whether
+        # to ask the operator to repeat a target this session already named.
+        turns = load_chat_history(sid, self.history_dir)
+        memory = load_memory(self.history_dir)
+        answer_tokens, _ = effective_lane_policy(
+            "answer", max_tokens=max_tokens, reasoning_effort=reasoning_effort)
+        history_budget = max(2400, int(answer_tokens) * 4)
+        remembered = facts_block(
+            memory, budget_chars=max(1200, history_budget // 2), focus=prompt)
+        recent_text = "\n".join(
+            f"User: {str(turn.get('prompt') or '')[:240]}\n"
+            f"Assistant: {str(turn.get('response') or '')[:240]}"
+            for turn in turns[-2:] if isinstance(turn, dict))
+        recall = needs_earlier_context(
+            prompt,
+            judge=policy_recall_judge(
+                policy, remembered, recent_text,
+                site="chat-context", task_id=sid))
         if resuming:
             prior_known = max(0.0, float(checkpoint.get("known_cost") or 0.0))
             prior_unknown = max(
@@ -534,8 +597,9 @@ class HourglassLifecycleMixin:
             try:
                 def evaluate_route_once():
                     route_evaluation = policy.evaluate_request_workflow(
-                        {"request": prompt}, task_id=sid,
-                        max_input_tokens=512)
+                        {"request": prompt,
+                         "remembered_facts": remembered},
+                        task_id=sid, max_input_tokens=512)
                     if (not isinstance(route_evaluation, (tuple, list))
                             or len(route_evaluation) != 2
                             or not isinstance(route_evaluation[1], dict)
@@ -612,6 +676,18 @@ class HourglassLifecycleMixin:
             return self._workspace_context_deferred(prompt, sid)
         checkpoint["web_requested"] = web
         checkpoint["intent"] = intent
+        resolved_site = sole_site(memory, session_id=sid)
+        if (route_preflight.get("choice") == "clarify"
+                and bool(route_preflight.get("native"))
+                and resolved_site and referential(prompt)):
+            # Clarification exists to recover a missing detail.  When durable
+            # memory already holds the only site this session named, asking
+            # again is a regression, not a safety gate: answer with it instead.
+            route_preflight = dict(route_preflight)
+            route_preflight["choice"] = "answer"
+            route_preflight["clarification_resolved_by"] = (
+                f"memory:site={resolved_site}")
+            emit("memory_resolved_clarification", site=resolved_site)
         effective_route = (
             "workspace-inspection" if (
                 is_workspace_inspection_request(prompt)
@@ -655,9 +731,17 @@ class HourglassLifecycleMixin:
             context_tokens = int(checkpoint.get("context_tokens") or 0)
             web_sources = list(checkpoint.get("web_sources") or [])
         else:
+            web_prompt = prompt
+            if resolved_site and referential(prompt) and not any(
+                    fact in prompt.lower() for fact in (resolved_site,)):
+                # A referential follow-up ("same site as before") must search
+                # and fetch the remembered target, not the pronoun.  The
+                # previous turn searched "same" and attached unrelated pages.
+                web_prompt = f"{prompt}\nTarget site: https://{resolved_site}"
             context, file_contents, brief, web_sources = \
                 self._hourglass_request_context(
-                    prompt, web=web, workspace=workspace_needed)
+                    prompt, web=web, workspace=workspace_needed,
+                    web_prompt=web_prompt)
             context_files = list(file_contents)
             context_tokens = int(brief.estimated_tokens)
             file_hashes = {
@@ -700,12 +784,24 @@ class HourglassLifecycleMixin:
                 checkpoint["stage"] = "answer"
             self._persist_chat_checkpoint(sid, checkpoint)
 
-        turns = load_chat_history(sid, self.history_dir)
         if resuming:
             turns = [turn for turn in turns if turn.get("prompt") != prompt]
-        past_turns = simple_relevant_history(
-            prompt, turns,
-            max_turns=3, max_chars=2400)
+        past_turns = assemble_history(
+            prompt, turns, budget_chars=history_budget,
+            memory=memory, expand=recall.needed)
+        context_assembly = {
+            "facts": sum(1 for line in remembered.splitlines()
+                         if line.startswith("- ")),
+            "turns": sum(1 for message in past_turns
+                         if message.get("role") == "user"),
+            "expanded": bool(recall.needed),
+            "native": bool(recall.native),
+            "reason": recall.reason,
+        }
+        emit("chat_context", facts=context_assembly["facts"],
+             turns=context_assembly["turns"],
+             expanded=bool(recall.needed), native=bool(recall.native),
+             reason=recall.reason)
         prior = checkpoint.get("prior") if resuming else None
         history = list(checkpoint.get("rounds") or []) if resuming else []
         answer = str(checkpoint.get("answer") or "") if resuming else ""
@@ -772,6 +868,7 @@ class HourglassLifecycleMixin:
                             model_offset=round_no - 1,
                             cancel_check=cancel_check, governor=gov,
                             api_key=api_key, past_turns=past_turns,
+                            remembered=remembered,
                             web=web, web_sources=web_sources,
                             max_tokens=max_tokens,
                             reasoning_effort=reasoning_effort,
@@ -952,6 +1049,7 @@ class HourglassLifecycleMixin:
             "intent": intent,
             "workflow_tier": effective_route,
             "prompt": prompt,
+            "context": context_assembly,
             "response": (answer or "The answer provider did not return a recoverable response."),
             "model": model,
             "cost": round(total_cost, 6),

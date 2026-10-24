@@ -2,6 +2,7 @@
 
 from typing import Any, Callable, Dict, Optional
 
+from .conversation_context import load_memory, sole_site
 from .errors import HarnessError, ToolCancelled
 from .events import emit
 from .history import load_chat_checkpoint, save_chat_turn
@@ -9,7 +10,11 @@ from .orchestrator import keyword_fallback, triage_files
 from .repo_scope import discover_target_files, enumerate_repo_files
 from .request_intent import classify_prompt_intent, is_literal_greeting_request
 from .session import governor_for
-from .simple_request import is_simple_answer_request, is_workspace_inspection_request
+from .simple_request import (
+    is_simple_answer_request,
+    is_workspace_inspection_request,
+    missing_site_target,
+)
 
 
 class RequestRoutingMixin:
@@ -54,6 +59,22 @@ class RequestRoutingMixin:
             raise HarnessError("Prompt cannot be empty")
 
         sid = session_id or "default"
+        # A site audit with no identifiable target cannot be made safe by a
+        # web search or a model guess.  Reconcile before spending a turn; a
+        # remembered site is a target, so "audit that site again" proceeds.
+        known_site = sole_site(load_memory(self.history_dir), session_id=sid)
+        missing = missing_site_target(prompt, known_site=known_site)
+        if missing:
+            result = {
+                "status": "deferred", "intent": "conversation",
+                "workflow_tier": "clarification", "prompt": prompt,
+                "response": missing, "model": None, "cost": 0.0,
+                "defer_reason": "missing site target",
+                "next_step": "provide the site URL or domain",
+            }
+            save_chat_turn(sid, result, self.history_dir)
+            emit("clarification_required", reason_code="missing_site_target")
+            return result
         followup = self._continuation_suffix(prompt)
         if followup is not None:
             try:

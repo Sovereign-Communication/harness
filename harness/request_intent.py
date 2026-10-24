@@ -61,6 +61,16 @@ def is_site_check_prompt(prompt: str) -> bool:
         return False
     if _extract_target(prompt) is None:
         return False
+    # An audit/assessment/driving request is not an availability probe even
+    # though it contains "verify" or "check" and a URL.  Treating it as a
+    # simple-action check refuses the real request before any evidence is
+    # gathered.
+    if re.search(
+        r"\baudit\b|\busability\b|\buser[- ]friend(?:ly|liness)\b|\bux\b"
+        r"|\bjev\b|\bassessment\b|\bnitpick\b|\bdrive\s+the\s+(?:site|website|page)\b",
+        cleaned,
+    ):
+        return False
     if re.search(
         r"\b[a-zA-Z0-9_\-./]+\.(?:py|rs|go|ts|js|md|json|toml|yaml|yml|c|cpp|h)\b", prompt
     ):

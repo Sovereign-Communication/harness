@@ -2438,6 +2438,45 @@ class TestDynamicTokenAllocation(unittest.TestCase):
             self.assertEqual(res["answer"], "ok")
             mock_chat.assert_called_once()
 
+    def test_recall_judge_degrades_when_jev_cannot_be_built(self):
+        agent = AutonomousAgent()
+        with patch("harness.jev_policy.policy_for",
+                   side_effect=RuntimeError("no jev")):
+            self.assertIsNone(agent._context_recall_judge(
+                "- site: example.com", "user: hi", MagicMock(), "s1"))
+        self.assertIsNone(agent._context_recall_judge(
+            "", "", MagicMock(), "s1"))
+
+    def test_conversation_gets_remembered_site_and_uncapped_history(self):
+        # Regression (2026-10-23 GUI session sess_hk39dwd8): the URL turn was
+        # longer than the old fixed history cap and was dropped whole, so the
+        # next turn asked the operator to name a site they had already named.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = AutonomousAgent(history_dir=root)
+            long_audit = ("## Jev Usability Assessment\n\n"
+                          + "The page is clear. " * 500)
+            save_chat_turn("s_ctx", {
+                "prompt": "audit www.freeoffgridcalculator.com for usability",
+                "response": long_audit,
+            }, root)
+            resp = {"choices": [{"message": {
+                "content": "The site is easy to use."},
+                "finish_reason": "stop"}], "usage": {"cost": 0.0}}
+            with patch("harness.conversation_lifecycle.chat",
+                       return_value=(200, resp)) as mc, \
+                 patch("harness.conversation_lifecycle.governor_for",
+                       return_value=(None, MagicMock())):
+                res = agent._handle_conversation("same site as before", "s_ctx")
+            messages = mc.call_args[1]["messages"]
+            system = "\n".join(m["content"] for m in messages
+                               if m["role"] == "system")
+            self.assertIn("freeoffgridcalculator.com", system)
+            self.assertIn("audit www.freeoffgridcalculator.com",
+                          "\n".join(m["content"] for m in messages
+                                    if m["role"] == "user"))
+            self.assertGreaterEqual(res.get("context", {}).get("facts", 0), 1)
+
     def test_a_marked_reply_becomes_one_saved_proposal_turn(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

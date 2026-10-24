@@ -772,6 +772,37 @@ def simple_strategy_question_pack() -> Dict[str, Dict[str, Any]]:
     }
 
 
+CONTEXT_RECALL_PACK_VERSION = "context-recall-v1"
+
+
+def context_recall_question_pack() -> Dict[str, Dict[str, Any]]:
+    """Decide whether one chat turn needs context beyond the nearest slice.
+
+    Two independent nouls over the same state: whether the request depends on
+    earlier facts at all, and whether the supplied remembered-facts block
+    already names the target.  The second is what keeps an unnecessary
+    expansion honest -- a request that says "that site" while the facts block
+    already carries the site needs no wider history.
+    """
+    return {
+        "needs_earlier_context": _noul(
+            "Does answering the current request require facts established "
+            "earlier in this conversation or in an earlier session (a named "
+            "target, a prior result, a decision, or a referential phrase such "
+            "as 'same site', 'again', 'that one')?",
+            "The request depends on an earlier fact and would be wrong, "
+            "ungrounded, or a needless clarification without it.",
+            "The request is self-contained, or the remembered-facts block "
+            "already contains everything the request refers to."),
+        "target_is_remembered": _noul(
+            "Does the remembered-facts block name the target the request "
+            "refers to?",
+            "A site, URL, path, or other named entity the request points at "
+            "is present in the remembered facts.",
+            "The remembered facts hold no matching target."),
+    }
+
+
 def answer_question_pack() -> Dict[str, Dict[str, Any]]:
     """Typed Jev signals for the bounded answer/reiterate loop.
 
