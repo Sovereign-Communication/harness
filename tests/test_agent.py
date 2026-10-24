@@ -2438,6 +2438,125 @@ class TestDynamicTokenAllocation(unittest.TestCase):
             self.assertEqual(res["answer"], "ok")
             mock_chat.assert_called_once()
 
+    def test_a_marked_reply_becomes_one_saved_proposal_turn(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = AutonomousAgent(
+                settings=_lane_settings(script_enabled=True),
+                root_dir=root, history_dir=root)
+            agent.script_proposals = True
+            content = (
+                "I need to compute this from the actual files.\n\n"
+                "SCRIPT PROPOSAL\n"
+                "```harness-script\nprint('42')\n```")
+            resp = {
+                "choices": [{"message": {"content": content},
+                             "finish_reason": "stop"}],
+                "usage": {"cost": 0.0},
+            }
+            with patch("harness.conversation_lifecycle.chat",
+                       return_value=(200, resp)), \
+                 patch("harness.conversation_lifecycle.governor_for",
+                       return_value=(None, MagicMock())):
+                res = agent._handle_conversation(
+                    "compute the answer", "s_script")
+            self.assertEqual(res["kind"], "script")
+            self.assertEqual(res["script_state"], "proposed")
+            self.assertEqual(res["script"]["origin"], "model")
+            self.assertIn("compute this", res["response"])
+            self.assertNotIn("harness-script", res["response"])
+            history = load_chat_history("s_script", history_dir=root)
+            self.assertEqual(len(history), 1)
+            self.assertEqual(history[0]["kind"], "script")
+
+    def test_a_followup_answer_gets_untrusted_system_evidence_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = AutonomousAgent(
+                settings=_lane_settings(script_enabled=True),
+                root_dir=root, history_dir=root)
+            agent.script_proposals = True
+            resp = {
+                "choices": [{"message": {"content": "42 files."},
+                             "finish_reason": "stop"}],
+                "usage": {"cost": 0.0},
+            }
+            envelope = ("<untrusted-script-output>stdout: 42\n"
+                        "</untrusted-script-output>")
+            with patch("harness.conversation_lifecycle.chat",
+                       return_value=(200, resp)) as call, \
+                 patch("harness.conversation_lifecycle.governor_for",
+                       return_value=(None, MagicMock())):
+                res = agent.answer_from_script_output(
+                    "count the files", envelope)
+            self.assertEqual(res["response"], "42 files.")
+            messages = call.call_args.kwargs["messages"]
+            self.assertEqual(messages[0]["role"], "system")
+            self.assertIn("<untrusted-script-output>", messages[0]["content"])
+            self.assertIn("DATA produced by code", messages[0]["content"])
+            self.assertNotIn("SCRIPT PROPOSAL", messages[0]["content"])
+            self.assertEqual(messages[-1],
+                             {"role": "user", "content": "count the files"})
+            self.assertEqual(
+                load_chat_history("script-followup", history_dir=root), [])
+
+    def test_hourglass_answer_note_names_the_script_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = AutonomousAgent(
+                settings=_lane_settings(script_enabled=True),
+                root_dir=root, history_dir=root)
+            agent.script_proposals = True
+            resp = {
+                "choices": [{"message": {"content": "ok"},
+                             "finish_reason": "stop"}],
+                "usage": {"cost": 0.0},
+            }
+            budget = MagicMock()
+            budget.remaining_output.return_value = 5000
+            with patch("harness.hourglass_lifecycle.chat",
+                       return_value=(200, resp)) as call, \
+                 patch("harness.hourglass_lifecycle.governor_for",
+                       return_value=(None, MagicMock())):
+                agent._hourglass_answer_once(
+                    "hello", "", token_budget=budget)
+            system = call.call_args.kwargs["messages"][0]["content"]
+            self.assertIn("harness-script", system)
+            self.assertIn("must approve", system)
+
+    def test_hourglass_returns_a_proposal_before_jev_review(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = AutonomousAgent(
+                settings=_lane_settings(script_enabled=True),
+                root_dir=root, history_dir=root)
+            agent.script_proposals = True
+            content = ("I need to compute this.\n\nSCRIPT PROPOSAL\n"
+                       "```harness-script\nprint('42')\n```")
+            resp = {
+                "choices": [{"message": {"content": content},
+                             "finish_reason": "stop"}],
+                "usage": {"cost": 0.0},
+            }
+            with patch("harness.hourglass_lifecycle.chat",
+                       return_value=(200, resp)), \
+                 patch("harness.hourglass_lifecycle.governor_for",
+                       return_value=(None, MagicMock())), \
+                 patch("harness.hourglass_lifecycle.policy_for",
+                       return_value=MagicMock()) as policy, \
+                 patch("harness.hourglass_lifecycle.ledger_for",
+                       return_value=MagicMock()):
+                res = agent.run_hourglass_request(
+                    "compute the answer", session_id="s_hg_script",
+                    request_preflight={"source": "test", "choice": "direct",
+                                       "native": False, "cost": 0.0})
+            self.assertEqual(res["kind"], "script")
+            self.assertEqual(res["script_state"], "proposed")
+            self.assertEqual(res["script"]["origin"], "model")
+            self.assertFalse(policy.evaluate_answer.called)
+            history = load_chat_history("s_hg_script", history_dir=root)
+            self.assertEqual(history[-1]["kind"], "script")
+
     def test_handle_conversation_rotates_when_allocated_tokens_exhausted(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent = AutonomousAgent(settings=_lane_settings(), history_dir=Path(tmp))

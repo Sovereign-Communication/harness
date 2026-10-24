@@ -440,6 +440,79 @@ class ServerScriptTests(FrameCaptureTestCase):
         self.assertEqual(ran["prompt"], "")
         self.assertEqual(ran["script_evidence"][0]["kind"], "script")
 
+    def test_origin_is_validated_at_the_dispatch_boundary(self):
+        args = server_mod.validate_dispatch(
+            "script", self._args(origin="model"))
+        self.assertEqual(args["origin"], "model")
+        with self.assertRaises(HarnessError):
+            server_mod.validate_dispatch("script", self._args(origin="web"))
+
+    def test_a_model_run_answers_from_the_output(self):
+        args = server_mod.validate_dispatch(
+            "script", self._args(origin="model"))
+        answered = {"status": "ok", "response": "The page is 200.",
+                    "model": "test/model", "cost": 0.002}
+        with mock.patch.dict(os.environ, {"HARNESS_SCRIPT_ENABLED": "1"}), \
+                mock.patch.object(
+                    server_mod, "_answer_from_script_output",
+                    return_value=answered) as follow:
+            result = server_mod.run_script_task("ui/test", args, lambda: False)
+        self.assertTrue(follow.called)
+        self.assertEqual(result["script"]["status"], "ok")
+        self.assertEqual(result["answer"], "The page is 200.")
+        self.assertEqual(result["model"], "test/model")
+        self.assertAlmostEqual(result["cost"], 0.002)
+        self.assertIn("The page is 200.", result["response"])
+
+    def test_a_human_run_never_calls_a_model_after_the_run(self):
+        args = server_mod.validate_dispatch("script", self._args())
+        with mock.patch.dict(os.environ, {"HARNESS_SCRIPT_ENABLED": "1"}), \
+                mock.patch.object(
+                    server_mod, "_answer_from_script_output") as follow:
+            result = server_mod.run_script_task("ui/test", args, lambda: False)
+        self.assertFalse(follow.called)
+        self.assertNotIn("answer", result)
+        self.assertEqual(result["model"], "script-runner")
+
+    def test_the_followup_helper_passes_tagged_evidence_and_the_goal(self):
+        receipt = {"status": "ok", "exit_code": 0, "stdout": "42",
+                   "stderr": "", "script_sha256": "a" * 64}
+        with mock.patch.object(
+                server_mod.AutonomousAgent, "answer_from_script_output",
+                return_value={"response": "answered"}) as answer:
+            result = server_mod._answer_from_script_output(
+                SimpleNamespace(), self.root, receipt, "count them",
+                lambda: False, "t1")
+        self.assertEqual(result["response"], "answered")
+        args = answer.call_args.args
+        self.assertEqual(args[0], "count them")
+        self.assertTrue(args[1].startswith("<untrusted-script-output>"))
+        self.assertEqual(answer.call_args.kwargs["session_id"],
+                         "script-followup-t1")
+
+    def test_an_empty_followup_response_is_noted_not_silently_dropped(self):
+        args = server_mod.validate_dispatch(
+            "script", self._args(origin="model"))
+        with mock.patch.dict(os.environ, {"HARNESS_SCRIPT_ENABLED": "1"}), \
+                mock.patch.object(
+                    server_mod, "_answer_from_script_output",
+                    return_value={"response": ""}):
+            result = server_mod.run_script_task("ui/test", args, lambda: False)
+        self.assertNotIn("answer", result)
+        self.assertIn("returned no answer", result["response"])
+
+    def test_a_followup_failure_keeps_the_run_receipt(self):
+        args = server_mod.validate_dispatch(
+            "script", self._args(origin="model"))
+        with mock.patch.dict(os.environ, {"HARNESS_SCRIPT_ENABLED": "1"}), \
+                mock.patch.object(
+                    server_mod, "_answer_from_script_output",
+                    side_effect=HarnessError("provider down")):
+            result = server_mod.run_script_task("ui/test", args, lambda: False)
+        self.assertEqual(result["script"]["status"], "ok")
+        self.assertIn("could not answer", result["response"])
+        self.assertNotIn("answer", result)
+
     def test_a_wrong_sha_finishes_as_a_refused_turn_with_a_frame(self):
         args = server_mod.validate_dispatch(
             "script", self._args(consent_sha="0" * 64, session_id="s1"))

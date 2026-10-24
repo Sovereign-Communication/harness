@@ -11,6 +11,20 @@ break APIs between minor versions).
 
 ### Added
 
+- **The assistant can propose and use a governed script (`SCR-3`).** SCR-2 made
+  scripting a tool a human types; this closes the capability gap without adding a
+  second runner. A chat reply may carry one marked `harness-script` fence (or a
+  `SCRIPT PROPOSAL:` line above a Python fence); `extract_model_proposal` ignores
+  ordinary code examples and ambiguous multiple proposals, and the chat lanes turn
+  the reply into the same consent card (`kind=script`, `script_state=proposed`,
+  `origin=model`) instead of saving a prose answer. Approval still runs exactly the
+  bytes the card showed. After a model-origin run, one follow-up completion answers
+  the original request with stdout/stderr attached in the system prompt inside
+  `<untrusted-script-output>` — data-only, bounded, closing tag neutralized, and
+  unable to propose another script, so execution cannot chain. The GUI posts the
+  origin and renders the answer below the receipt, live and from history. The
+  human `/script` path is unchanged and still ends at the receipt; scripting
+  remains off by default.
 - **Governed scripting reaches the chat box and MCP (`SCR-2`, #357).** `harness/script.py`
   stays the one execution owner; the new faces are thin. A chat message that starts with
   `/script` is parsed and *proposed* — the source is compiled, shown with its sha256 in a

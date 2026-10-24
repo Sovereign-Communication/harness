@@ -69,7 +69,22 @@ is unchanged and still no sandbox.
   chat message only *proposes*: the card shows the exact source and sha256, and
   nothing is written or executed until the operator approves those bytes — and
   the runner re-checks the sha, so an edited script needs a new approval. A
-  proposal never calls a model. The UI route sits behind the same loopback and
+  proposal never calls a model.
+  **The assistant may propose too.** When scripting is enabled and a workspace
+  is selected, the chat lanes tell the model the one marked form (a
+  `harness-script` fence, or a `SCRIPT PROPOSAL:` line above a Python fence) and
+  `extract_model_proposal` ignores ordinary code examples and ambiguous
+  multiple proposals. The reply is built through the same `propose_source`
+  path, so the compile check, root rule, sha and refusal frames are identical;
+  approval still runs exactly the bytes the card showed. A model-origin run then
+  gets one follow-up completion: the script's stdout/stderr are attached in the
+  system prompt inside `<untrusted-script-output>`, labeled data-only, bounded,
+  and with the closing tag neutralized so the output cannot escape the
+  envelope. That call is forbidden from proposing another script, and the
+  human `/script` turn still ends at the receipt. The follow-up is a model call,
+  so its cost is counted on the same turn.
+
+  The UI route sits behind the same loopback and
   `X-Harness-Auth` guard as every other `/api` route; MCP inherits the launching
   user's authority as it already did for writes and verify gates, and `root`
   must be one of the configured allowed roots. Stop cancels a running script by

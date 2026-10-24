@@ -1021,7 +1021,9 @@ function handleLiveEvent(ev, agentMsg) {
     activateModularAspect(agentMsg, "web_fetch", ev.phase === "start" ? "Fetch Source" : `Source (${ev.chars || 0} chars)`, "📖");
   } else if (ev.type === "script_proposed") {
     const sha = String(ev.sha256 || "").slice(0, 12);
-    label = `Script proposed (sha ${sha}…, ${ev.chars || 0} chars) — waiting for approval`;
+    label = ev.origin === "model"
+      ? `Assistant proposed a script (sha ${sha}…, ${ev.chars || 0} chars) — waiting for approval`
+      : `Script proposed (sha ${sha}…, ${ev.chars || 0} chars) — waiting for approval`;
     icon = "🔐";
     agentMsg.stepperTitleText.textContent = "Script ready for approval";
     activateModularAspect(agentMsg, "script", "Script proposal", "🔐");
@@ -1220,9 +1222,15 @@ function renderFinalResult(runRecord, agentMsg) {
       renderScriptProposal(agentMsg, res.script);
     } else {
       renderScriptReceipt(agentMsg, res.script);
+      if (res.answer) {
+        const answer = document.createElement("div");
+        answer.style.marginTop = "12px";
+        answer.innerHTML = renderSimpleMarkdown(res.answer);
+        agentMsg.body.appendChild(answer);
+      }
     }
     agentMsg.footer.innerHTML = `
-      <span>Model: script-runner</span>
+      <span>Model: ${esc(res.model || "script-runner")}</span>
       <span>Spend: ${fmtCost(res.cost ?? 0)}</span>
     `;
     agentMsg.footer.hidden = false;
@@ -1293,12 +1301,14 @@ function renderScriptProposal(agentMsg, proposal) {
   card.className = "script-card";
   const sha = String(proposal.sha256 || "");
   const goal = String(proposal.goal || "").trim();
+  const proposedBy = proposal.origin === "model" ? "assistant" : "operator";
   card.innerHTML = `
     <div class="script-head">
       <span class="script-state pending">approval required</span>
       <strong>Run this script once?</strong>
     </div>
     <div class="script-meta">
+      <div>proposed by ${esc(proposedBy)}</div>
       ${goal ? `<div>goal: ${esc(goal)}</div>` : ""}
       <div>sha256 <code>${esc(sha)}</code></div>
       <div>${Number(proposal.chars || 0)} characters · root <code>${esc(proposal.root || "")}</code> · timeout ${Number(proposal.timeout_s || 0)}s</div>
@@ -1348,6 +1358,7 @@ async function runApprovedScript(agentMsg, proposal) {
           root_dir: proposal.root,
           consent_sha: proposal.sha256,
           allow_exec: true,
+          origin: proposal.origin || "user",
           session_id: sessionId,
           score: true,
         },
@@ -1530,6 +1541,12 @@ async function loadHistory() {
             && (turn.script_state === "ran" || turn.script_state === "refused")
             && turn.script) {
           renderScriptReceipt(card, turn.script);
+          if (turn.answer) {
+            const answer = document.createElement("div");
+            answer.style.marginTop = "12px";
+            answer.innerHTML = renderSimpleMarkdown(turn.answer);
+            card.body.appendChild(answer);
+          }
         } else {
           card.body.innerHTML = renderSimpleMarkdown(turn.response || "");
         }
