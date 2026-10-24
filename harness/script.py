@@ -402,9 +402,10 @@ def proposal_turn(prompt: str, result: Dict[str, Any], *, root=None,
     """Convert a model reply with a marked script into the chat turn it saves.
 
     The model's prose is kept, the proposal is attached, and the turn is a
-    consent request like any other. A draft that cannot compile stays prose
-    with an honest note rather than becoming a run or a failed turn. Returns
-    None when the reply contains no proposal (or the draft was refused).
+    consent request like any other. A draft that cannot compile stays prose;
+    the refusal itself is the terminal ``script_end`` frame the shared builder
+    already recorded, not a second prose wording. Returns None when the reply
+    contains no proposal (or the draft was refused).
     """
     result = result if isinstance(result, dict) else {}
     found = extract_model_proposal(str(result.get("response") or ""))
@@ -415,11 +416,11 @@ def proposal_turn(prompt: str, result: Dict[str, Any], *, root=None,
         proposal = propose_source(
             found["source"], goal=str(prompt or ""), root=root,
             policy=resolved, task_id=task_id, origin="model")
-    except ScriptRefused as exc:
-        result["response"] = (
-            found["prose"].rstrip()
-            + f"\n\n[Script proposal refused ({exc.reason}): {exc.message}]"
-        ).strip()
+    except ScriptRefused:
+        # propose_source already closed the step with the one refusal frame
+        # (record_refusal); keep the model's prose with the proposal removed
+        # rather than restating the refusal in a second wording here.
+        result["response"] = found["prose"]
         return None
     info = dict(proposal["script"])
     emit("script_proposed", task_id=task_id, sha256=info["sha256"],
