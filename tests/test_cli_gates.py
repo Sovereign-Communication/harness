@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from harness.cli import _DISPATCH, _cmd_gates
 from harness.cli_parser import build_parser
 from harness.errors import HarnessError
+from harness import tools
 from harness.gate_runner import GATE_ORDER
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -51,7 +52,13 @@ class GatesCommandTest(unittest.TestCase):
         names = [entry["name"] for entry in payload["gates"]]
         self.assertEqual(names, list(GATE_ORDER))
         for entry in payload["gates"]:
-            self.assertEqual(entry["argv"][0], sys.executable)
+            if entry["name"] == "ruff":
+                # The ruff gate carries the tool resolver's argv prefix: a
+                # PATH/override binary, or `<interpreter> -m ruff`.
+                self.assertEqual(entry["argv"][:len(tools.ruff_argv())],
+                                 list(tools.ruff_argv()))
+            else:
+                self.assertEqual(entry["argv"][0], sys.executable)
             self.assertTrue(entry["command"])
             self.assertTrue(entry["summary"])
 
