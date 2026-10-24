@@ -22,7 +22,8 @@ turn and its ledger, not from a pre-flight estimate.
 | Browser | Chromium, driven through the calculator flow |
 | Total recorded cost | **$0.002306** |
 | Jev review cost | $0.00011004 (2,620 input / 58 output tokens) |
-| Jev verdict | `needs_review` — `answer_sufficient` 0.49 against the 0.70 bar |
+| Jev verdict | `fail` — `answer_sufficient` 0.49 against the 0.70 bar |
+| Verification status | `needs_review` |
 | Requested target | 99/100 in every aspect |
 | Outcome | 3 of 6 exercised aspects met 99; 3 did not; 2 were left unassessed |
 
@@ -242,9 +243,10 @@ rather than inventing a number for checks that never ran.
   the rendered output.
 - **It refuses to invent coverage.** Two aspects are explicitly `unassessed`
   because no keyboard, screen-reader, or invalid-input test was run.
-- **The gate does not rubber-stamp it.** Jev returned `needs_review`
-  (`answer_sufficient` 0.49), so the turn is evidence-backed but not declared
-  sufficient. That is the correct outcome for an audit that found gaps.
+- **The gate does not rubber-stamp it.** Jev returned `fail` on answer
+  sufficiency (0.49), and the turn ended `needs_review`: evidence-backed, but
+  not declared sufficient. That is the correct outcome for an audit that found
+  gaps.
 
 ## Reproduce
 
