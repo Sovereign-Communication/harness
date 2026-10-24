@@ -171,7 +171,8 @@ def _read_json(path, what):
 def _run_claims_verify(settings, *, prompt, task_id=None, max_tokens=None,
                        reasoning_effort=None, converge=False, judge=None,
                        convergence_model=None, specialist_pool=None,
-                       reassurance_claims="", panel=None, max_cost=None):
+                       reassurance_claims="", panel=None, max_cost=None,
+                       cancel_check=None):
     """Claims-verify execution via the canonical service layer. Kept as a
     named seam because `dogfood` composes it and tests patch it; the
     assembly itself (governor, ledger, pre-run look-ahead, panel_judge
@@ -185,7 +186,8 @@ def _run_claims_verify(settings, *, prompt, task_id=None, max_tokens=None,
         max_tokens=max_tokens, panel=panel, converge=converge,
         convergence_model=convergence_model,
         specialist_pool=specialist_pool,
-        reassurance_claims=reassurance_claims)
+        reassurance_claims=reassurance_claims,
+        cancel_check=cancel_check)
 
 
 def _run_meta(settings, gov):

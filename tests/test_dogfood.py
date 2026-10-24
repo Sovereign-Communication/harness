@@ -225,5 +225,56 @@ class FromLedgerWiringTests(unittest.TestCase):
         self.assertEqual(cm.exception.code, 1)
 
 
+class DogfoodVerifySeamContractTests(unittest.TestCase):
+    """#330: the production service -> CLI verify seam must accept and forward
+    the run's cancel_check. The historical tests patched the seam itself, so a
+    signature mismatch in the real wiring could ship and crash every dogfood
+    run at the verify phase."""
+
+    def test_run_dogfood_passes_cancel_check_through_cli_seam(self):
+        from harness.claims import Claim
+        from harness.config import load_settings
+        from harness.service import run_dogfood
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "target.py")
+            with open(target, "w", encoding="utf-8") as f:
+                f.write("x = 1\n")
+
+            claim = Claim(claim_id="c1", kind="defect", text="x is 1",
+                          source_refs=[1])
+            verdict = {
+                "convergence": {"tally": {"claims": {"c1": {
+                    "converged": True, "verdict": "real"}}}},
+                "panel_failures": [],
+            }
+            seen = {}
+
+            def fake_service_verify(settings, **kwargs):
+                seen.update(kwargs)
+                return verdict
+
+            engine = mock.Mock()
+            engine.apply_batch.return_value = {"status": "ok", "cost": 0.0}
+
+            def cancel():
+                return False
+
+            with mock.patch.object(cli, "_service_verify",
+                                   side_effect=fake_service_verify), \
+                 mock.patch("harness.service.apply_session", return_value=engine):
+                report = run_dogfood(
+                    load_settings(overrides={"use_free": True}),
+                    file=target, instruction="fix", claims=[claim],
+                    source_text="x = 1\n",
+                    run_verify_fn=cli._run_claims_verify,
+                    cancel_check=cancel)
+
+            self.assertIs(seen["cancel_check"], cancel)
+            self.assertEqual([p["phase"] for p in report["phases"]],
+                             ["ground", "verify", "apply"])
+            self.assertEqual(report["status"], "ok")
+
+
 if __name__ == "__main__":
     unittest.main()
