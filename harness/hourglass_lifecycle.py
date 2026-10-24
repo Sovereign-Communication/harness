@@ -8,9 +8,11 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from . import script as _script
 from .chat_policy import (
     DEFAULT_CHAT_SYSTEM_PROMPT, DEFAULT_RUN_WALL_SECONDS, TRUNCATION_NOTICE,
     is_research_question,
+    _SCRIPT_CAPABILITY_NOTE,
     _DEFAULT_HOURGLASS_CONFIDENCE,
     _MAX_HOURGLASS_ANSWER_ROUNDS,
     _MAX_HOURGLASS_CONTEXT_CHARS,
@@ -197,6 +199,8 @@ class HourglassLifecycleMixin:
         start = max(0, min(int(model_offset), len(ladder) - 1))
         ordered = ladder[start:] + ladder[:start]
         system = DEFAULT_CHAT_SYSTEM_PROMPT
+        if getattr(self, "script_proposals", False):
+            system += "\n\n" + _SCRIPT_CAPABILITY_NOTE
         if web:
             _allowed, _any = resolve_fetch_allowlist(self.settings)
             if _any:
@@ -804,6 +808,24 @@ class HourglassLifecycleMixin:
                 })
                 self._persist_chat_checkpoint(sid, checkpoint)
                 pending_review = False
+            # A marked script proposal is a consent gate, not a candidate
+            # answer: hand it back before Jev reviews or another round runs.
+            if getattr(self, "script_proposals", False) and self.root_dir is not None:
+                draft = {"response": answer, "model": model,
+                         "cost": round(total_cost, 6)}
+                proposal = _script.proposal_turn(
+                    prompt, draft, root=self.root_dir,
+                    policy=_script.resolve_script_policy(self.settings),
+                    task_id=sid)
+                answer = draft["response"]
+                if proposal is not None:
+                    checkpoint["known_cost"] = round(total_cost, 8)
+                    self._persist_chat_checkpoint(sid, checkpoint)
+                    save_chat_turn(sid, proposal, self.history_dir)
+                    self._finish_chat_request(sid, proposal)
+                    emit("hourglass_complete", status="awaiting_consent",
+                         confidence=None)
+                    return proposal
             try:
                 jev_call_id = (lifecycle_state["request_id"] +
                                f":chat-review:{round_no}")

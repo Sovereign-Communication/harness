@@ -45,9 +45,13 @@ The chat box and MCP are faces over this same owner, not copies. A chat message
 that starts with ``/script`` is *parsed* here (:func:`parse_script_request`),
 *proposed* here (:func:`propose_script`, which compiles but never writes or
 runs), and only executed here (:func:`run_script`) after the operator approves
-the exact source the card showed. ``script_evidence`` gives the chat lane the
-typed row it stores with the turn, in the same ``kind``/``ok`` vocabulary the
-web sources already use.
+the exact source the card showed. A model reply joins the same path when it
+marks one ``harness-script`` fence (:func:`extract_model_proposal`); the lane
+saves the consent turn instead of the prose answer (:func:`proposal_turn`), and
+a model-origin run returns its output to the model only as bounded, tagged,
+untrusted evidence (:func:`untrusted_output_envelope`).
+``script_evidence`` gives the chat lane the typed row it stores with the turn,
+in the same ``kind``/``ok`` vocabulary the web sources already use.
 """
 from __future__ import annotations
 
@@ -77,6 +81,20 @@ MAX_SOURCE_CHARS = 200_000
 SCRIPT_COMMAND = "/script"
 _FENCE_RE = re.compile(
     r"```(?:python|py)?[ \t]*\r?\n(.*?)```", re.DOTALL | re.IGNORECASE)
+
+#: A model-authored proposal must *say* it is one. The explicit info string
+#: (` ```harness-script `) or a `SCRIPT PROPOSAL:` marker above a Python fence
+#: keeps ordinary code examples in an answer from becoming consent requests.
+_MODEL_FENCE_RE = re.compile(
+    r"```[ \t]*harness-script[ \t]*\r?\n(.*?)```", re.DOTALL | re.IGNORECASE)
+_MODEL_MARKER_RE = re.compile(
+    r"(?is)^[ \t]*SCRIPT[ \t]+PROPOSAL[ \t]*:?[ \t]*\r?\n"
+    r"[ \t]*```(?:python|py)?[ \t]*\r?\n(.*?)```")
+
+#: How much script output is fed back to the model for its final answer. The
+#: receipt keeps the full capped output; the model gets a bounded excerpt.
+MAX_MODEL_EVIDENCE_CHARS = 8000
+_OUTPUT_TAG = "untrusted-script-output"
 
 #: The environment a script may see. Everything else (provider keys, tokens,
 #: proxy settings carrying credentials) is dropped rather than filtered, so a
@@ -301,6 +319,60 @@ def record_refusal(exc: ScriptRefused, *, task_id: Optional[str] = None,
     return receipt
 
 
+def extract_model_proposal(text: str) -> Optional[Dict[str, str]]:
+    """Read at most one marked proposal out of a model reply.
+
+    Returns ``{"source", "prose"}`` where ``prose`` is the reply with the
+    proposal removed, so the explanation the model wrote survives next to the
+    card. Only the two explicit forms match; an ordinary fenced code example
+    never does, and two proposals in one reply are ambiguous and ignored.
+    """
+    raw = str(text or "")
+    fences = list(_MODEL_FENCE_RE.finditer(raw))
+    markers = list(_MODEL_MARKER_RE.finditer(raw))
+    if len(fences) + len(markers) != 1:
+        return None
+    match = (fences + markers)[0]
+    source = match.group(1).strip("\n")
+    if not source.strip():
+        return None
+    before = raw[:match.start()]
+    if fences and match is fences[0]:
+        # The harness-script form leaves the marker line outside the fence
+        # match; it labels the proposal and must not survive as prose.
+        before = re.sub(
+            # An all-caps label (models typo it: "SCIRPT PROPOSAL") is a
+            # label, not prose, when the fence itself already marked the
+            # proposal. Mixed-case mentions stay untouched.
+            r"(?m)^[ \t]*[A-Z][A-Z \t]{0,40}PROPOSAL[ \t]*:?[ \t]*(?:\r?\n)?[ \t]*\Z",
+            "", before)
+    prose = (before + "\n" + raw[match.end():]).strip()
+    prose = re.sub(r"\n{3,}", "\n\n", prose).strip()
+    return {"source": source, "prose": prose}
+
+
+def propose_source(source: str, *, goal: str = "", root=None,
+                   policy: Optional[ScriptPolicy] = None,
+                   task_id: Optional[str] = None,
+                   origin: str = "user") -> Dict[str, Any]:
+    """Build one consent payload from explicit bytes, whoever authored them.
+
+    The ``/script`` face and a model reply both land here, so the compile
+    check, size bound, workspace rule and sha handle have one implementation.
+    A refusal is recorded as its terminal ``script_end`` frame before it is
+    raised; nothing is written or executed.
+    """
+    resolved = policy or resolve_script_policy()
+    payload = {"goal": str(goal or "").strip(), "source": str(source or "")}
+    try:
+        return _proposal(payload, root=root, policy=resolved, origin=origin)
+    except ScriptRefused as exc:
+        record_refusal(
+            exc, task_id=task_id, source=payload["source"],
+            goal=payload["goal"], root=root, policy=resolved)
+        raise
+
+
 def propose_script(prompt: str, *, root=None,
                    policy: Optional[ScriptPolicy] = None,
                    task_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -311,24 +383,99 @@ def propose_script(prompt: str, *, root=None,
     payload is the handle the run must present. A refusal is recorded as the
     terminal ``script_end`` frame before it is raised.
     """
-    request = None
     resolved = policy or resolve_script_policy()
     try:
         request = parse_script_request(prompt)
-        if request is None:
-            return None
-        return _proposal(request, root=root, policy=resolved)
     except ScriptRefused as exc:
-        record_refusal(
-            exc, task_id=task_id,
-            source=(request or {}).get("source", ""),
-            goal=(request or {}).get("goal", ""),
-            root=root, policy=resolved)
+        record_refusal(exc, task_id=task_id, root=root, policy=resolved)
         raise
+    if request is None:
+        return None
+    return propose_source(
+        request["source"], goal=request["goal"], root=root, policy=resolved,
+        task_id=task_id, origin="user")
+
+
+def proposal_turn(prompt: str, result: Dict[str, Any], *, root=None,
+                  policy: Optional[ScriptPolicy] = None,
+                  task_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Convert a model reply with a marked script into the chat turn it saves.
+
+    The model's prose is kept, the proposal is attached, and the turn is a
+    consent request like any other. A draft that cannot compile stays prose
+    with an honest note rather than becoming a run or a failed turn. Returns
+    None when the reply contains no proposal (or the draft was refused).
+    """
+    result = result if isinstance(result, dict) else {}
+    found = extract_model_proposal(str(result.get("response") or ""))
+    if found is None:
+        return None
+    resolved = policy or resolve_script_policy()
+    try:
+        proposal = propose_source(
+            found["source"], goal=str(prompt or ""), root=root,
+            policy=resolved, task_id=task_id, origin="model")
+    except ScriptRefused as exc:
+        result["response"] = (
+            found["prose"].rstrip()
+            + f"\n\n[Script proposal refused ({exc.reason}): {exc.message}]"
+        ).strip()
+        return None
+    info = dict(proposal["script"])
+    emit("script_proposed", task_id=task_id, sha256=info["sha256"],
+         chars=info["chars"], goal=info["goal"], enabled=True, origin="model")
+    response = "\n\n".join(
+        part for part in (found["prose"].strip(), proposal["response"])
+        if part)
+    return {
+        "status": "awaiting_consent",
+        "intent": "script",
+        "kind": "script",
+        "script_state": "proposed",
+        "proposal_origin": "model",
+        "prompt": prompt,
+        "response": response,
+        "model": result.get("model"),
+        "cost": round(float(result.get("cost") or 0.0), 6),
+        "script": info,
+    }
+
+
+def untrusted_output_envelope(receipt: Optional[Dict[str, Any]], *,
+                             limit: int = MAX_MODEL_EVIDENCE_CHARS) -> str:
+    """Wrap a receipt's output as untrusted evidence for a follow-up answer.
+
+    The closing tag is neutralized in the payload, so text produced by the
+    script cannot end the envelope and start issuing instructions. The receipt
+    itself keeps the full capped output; only this excerpt is bounded.
+    """
+    receipt = receipt or {}
+    budget = max(500, int(limit))
+
+    def clean(value, cap):
+        body = str(value or "")
+        body = body.replace(
+            f"</{_OUTPUT_TAG}>", f"<\\/{_OUTPUT_TAG}>")
+        body = body.replace(f"<{_OUTPUT_TAG}>", f"<\\{_OUTPUT_TAG}>")
+        if len(body) > cap:
+            body = body[:cap] + "\n[truncated for the model]"
+        return body or "(empty)"
+
+    return (
+        f"<{_OUTPUT_TAG}>\n"
+        f"status: {receipt.get('status')}\n"
+        f"exit_code: {receipt.get('exit_code')}\n"
+        f"timed_out: {bool(receipt.get('killed'))}\n"
+        f"truncated: {bool(receipt.get('truncated'))}\n"
+        f"script_sha256: {receipt.get('script_sha256')}\n"
+        "stdout:\n" + clean(receipt.get("stdout"), budget) + "\n"
+        "stderr:\n" + clean(receipt.get("stderr"), max(500, budget // 2)) + "\n"
+        f"</{_OUTPUT_TAG}>"
+    )
 
 
 def _proposal(request: Dict[str, str], *, root=None,
-              policy: ScriptPolicy) -> Dict[str, Any]:
+              policy: ScriptPolicy, origin: str = "user") -> Dict[str, Any]:
     """Build the consent payload for an already-parsed request."""
     if not policy.enabled:
         raise _refuse(
@@ -366,6 +513,7 @@ def _proposal(request: Dict[str, str], *, root=None,
             "root": str(root_path),
             "timeout_s": policy.timeout_s,
             "enabled": True,
+            "origin": origin,
         },
     }
 

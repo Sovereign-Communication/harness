@@ -288,6 +288,10 @@ HARNESS_SCRIPT_ENABLED=1 harness script --file scrape.py --root . \
 # Python block. Nothing runs on send: the message returns a consent card with
 # the source and its sha256, and Approve runs exactly those bytes. The run and
 # its receipt stay in the transcript as steps (kind=script evidence).
+# The assistant can propose through the same card: with scripting enabled and a
+# workspace selected, a model reply may carry one ```harness-script fence. When
+# approved, the script's output returns to the model as tagged, untrusted
+# evidence for the final answer; `/script` keeps ending at the receipt.
 # MCP clients get the same surface as `script_run` (see the tool inventory).
 
 # Ask a model for consent on a work item (the "checkbox")

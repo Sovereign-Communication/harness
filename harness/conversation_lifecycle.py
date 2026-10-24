@@ -9,8 +9,11 @@ from .chat_policy import (
     _MAX_WEB_CONTEXT_CHARS,
     _MAX_WEB_SOURCES,
     _NO_WEB_DISCLOSURE,
+    _SCRIPT_CAPABILITY_NOTE,
+    _UNTRUSTED_SCRIPT_NOTE,
     _WEB_CAPABILITY_NOTE,
 )
+from . import script as _script
 from .config import Settings, effective_lane_policy
 from .errors import HarnessError, ToolCancelled
 from .events import emit
@@ -43,6 +46,10 @@ class ConversationLifecycleMixin:
         reasoning_effort: Optional[str] = None,
         token_budget: Optional[Any] = None,
         lifecycle_state: Optional[LifecycleState] = None,
+        untrusted_evidence: Optional[str] = None,
+        propose_scripts: Optional[bool] = None,
+        allow_escalation: bool = True,
+        persist: bool = True,
     ) -> Dict[str, Any]:
         # Handle informational or technical questions with conversational routing
         api_key, gov = governor_for(self.settings)
@@ -50,7 +57,14 @@ class ConversationLifecycleMixin:
             "chat", max_tokens=max_tokens, reasoning_effort=reasoning_effort
         )
 
+        # A proposal turn is one model reply plus a consent card; the lane
+        # owns that shape so history saves one turn instead of an answer and a
+        # duplicate proposal. A follow-up answer disables the capability.
+        wants_proposals = (getattr(self, "script_proposals", False)
+                           if propose_scripts is None else propose_scripts)
         system_prompt = DEFAULT_CHAT_SYSTEM_PROMPT
+        if wants_proposals:
+            system_prompt += "\n\n" + _SCRIPT_CAPABILITY_NOTE
         web_sources: List[Dict[str, Any]] = []
         if web:
             if cancel_check and cancel_check():
@@ -86,6 +100,11 @@ class ConversationLifecycleMixin:
                 )
         else:
             system_prompt += "\n\n" + _NO_WEB_DISCLOSURE
+        if untrusted_evidence:
+            # Evidence produced by the approved script is attached at the
+            # system level, delimited and labeled as data. It is never merged
+            # into the user message or treated as instructions.
+            system_prompt += "\n\n" + _UNTRUSTED_SCRIPT_NOTE + "\n\n" + untrusted_evidence
 
         messages = [{"role": "system", "content": system_prompt}]
         past_turns = simple_relevant_history(
@@ -201,6 +220,23 @@ class ConversationLifecycleMixin:
             marker_defer = CAPABILITY_MARKER in response_text
             truncation_defer = False
 
+        # A marked script proposal is a consent gate, not an answer: capture it
+        # before the refusal/deferral heuristics, so "I cannot scrape this from
+        # memory, here is a script" does not get routed to the plan lane.
+        if wants_proposals and not truncation_defer:
+            draft = {"response": response_text, "model": model, "cost": cost}
+            proposal = _script.proposal_turn(
+                prompt, draft, root=self.root_dir,
+                policy=_script.resolve_script_policy(self.settings),
+                task_id=session_id or None)
+            response_text = draft["response"]
+            if proposal is not None:
+                if persist:
+                    save_chat_turn(session_id, proposal, self.history_dir)
+                emit("chat_response", intent="script",
+                     cost=proposal["cost"], model=proposal["model"])
+                return proposal
+
         # The chat lane honors the same deferral contract as apply: a
         # HARNESS_DEFER marker is the model handing the decision back instead
         # of guessing. Free models usually defer in prose instead, so a
@@ -254,7 +290,8 @@ class ConversationLifecycleMixin:
             # hourglass plan lane (frontier-planned DAG, governed apply with
             # paid escalation rungs). Truncation defers keep their "continue"
             # resume instead: the content already exists, it needs more room.
-            if not truncation_defer and self._auto_escalation_armed():
+            if (not truncation_defer and allow_escalation
+                    and self._auto_escalation_armed()):
                 emit("chat_escalated", reason=defer_reason, target="plan_lane")
                 try:
                     return self._handle_edit(
@@ -295,9 +332,26 @@ class ConversationLifecycleMixin:
             ],
         }
 
-        save_chat_turn(session_id, result, self.history_dir)
+        if persist:
+            save_chat_turn(session_id, result, self.history_dir)
         emit("chat_response", intent="conversation", cost=cost, model=model)
         return result
+
+    def answer_from_script_output(self, prompt: str, evidence: str, *,
+                                  session_id: Optional[str] = None,
+                                  cancel_check=None) -> Dict[str, Any]:
+        """Answer the original request from approved script output.
+
+        One governed completion, with the output attached as untrusted system
+        evidence. This is not persisted as its own chat turn (the run's turn
+        owns it) and it cannot propose another script, so the approval loop
+        cannot chain model turns into executions.
+        """
+        return self._handle_conversation(
+            prompt, session_id or "script-followup",
+            cancel_check=cancel_check, web=False,
+            untrusted_evidence=evidence, propose_scripts=False,
+            allow_escalation=False, persist=False)
 
     def _gather_web_context(self, prompt: str,
                             named_hosts=None) -> List[Dict[str, Any]]:

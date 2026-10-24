@@ -270,6 +270,10 @@ def validate_dispatch(kind, args):
             raise HarnessError("consent_sha must be a sha256 digest")
         args["consent_sha"] = sha or None
         args["allow_exec"] = args.get("allow_exec") is True
+        origin = (_opt_str(args, "origin") or "user").strip().lower()
+        if origin not in ("user", "model"):
+            raise HarnessError("script origin must be 'user' or 'model'")
+        args["origin"] = origin
         args["timeout_s"] = _opt_int(args, "timeout_s", 1, _script.MAX_TIMEOUT_S)
         args["score"] = _opt_bool(args, "score") if "score" in args else True
         args["session_id"] = _opt_str(args, "session_id")
@@ -469,13 +473,13 @@ def run_chat_task(task_id, args, cancel_check):
         settings.allow_escalation = bool(args["allow_escalation"])
     prompt = args["prompt"]
     root_dir = Path(args["root_dir"]) if args.get("root_dir") else None
+    script_policy = _script.resolve_script_policy(settings)
     # A /script message is a consent request, not a model turn: the card it
     # returns is the only way the source can run, and the run still has to
     # present the sha the card showed.
     try:
         proposal = _script.propose_script(
-            prompt, root=root_dir, policy=_script.resolve_script_policy(settings),
-            task_id=task_id)
+            prompt, root=root_dir, policy=script_policy, task_id=task_id)
     except _script.ScriptRefused as exc:
         result = _script_refusal_result(
             exc, {"goal": "", "root_dir": str(root_dir) if root_dir else None})
@@ -487,19 +491,25 @@ def run_chat_task(task_id, args, cancel_check):
         info = proposal["script"]
         _events.emit("script_proposed", task_id=task_id,
                      sha256=info["sha256"], chars=info["chars"],
-                     goal=info["goal"], enabled=info["enabled"])
+                     goal=info["goal"], enabled=info["enabled"],
+                     origin=info.get("origin") or "user")
         turn = {
             "status": proposal["status"], "intent": "script",
             "kind": "script", "script_state": "proposed",
             "prompt": prompt, "response": proposal["response"],
             "model": "script-runner", "cost": 0.0,
             "script": {k: info[k] for k in
-                       ("goal", "sha256", "chars", "root", "timeout_s")},
+                       ("goal", "sha256", "chars", "root", "timeout_s",
+                        "origin")},
         }
         if args.get("session_id"):
             _save_chat_turn(args["session_id"], turn)
         return proposal
     agent = AutonomousAgent(settings=settings, root_dir=root_dir)
+    # A model reply may propose a script only when the operator has enabled
+    # scripting and selected a workspace: the proposal card needs both, and
+    # other callers (MCP, non-GUI) keep the default of no proposals.
+    agent.script_proposals = bool(script_policy.enabled and root_dir is not None)
     # Bind cancellation at the network boundary as well as the orchestration
     # checkpoints, so Stop can interrupt an in-flight provider request.
     from ._http import HttpTransport
@@ -584,6 +594,18 @@ def _script_receipt_text(receipt):
     return "\n".join(lines)
 
 
+def _answer_from_script_output(settings, root, receipt, goal, cancel_check,
+                               task_id):
+    """One follow-up answer with the script's output as untrusted evidence."""
+    agent = AutonomousAgent(settings=settings, root_dir=root)
+    evidence = _script.untrusted_output_envelope(receipt)
+    request = (str(goal or "").strip()
+               or "Answer the original request from the approved script output.")
+    return agent.answer_from_script_output(
+        request, evidence, session_id=f"script-followup-{task_id}",
+        cancel_check=cancel_check)
+
+
 def run_script_task(task_id, args, cancel_check):
     """Execute one approved script through the one governed runner.
 
@@ -638,9 +660,36 @@ def run_script_task(task_id, args, cancel_check):
         "response": _script_receipt_text(receipt),
         "model": "script-runner",
         "cost": 0.0,
+        "proposal_origin": args.get("origin") or "user",
         "script": receipt,
         "script_evidence": [_script.script_evidence(receipt)],
     }
+    # A script the assistant proposed exists so the assistant can answer from
+    # it. The human /script path stays exactly as it was: the receipt is the
+    # end of that turn. The follow-up runs after the receipt exists, so a
+    # provider failure can never lose the run evidence.
+    if (result["proposal_origin"] == "model"
+            and receipt["status"] in ("ok", "failed", "timeout")):
+        try:
+            answered = _answer_from_script_output(
+                settings, root, receipt, args.get("goal"), cancel_check,
+                task_id)
+        except Exception as exc:  # noqa: BLE001 - keep the receipt
+            result["response"] += (
+                f"\n\n[The model could not answer from the script output: "
+                f"{exc}]")
+        else:
+            answer = str(answered.get("response") or "").strip()
+            if answer:
+                result["answer"] = answer
+                result["response"] = result["response"] + "\n\n" + answer
+                result["model"] = answered.get("model") or "script-runner"
+                result["cost"] = round(
+                    float(answered.get("cost") or 0.0), 6)
+            else:
+                result["response"] += (
+                    "\n\n[The model returned no answer from the script "
+                    "output.]")
     if args.get("session_id"):
         _save_chat_turn(args["session_id"],
                         {**result, "script_state": "ran"})

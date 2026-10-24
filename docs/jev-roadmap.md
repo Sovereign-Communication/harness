@@ -517,6 +517,58 @@ proof in the browser at `127.0.0.1:8765` shows the refusal as a `Script
 refused` step plus a refusal card, with scripting left enabled on that
 listener only so the feature can be retested.
 
+### Assistant-authored scripts (`SCR-3`) — 2026-10-23 (#362)
+
+The post-merge audit's first gap: SCR-2 made scripting a governed tool a human
+types (`/script`), not a capability the assistant reaches for. The model could
+neither propose a script nor consume its output, so "any lane can author" was
+really "a human can type Python, or an MCP client can call it."
+
+- `harness/script.py` still owns every edge. `extract_model_proposal` accepts
+  at most one proposal from a reply — a `harness-script` fence or a
+  `SCRIPT PROPOSAL:` line directly above a Python fence — and removes the
+  marker and block from the prose. Ordinary code examples never match; two
+  proposals are ambiguous and ignored.
+- `propose_source` is the shared builder (`propose_script` calls it with origin
+  `user`, the model path with origin `model`), so compile checks, the workspace
+  rule, sha binding and the typed refusal frames have one implementation. The
+  card gained `origin`, and nothing runs on a proposal.
+- The chat lanes own the turn shape. `AutonomousAgent.script_proposals` is set
+  only by the GUI server when scripting is enabled and a workspace is selected;
+  `_handle_conversation` and the hourglass answer loop append the capability
+  note and, before their single history save (and before Jev reviews an answer
+  in hourglass), convert a marked reply into `kind=script`,
+  `script_state=proposed`. No duplicate answer turn is written.
+- A model-origin run answers from the result. After a terminal receipt,
+  `run_script_task` makes one follow-up completion with the original request as
+  the user message and the output in the system prompt inside
+  `<untrusted-script-output>`: data-only, bounded, closing tag neutralized, and
+  no proposal capability, so the approval loop cannot chain. The receipt is
+  assembled first, so a provider failure can never lose the run. The human
+  `/script` turn still ends at the receipt.
+- The GUI posts the proposal's origin and renders the follow-up answer below
+  the receipt, live and from history; the footer shows the answering model and
+  the combined spend.
+
+**Planned before implementing.** The plan was scored through the calibrated
+answer-sufficiency pack before any code: `answer_sufficient` **0.80 twice**
+(bar 0.70), deterministic, `plan_required` true. The first live model reply
+(deepseek-v4-flash) proposed a `harness-script` block on the natural request
+"audit the tests directory: count how many test cases live in each file...",
+which exposed a surviving `SCRIPT PROPOSAL` marker in the prose; the parser now
+strips it.
+
+**Verified locally.** The full hermetic battery ran green at **4,952 tests**
+(`OK (skipped=72)`) on the refreshed baseline; D12 measures **107/107** changed
+harness statements, and the self-audit scores **10.00/10 on all four
+dimensions** (13/13, 14/14, 8/8, 12/12). A live run of the branch through the
+GUI API proposed the AST script on the request above, and approval ran it
+(140/108/108/102/98 across the five largest test files) with z-ai/glm-5.3-flash
+answering from that output and noting the tie; the site-audit prompt instead
+routed to web evidence and answered there, which is the model choosing not to
+script. Default-off behavior remains a refusal. The 8765 browser proof and the
+12 CI checks are recorded on the PR.
+
 ### Web evidence ladder — 2026-10-23 (#355)
 
 Operator repro: `audit www.freeoffgridcalculator.com for user friendliness and
