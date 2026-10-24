@@ -1,0 +1,274 @@
+{
+  "status": "planned",
+  "goal": "Fix #347 in the settings loader: explicit jev_disabled=True must suppress key resolution; explicit jev_api_key=None must clear; omitted key keeps ambient resolution; explicit False permits normal resolution unless cleared. Add regression tests including the CLI plan preview with zero Jev transport.",
+  "total_nodes": 1,
+  "batches": [
+    [
+      "task_1"
+    ]
+  ],
+  "nodes": [
+    {
+      "node_id": "task_1",
+      "instruction": "Fix #347 in the settings loader: explicit jev_disabled=True must suppress key resolution; explicit jev_api_key=None must clear; omitted key keeps ambient resolution; explicit False permits normal resolution unless cleared. Add regression tests including the CLI plan preview with zero Jev transport.\n\n[STRUCTURAL GUIDELINE]: This goal requires iterative control flow, conditional branching, or multi-step execution. Represent those dependencies explicitly in the executable DAG.",
+      "target_files": [
+        "harness/config.py"
+      ],
+      "dependencies": [],
+      "local_gate": null,
+      "complexity_tier": 1,
+      "recommended_model": "deepseek/deepseek-v4.1-flash",
+      "cost_ceiling": 0.04,
+      "backend": "diff",
+      "classification": {
+        "tier": 1,
+        "score": 0.5,
+        "reasons": [
+          "standard implementation keywords (+0.30): fix, dag, plan",
+          "single target file scope"
+        ],
+        "estimated_cost_tier": "budget"
+      },
+      "route": {
+        "ladder": [
+          "deepseek/deepseek-v4.1-flash",
+          "deepseek/deepseek-v4-flash",
+          "openai/gpt-4o-mini",
+          "openai/gpt-5.6-luna",
+          "z-ai/glm-5.3-flash"
+        ],
+        "cost_ceiling": 0.04
+      }
+    }
+  ],
+  "total_cost_ceiling": 0.04,
+  "dag": {
+    "nodes": [
+      {
+        "node_id": "task_1",
+        "instruction": "Fix #347 in the settings loader: explicit jev_disabled=True must suppress key resolution; explicit jev_api_key=None must clear; omitted key keeps ambient resolution; explicit False permits normal resolution unless cleared. Add regression tests including the CLI plan preview with zero Jev transport.\n\n[STRUCTURAL GUIDELINE]: This goal requires iterative control flow, conditional branching, or multi-step execution. Represent those dependencies explicitly in the executable DAG.",
+        "target_files": [
+          "harness/config.py"
+        ],
+        "dependencies": [],
+        "local_gate": null,
+        "complexity_tier": 1,
+        "backend": "diff"
+      }
+    ]
+  },
+  "decomposition": "heuristic",
+  "structural": {
+    "verdict": "fail",
+    "confidence": 0.66,
+    "supported": 0.81,
+    "cost": 1.8942e-05,
+    "input_tokens": 451,
+    "output_tokens": 39,
+    "is_fallback": false,
+    "fallback_reason": null,
+    "model": "jev-1.14.0",
+    "site": "cli",
+    "discarded": false
+  },
+  "composed_worst_case": {
+    "composed_worst_case": 0.041024,
+    "node_ceiling": 0.04,
+    "decompose": 0.001024,
+    "waist": 0.0,
+    "consensus": 0.0,
+    "remaining": 0.0985784465536,
+    "plan_ceiling": 0.1,
+    "exceeds_remaining": false
+  },
+  "planning": {
+    "kind": "sufficient",
+    "reason": "brief_covers_the_request",
+    "brief_tokens": 2617,
+    "plan": null,
+    "evidence_request": [],
+    "rounds": [
+      {
+        "round": 1,
+        "outcome": "sufficient",
+        "max_input_tokens": 200000,
+        "brief_tokens": 2617,
+        "sources": 1,
+        "omitted": 0,
+        "conflicts": 0,
+        "grounding_issues": 0,
+        "jev_native": false
+      }
+    ],
+    "jev_signals": {},
+    "budget": {
+      "label": "planning",
+      "parent": "run",
+      "max_input_tokens": 200000,
+      "max_output_tokens": 64000,
+      "used_input_tokens": 0,
+      "used_output_tokens": 0,
+      "used_reasoning_tokens": 0,
+      "used_cached_tokens": 0,
+      "token_kinds": {
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cached": 0
+      },
+      "estimation_markers": {
+        "has_estimates": false,
+        "has_unavailable": false,
+        "all_actual": false
+      },
+      "reserved_input_tokens": 0,
+      "reserved_output_tokens": 0,
+      "remaining_input_tokens": 200000,
+      "remaining_output_tokens": 64000,
+      "calls": 0,
+      "cancelled": 0,
+      "open_allowances": 0,
+      "over_input_tokens": 0,
+      "over_output_tokens": 0,
+      "usage_sources": {
+        "actual": 0,
+        "estimated": 0,
+        "unavailable": 0
+      },
+      "by_label": {},
+      "token_kinds_by_label": {}
+    }
+  },
+  "stage_judgments": {
+    "context": {
+      "dimension": "context_intake",
+      "signals": {
+        "context_relevant": 0.65,
+        "context_coverage_sufficient": 0.1,
+        "context_conflict_present": 0.13
+      },
+      "native": true
+    }
+  },
+  "composition": {
+    "run_budget": "run",
+    "stages": [
+      {
+        "stage": "planning",
+        "max_input_tokens": 200000,
+        "max_output_tokens": 64000,
+        "state": "completed"
+      },
+      {
+        "stage": "execution",
+        "max_input_tokens": 2623,
+        "max_output_tokens": 32000,
+        "state": "pending"
+      },
+      {
+        "stage": "verification",
+        "max_input_tokens": 1311,
+        "max_output_tokens": 16000,
+        "state": "pending"
+      }
+    ],
+    "skipped": [],
+    "completed": [
+      "context"
+    ],
+    "bypassed": {
+      "context": "a brief was supplied; intake already ran"
+    },
+    "denied_bypass": {}
+  },
+  "stage_states": {
+    "context": "completed",
+    "planning": "completed",
+    "execution": "pending",
+    "verification": "pending"
+  },
+  "token_budget": {
+    "label": "run",
+    "parent": null,
+    "max_input_tokens": 200000,
+    "max_output_tokens": 64000,
+    "used_input_tokens": 0,
+    "used_output_tokens": 0,
+    "used_reasoning_tokens": 0,
+    "used_cached_tokens": 0,
+    "token_kinds": {
+      "input": 0,
+      "output": 0,
+      "reasoning": 0,
+      "cached": 0
+    },
+    "estimation_markers": {
+      "has_estimates": false,
+      "has_unavailable": false,
+      "all_actual": false
+    },
+    "reserved_input_tokens": 0,
+    "reserved_output_tokens": 0,
+    "remaining_input_tokens": 200000,
+    "remaining_output_tokens": 64000,
+    "calls": 0,
+    "cancelled": 0,
+    "open_allowances": 0,
+    "over_input_tokens": 0,
+    "over_output_tokens": 0,
+    "usage_sources": {
+      "actual": 0,
+      "estimated": 0,
+      "unavailable": 0
+    },
+    "by_label": {},
+    "token_kinds_by_label": {}
+  },
+  "brief": {
+    "schema_version": 2,
+    "goal": "Fix #347 in the settings loader: explicit jev_disabled=True must suppress key resolution; explicit jev_api_key=None must clear; omitted key keeps ambient resolution; explicit False permits normal resolution unless cleared. Add regression tests including the CLI plan preview with zero Jev transport.",
+    "built_at": "2026-10-24T20:20:01Z",
+    "grounding": {
+      "rules": "models may use only the cited windows below; every claim a consumer emits must carry source_ids citing those windows (or the goal); uncited assertions are invalid -- drop them or list them as unknowns; truncated windows cover only the bytes shown",
+      "sources": [
+        {
+          "id": "s1",
+          "path": "harness/config.py",
+          "sha256": "7b32c8714b195ac20da8b15bbf7b2bc3ff72886aaf8df04694d0a35108e3230a",
+          "lines": 1206,
+          "bytes": 58134,
+          "observed_at": 1792873201.433
+        }
+      ],
+      "claims": [],
+      "unknowns": []
+    },
+    "windows": [
+      {
+        "source_id": "s1",
+        "path": "harness/config.py",
+        "start_line": 1,
+        "end_line": 174,
+        "truncated": true,
+        "note": "head excerpt; the window covers ONLY these lines -- the rest of the file is unseen",
+        "content": "\"\"\"Configuration, API-key resolution, and shared constants.\n\nKey resolution order (back-compatible with SCMessenger's fusion_lite.py):\n  1. ~/.config/scmorc/openrouter_fusion.env   (dedicated spend-limited fusion key)\n  2. ~/.config/scmorc/openrouter.env\n  3. $HARNESS_CONFIG_DIR/openrouter.env        (default: ~/.config/harness/openrouter.env)\n  4. $OPENROUTER_API_KEY environment variable\n\nSettings come from $HARNESS_CONFIG_DIR/config.json (default: ~/.config/harness/config.json),\nwith $HARNESS_* env variables taking precedence.\n\nFree-tier routing: by default (`use_free=True`) every lane uses the best\ncurrent free OpenRouter models. Model slugs go stale, so the pools below are\nlive-validated and rotated at runtime (see harness.spend.discover_free_models and\nthe rotation logic in apply/panel). `openrouter/free` is OpenRouter's own\nfree router and serves as a final fallback lane.\n\"\"\"\nimport json\nimport os\nimport re\nimport tempfile\nfrom dataclasses import dataclass\nfrom types import SimpleNamespace\n\nfrom .errors import HarnessError\nfrom . import osal\nfrom .output import eprint\nfrom .paths import get_config_dir\nfrom .validation import finite_number\n\nCONFIG_DIR = get_config_dir()\n\n# OpenRouter endpoints\nOPENROUTER_CHAT_URL = \"https://openrouter.ai/api/v1/chat/completions\"\nOPENROUTER_KEY_URL = \"https://openrouter.ai/api/v1/key\"\nOPENROUTER_MODELS_URL = \"https://openrouter.ai/api/v1/models\"\n\n# Fireworks direct provider lane (EV-7)\nFIREWORKS_CHAT_URL = \"https://api.fireworks.ai/inference/v1/chat/completions\"\nFIREWORKS_MODEL_PREFIX = \"accounts/fireworks/models/\"\nFIREWORKS_PROVIDER = \"fireworks\"\nFIREWORKS_KEY_ENV = \"FIREWORKS_API_KEY\"\nFIREWORKS_KEY_FILE = os.path.join(CONFIG_DIR, \"fireworks.env\")\n\n\ndef is_fireworks_model_path(label):\n    \"\"\"True when a model id or spend label names a Fireworks serverless path.\"\"\"\n    return isinstance(label, str) and label.startswith(FIREWORKS_MODEL_PREFIX)\n# Daily usage rankings (model_permaslug + total_tokens per day). The\n# evidence source for pool-candidate refresh (see harness/rankings.py).\nOPENROUTER_RANKINGS_URL = \"https://openrouter.ai/api/v1/datasets/rankings-daily\"\n\n# ---- EV-0..EV-5 model economics constants (see docs/jev-roadmap.md) --------\n# EV-4 automatic pool rotation safety bounds:\nEV_MIN_VALUE_RATIO = 1.15\nEV_MAX_COST_INCREASE_AUTO = 0.0\nEV_MAX_MOVES_PER_RUN = 1\nEV_COOLDOWN_DAYS = 14\nEV_MIN_OBSERVED_SAMPLES = 5\nEV_MAX_HEAD_STREAK = 3\nEV_MIN_UPTIME_1D = 0.90\nEV_AUTO_APPLY = False\n# Unified benchmark feed: Artificial Analysis (coding_index / agentic_index /\n# intelligence_index), Design Arena, and OpenRouter's own tau-bench / GPQA /\n# web-search evals (accuracy, avg_cost_per_task). Requires a key.\nOPENROUTER_BENCHMARKS_URL = \"https://openrouter.ai/api/v1/benchmarks\"\n# Per-provider endpoint feed. This is the only source of `discount`,\n# `overrides`, `input_cache_read`, published uptime, and the real\n# per-provider price spread -- `/models` publishes only an aggregate, which\n# is what DF-EV-2 is about. One GET per model id (see the fetch budget).\nOPENROUTER_ENDPOINTS_URL = \"https://openrouter.ai/api/v1/models/{slug}/endpoints\"\n\n# Benchmark sources documented by the /benchmarks endpoint.\nBENCHMARK_SOURCES = (\"artificial-analysis\", \"design-arena\", \"openrouter\")\n\n# Published limits on the benchmark feed are 30 requests/minute and 500\n# requests/day per account (the numbers are quoted in `fetch_endpoints`'s\n# docstring rather than held as unused constants). This is why endpoint\n# fetching is bounded rather than catalog-scoped: one GET per model means a\n# full-catalog sweep (~400 models) would nearly exhaust the daily budget by\n# itself. Catalog-wide coverage comes from /models (unmetered).\nMAX_ENDPOINT_FETCHES_PER_RUN = 40\n\n# Discount semantics. OpenRouter publishes a per-endpoint `discount` (0..1)\n# alongside `prompt`/`completion`, but does NOT document whether the listed\n# rates already have it applied. The two readings differ by exactly 2x at\n# discount=0.5, so DF-EV-2 cannot be closed on a guess: EV-0 settles it with\n# a measured probe and gates every downstream price computation on the\n# recorded answer.\nDISCOUNT_LISTED_IS_EFFECTIVE = \"listed_is_effective\"\nDISCOUNT_IS_MULTIPLIER = \"discount_is_multiplier\"\n# Neither hypothesis matched the measured charge (or both did -- provider\n# price aliasing makes that possible, see economics.run_discount_probe).\nDISCOUNT_UNRESOLVED = \"unresolved\"\nDISCOUNT_AMBIGUOUS = \"ambiguous\"\n# No endpoint carries a discount, so the question does not arise and listed\n# rates are used as-is.\nDISCOUNT_NOT_APPLICABLE = \"not_applicable\"\nDISCOUNT_SEMANTICS_VALUES = (\n    DISCOUNT_LISTED_IS_EFFECTIVE, DISCOUNT_IS_MULTIPLIER,\n    DISCOUNT_NOT_APPLICABLE,\n)\n# Relative tolerance when matching a measured charge against a predicted one.\n# OpenRouter computes cost deterministically, but a provider may bill a\n# different endpoint than the one priced, so this is a band, not equality.\nDISCOUNT_PROBE_TOLERANCE = 0.05\n# Probe shape: the smallest call that still returns an itemized `usage`\n# block. Reasoning is off deliberately -- hidden thinking is an unbudgeted\n# variable in a pricing measurement.\nDISCOUNT_PROBE_MAX_TOKENS = 64\nDISCOUNT_PROBE_PROMPT = \"Reply with the single word: ok\"\n\n# Evidence + verdict locations. BOTH are repo-committed, deliberately.\n#\n# `ECONOMICS_VERDICT_PATH` is what the price gate reads, so it is a REPO path,\n# not a machine-global one: a verdict that authorizes every downstream cost\n# decision has to be reviewable evidence that travels with the code, and two\n# checkouts must not disagree about whether the gate is satisfied. It sits\n# under audits/self/dogfood/ because that is where the DoD puts live receipts\n# and because D11 (sd_corpus_integrity) already SHA-256-pins every tracked\n# file there -- so a hand-edited verdict fails the audit deterministically and\n# the refresh is the scripted one. There is deliberately no fallback to\n# ~/.config: a verdict that exists only on one machine is not evidence, and a\n# fallback would make the gate's answer depend on whose checkout is asking.\nECONOMICS_SCHEMA_VERSION = 1\nECONOMICS_VERDICT_PATH = \"audits/self/dogfood/EV0A_DISCOUNT_SEMANTICS.json\"\n\n# MorphLite-compatible transformation backend. Selecting the `morph` backend\n# explicitly opts into this model; ordinary Harness routing remains unchanged.\nMORPH_MODEL = \"morph/morph-v3-fast\"\n\n# Cost ceilings. The philosophy (inherited from fusion_lite.py): worst-case\n# cost is a *guarantee*, computed before any network call, not an estimate.\nHARD_MAX_COST = 1.00        # per-call ceiling can never be raised past this\n# Default per-call (per-lane-run) ceiling. Raised from $0.02 with the verified\n# 2026-09-13 paid slates: the wider vote pool's worst-case preflight reserve is\n# ~$0.04 (actual verified cost of a 5-vote paid panel: $0.0038 -- see\n# docs/MODEL_SELECTION_HANDOFF_2026-09-13.md). HARD_MAX_COST is unchanged.\nDEFAULT_MAX_COST = 0.05\nHARD_TASK_MAX_COST = 1.00   # per-task (multi-round apply) hard ceiling\n# Raised from $0.05 with default-on paid escalation: the unknown-correctness\n# ration (0.4 of the hard cap) must fund one worst-case paid rescue call\n# (~$0.084 on the cheapest paid rung) or the saturation ladder starves the\n# rung it just stepped up to. Still 2.5x under the hard ceiling.\nDEFAULT_TASK_MAX_COST = 0.10\n# Verify token budget. On the free tier cost is $0 regardless, so this is\n# intentionally generous -- it is NOT a cost cap. It exists so long audit/\n# analysis prompts get a full answer instead of truncating (a 300-token default\n# made reasoning-heavy free models burn the budget on hidden thinking and\n# return empty content). Individual free models still impose their own hard\n# per-request output ceilings; anything above a provider's cap is simply\n# ignored/truncated by OpenRouter, so a large value here is safe.\nDEFAULT_MAX_TOKENS = 2048\nDEFAULT_APPLY_MAX_TOKENS = 4096\n\n# Run/stage TOKEN allowances (HV-3). These are not cost caps: a free model\n# bills $0.00 and can still overflow a context window. The hard caps below\n# are absolute -- like HARD_MAX_COST they cannot be raised past by config,\n# env, or a caller, so a misconfigured value is refused before any dispatch.\n# harness/token_budget.py is the one owner that enforces them.\nDEFAULT_TOKEN_BUDGET_INPUT = 200000\nDEFAULT_TOKEN_BUDGET_OUTPUT = 64000\nHARD_TOKEN_BUDGET_INPUT = 4000000\nHARD_TOKEN_BUDGET_OUTPUT = 1000000\n\n# Composable run stages (HV-4). Declared here as the *default set*; the\n# composition owner is harness/waist.py (resolve_stages), which is what\n# refuses an unknown stage name -- config only decides what an operator\n# asks for by default, and the default is every stage, which is exactly how\n# the lanes behaved before composition was selectable.\nDEFAULT_HOURGLASS_STAGES = (\"context\", \"planning\", \"execution\",\n                            \"verification\")\n\n# ---- lane budgets and reasoning modes (ONE policy owner) -------------------\n"
+      }
+    ],
+    "scope": {
+      "included": [
+        "harness/config.py"
+      ],
+      "excluded": []
+    },
+    "coverage": {
+      "sources_declared": 1,
+      "windows_cited": 1,
+      "omitted": 0,
+      "truncated_windows": 1,
+      "gaps": []
+    },
+    "omitted": [],
+    "conflicts": [],
+    "estimated_tokens": 2617
+  }
+}

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Results — Harness issue program</title>
+<meta name="description" content="Measured Harness issue-program results: explicit Jev override precedence, ledger and site gates, and the 0.23-cent driven audit receipt.">
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header class="site">
+  <h1>Proof Bench</h1>
+  <nav>
+    <a href="../index.html">Home</a>
+    <a href="../tiers/index.html">Tiers</a>
+    <a href="../router/index.html">Router</a>
+    <a href="../traces/index.html">Traces</a>
+    <a href="../publish/index.html">Publish</a>
+    <a href="../methodology/index.html">Methodology</a>
+    <a href="./index.html">Results</a>
+  </nav>
+</header>
+<main>
+  <h2>Issue program — batch 1</h2>
+  <p class="muted">One reviewed slice at a time. An issue is complete only after its
+  changes merge with green CI; queued rows are not claimed as done.</p>
+
+  <table>
+    <thead>
+      <tr><th>Issue</th><th>Owner</th><th>Status</th><th>Evidence</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><a href="https://github.com/Sovereign-Communication/harness/issues/347">#347</a></td>
+        <td>Config</td>
+        <td><span class="badge warn">implemented — pending CI</span></td>
+        <td>9 focused regressions; 243 affected tests; real CLI preview with zero Jev transport</td>
+      </tr>
+      <tr>
+        <td>Remaining queue</td>
+        <td>Canon register</td>
+        <td><span class="badge">queued</span></td>
+        <td><a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/queue.json">57 remaining in the 58-issue queue</a></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>What changed in #347</h3>
+  <p><code>load_settings()</code> now gives an explicit <code>jev_disabled</code>
+  override precedence over the environment switch, and distinguishes an omitted
+  <code>jev_api_key</code> from an explicitly supplied <code>None</code>. A
+  disabled Settings object cannot resurrect an installed credential or dispatch
+  a native Jev request.</p>
+  <p><a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/347.md">Read the acceptance matrix and test receipt →</a></p>
+
+  <h3>Continued gates</h3>
+  <table>
+    <thead><tr><th>Gate</th><th class="num">Result</th><th>Scope</th></tr></thead>
+    <tbody>
+      <tr><td>Ledger suite</td><td class="num">58 / 58</td><td>hash chain, isolation, parity, Jev spend</td></tr>
+      <tr><td>Site pipeline</td><td class="num">67 / 67</td><td>export, aggregate, route pack, fold parity</td></tr>
+      <tr><td>Full hermetic suite</td><td class="num">OK</td><td>5,015 tests run; 72 skipped</td></tr>
+      <tr><td>Ruff</td><td class="num">clean</td><td>changed Python tree</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Measured audit receipt</h3>
+  <p>The driven <code>freeoffgridcalculator.com</code> audit cost
+  <strong>$0.002306</strong> (0.23¢) including its Jev review: fetch + browser
+  evidence, six exercised aspects scored, two left unassessed, and the turn
+  ended <code>needs_review</code> rather than a synthetic pass.
+  <a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/case-studies/freeoffgridcalculator-2026-10-24.md">Read the case study and screenshot →</a></p>
+
+  <p class="small muted">This is a static results surface; the linked queue and
+  receipts are the source of truth. No public deployment is implied by this
+  local build.</p>
+</main>
+<footer class="site">
+  <p class="small muted">Failures are data. Ungated self-reports are not proof.</p>
+</footer>
+</body>
+</html>
