@@ -104,3 +104,66 @@ The workflow sets no GitHub `environment`, so the Environment field must stay
 empty — a mismatch there is the most common cause of a 403 that looks
 otherwise correct. After registering, run a dry run first, then push a real
 tag.
+
+## Readiness snapshot — 2026-10-23
+
+Audited against the `0.4.2` tree. `https://pypi.org/pypi/sovereign-harness/json`
+returns **404**: no version has ever been published, so the first upload claims
+the name and nothing can be overwritten afterwards.
+
+Verified locally on that tree (Windows, CPython 3.14, `setuptools 84`):
+
+| Check | Result |
+|---|---|
+| `python -m build` | sdist 428 files (2.0 MB) + wheel 158 files (996 KB), `py3-none-any` |
+| `python -m twine check --strict dist/*` | PASSED on both artifacts |
+| Wheel metadata | Metadata-Version 2.4, `License-Expression: MIT`, `Requires-Python: >=3.9`, no runtime `Requires-Dist`, four extras intact |
+| Wheel package data | all five `harness/ui/*` files present (`app.css`, `app.js`, `index.html`, `panes.css`, `panes.js`) |
+| sdist contents | `docs/` (37), own tests (216), `CHANGELOG`, `CONTRIBUTING`, `THREAT_MODEL`, `LICENSE`; no `__pycache__`/`.pyc` |
+| Clean-venv wheel install | `harness`, `harness-mcp`, `harness-desktop`, `driver-core` all `--help` cleanly; `pip check` clean; reports `0.4.2` |
+| Installed-wheel server | `harness serve` serves `/`, `/app.js`, `/app.css`, `/panes.js`, `/panes.css` and answers `/api/gates` |
+| Clean-venv sdist install | builds and imports, reports `0.4.2` |
+| Credential scan of both artifacts | no keys/tokens; only redaction patterns and `sk-or-v1-…` test fixtures |
+
+Open gaps, in the order they block a first release:
+
+1. **Trusted publisher not registered.** Owner-only, per the section above; until
+   it exists, a tag push runs every step and fails at upload with a 403.
+2. **No release has been cut.** `CHANGELOG.md` carries an `[Unreleased]` section
+   above a dated `[0.4.2]`, and `v0.4.1` is the newest tag, so `0.4.2` was never
+   tagged or uploaded. Cut the next version explicitly — `python
+   audits/self/release.py --version 0.4.3` (or `0.5.0` if the accumulated
+   `[Unreleased]` changes are breaking) — and let the driver flatten the
+   changelog; do not tag `0.4.2` for content that has since moved on.
+3. **README links break on the PyPI page.** The long description is the README,
+   and links such as `[docs/security.md](docs/security.md)` resolve against
+   `https://pypi.org/project/sovereign-harness/` rather than the repository.
+   Absolute GitHub URLs render; relative ones 404. `twine check` does not catch
+   this because the Markdown itself is valid.
+4. **Operator absolute paths ship in the sdist.** `docs/claude-context.md`,
+   `docs/jev-dogfood.md` and `docs/jev-roadmap.md` contain
+   `C:\Users\SCM\…` command lines. They are not credentials, but they are the
+   "local paths" step 2 asks to exclude; either drop those operator-lane docs
+   from `MANIFEST.in` or sanitize the commands before publishing.
+5. **The top-level import name is taken.** PyPI already hosts a different
+   distribution named `harness` (0.1.0) that owns the same `harness/` top-level
+   package. `sovereign-harness` does not conflict as a *distribution* name, but
+   installing both into one environment overwrites files in `site-packages`.
+   Worth stating in the README install note; renaming the import is a post-1.0
+   question, not a release step.
+6. **Wheel installs carry code, not evidence.** `packs/` and `audits/` stay out
+   of the artifacts by design: routing falls back to the bootstrap tier lists,
+   `economics_route` falls back to its built-in pack, and the discount gate
+   refuses rather than guessing. That is the intended contract, but a wheel user
+   gets frozen model tiers — say so where the install is documented.
+7. **Metadata polish.** No `Classifier:` lines and only Homepage/Issues project
+   URLs; adding `Programming Language :: Python :: 3 :: Only`, the supported
+   versions, and Changelog/Documentation URLs is free rendering on the PyPI
+   page.
+
+The publish workflow itself was reviewed line by line and matches this
+document: one interpreter, one artifact of each kind, three-way version parity,
+`twine check`, clean-venv wheel smoke, and OIDC trusted publishing with no
+stored token. It could not be executed from this machine (no tag, no owner
+registration); `workflow_dispatch` with the defaults remains the rehearsal
+path.
