@@ -2563,6 +2563,29 @@ class TestDynamicTokenAllocation(unittest.TestCase):
             self.assertIn("harness-script", system)
             self.assertIn("must approve", system)
 
+    def test_hourglass_answer_injects_jev_identity_when_named(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = AutonomousAgent(settings=_lane_settings(),
+                                    history_dir=root)
+            resp = {
+                "choices": [{"message": {"content": "Jev is a judge."},
+                             "finish_reason": "stop"}],
+                "usage": {"cost": 0.0},
+            }
+            gov = MagicMock()
+            gov.remaining.return_value = 1.0
+            gov.fetch_pricing.return_value = {"m": (0.0, 0.0)}
+            gov.preflight.return_value = (0.0, [])
+            with patch("harness.hourglass_lifecycle.chat",
+                       return_value=(200, resp)) as call, \
+                 patch("harness.hourglass_lifecycle.jev_identity_block",
+                       return_value="JEV IDENTITY BLOCK"):
+                agent._hourglass_answer_once(
+                    "what is Jev?", "context", governor=gov, api_key="k")
+            system = call.call_args.kwargs["messages"][0]["content"]
+            self.assertIn("JEV IDENTITY BLOCK", system)
+
     def test_hourglass_returns_a_proposal_before_jev_review(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

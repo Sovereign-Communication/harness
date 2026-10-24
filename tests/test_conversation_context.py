@@ -24,6 +24,8 @@ from harness.simple_request import (
 from harness.spend import SpendGovernor
 from tests._fake import FakeTransport
 from harness.conversation_context import (
+    MEMORY_SCHEMA,
+    _format_turn,
     assemble_history,
     extract_facts,
     facts_block,
@@ -204,6 +206,100 @@ class AssembleHistoryTests(unittest.TestCase):
             "audit that site again", turns, budget_chars=300,
             memory=self._memory_with_site())
         self.assertIn(SITE, "\n".join(m["content"] for m in messages))
+
+
+class EdgeBranchTests(unittest.TestCase):
+    """Defensive branches that keep memory/history honest at the edges."""
+
+    def test_protocol_relative_paths_are_not_facts(self):
+        facts = extract_facts("see //cdn.example/x and ./tests/test_chat.py")
+        paths = [f["value"] for f in facts if f["kind"] == "path"]
+        self.assertNotIn("//cdn.example/x", paths)
+        self.assertIn("./tests/test_chat.py", paths)
+
+    def test_memory_document_repairs_bad_fact_and_session_shapes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            memory_path(root).write_text(json.dumps({
+                "schema": MEMORY_SCHEMA,
+                "facts": "not-a-list",
+                "sessions": [],
+            }), encoding="utf-8")
+            memory = load_memory(root)
+            self.assertEqual(memory["facts"], [])
+            self.assertEqual(memory["sessions"], {})
+
+    def test_atomic_write_cleans_its_temp_file_on_replace_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch("harness.conversation_context.os.replace",
+                            side_effect=OSError("replace failed")):
+                with self.assertRaises(OSError):
+                    remember_turn("s1", "audit www.example.com", "ok",
+                                  history_dir=root)
+            leftovers = list(root.glob(".conversation-memory-*"))
+            self.assertEqual(leftovers, [])
+
+    def test_empty_session_id_does_not_write_memory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = remember_turn("   ", "audit www.example.com", "ok",
+                                 history_dir=root)
+            self.assertEqual(path, memory_path(root))
+            self.assertFalse(path.exists())
+
+    def test_non_dict_and_empty_facts_are_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = memory_path(root)
+            path.write_text(json.dumps({
+                "schema": MEMORY_SCHEMA,
+                "facts": [
+                    "bad",
+                    {"kind": "", "value": "ignored"},
+                    {"kind": "site", "value": "example.com",
+                     "session_id": "s1"},
+                ],
+                "sessions": {},
+            }), encoding="utf-8")
+            block = facts_block(load_memory(root), budget_chars=2000)
+            self.assertIn("example.com", block)
+            self.assertNotIn("ignored", block)
+            remember_turn("s2", "audit example.com", "ok", history_dir=root)
+            self.assertTrue(path.exists())
+
+    def test_format_turn_empty_and_assistant_only(self):
+        self.assertEqual(_format_turn("", "", 100), [])
+        assistant = _format_turn("", "answer only", 100)
+        self.assertEqual(assistant,
+                         [{"role": "assistant", "content": "answer only"}])
+
+    def test_assemble_history_skips_bad_turns_and_empty_format(self):
+        turns = [
+            "bad",
+            {"prompt": "", "response": ""},
+            {"prompt": "audit www.example.com", "response": "done"},
+        ]
+        messages = assemble_history("audit example.com", turns,
+                                    budget_chars=2000)
+        self.assertTrue(messages)
+        with mock.patch("harness.conversation_context._format_turn",
+                        return_value=[]):
+            self.assertEqual(
+                assemble_history("audit example.com",
+                                 [{"prompt": "x", "response": "y"}],
+                                 budget_chars=2000), [])
+
+    def test_truthy_and_empty_judge_verdicts(self):
+        truthy = needs_earlier_context("self-contained",
+                                       judge=lambda prompt: "yes")
+        self.assertTrue(truthy.needed)
+        self.assertTrue(truthy.native)
+        empty = needs_earlier_context("self-contained",
+                                      judge=lambda prompt: None)
+        self.assertFalse(empty.needed)
+        self.assertFalse(empty.native)
+        self.assertIn("no usable verdict", empty.reason)
 
 
 class SoleSiteTests(unittest.TestCase):

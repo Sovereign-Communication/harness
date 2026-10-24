@@ -20,6 +20,11 @@ class JevMentionTests(unittest.TestCase):
             with self.subTest(prompt=prompt):
                 self.assertFalse(jev_identity.jev_mentioned(prompt))
 
+    def test_repo_root_is_the_package_parent(self):
+        root = jev_identity._repo_root()
+        self.assertTrue((root / "harness").is_dir())
+        self.assertTrue((root / "docs").is_dir())
+
 
 class IdentityBlockTests(unittest.TestCase):
     def setUp(self):
