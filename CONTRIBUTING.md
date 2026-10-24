@@ -187,6 +187,33 @@ The battery also runs locally on every CI interpreter: uv-managed CPython
 `uv python find X.Y`) plus the local default -- so a release battery
 statement covers the CI matrix by direct execution.
 
+## Commit and push safety
+
+The working tree is the only copy of work that has not been committed, and a
+local commit is the only copy of work that has not been pushed. Both steps are
+cheap; losing either is not.
+
+1. **Commit on the phase branch, in reviewable steps.** No change lives only in
+   the working tree between sessions: if a step is finished, commit it; if it
+   is half-finished at a handoff, commit it as `wip:` on the branch.
+2. **Push the feature branch early.** The push backs the commits up and lets CI
+   start; it is not a merge. `git push -u origin <branch>` on your own branch
+   is always safe. Never `git push` to `main` (rule 7 in `AGENTS.md`), and never
+   `--force`/`--force-with-lease` a branch someone else may have built on.
+3. **Read CI, do not assume it.** After a push, open the run for that exact
+   commit. A queued run is not green, a cancelled run is not green, and a push
+   that triggered no run is not green either — the historical silence is
+   recorded in `docs/releasing.md` step 9. Merge only on a green run plus the
+   local gates above.
+4. **Park, never destroy.** Before any `git checkout .`, `git reset --hard`,
+   `git clean -fd`, or a rebase that rewrites local commits, put the current
+   state on a ref first: `git branch backup/<slug>-$(date +%Y%m%d)` (or
+   `git stash create` and keep the SHA). The `backup/*` refs in this repository
+   are that convention in practice; they are kept, not pruned.
+5. **Failures are reported with the command and its output.** A blocked push or
+   a red gate is evidence to record, not something to route around by editing
+   the check.
+
 ## Where things live
 
 | Path | Owns |
