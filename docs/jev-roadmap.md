@@ -600,6 +600,88 @@ answer quotes the page's own copy and CTAs. Hermetic coverage: 13 new tests
 repointed `coverage_baseline.json` from a traced 4,845-test battery; self-audit
 10/10/10/10, Jev gate PASS.
 
+### GUI session audit — 2026-10-23 (operator session `sess_hk39dwd8`)
+
+**State: verified failure evidence; plan open; `GUI-CTX-1` implemented in the
+phase worktree and not yet merged.** This section is the plan for the operator's
+local GUI test session, not a claim that the behaviour is fixed on `main`.
+
+#### What the session proved
+
+The operator tested the local GUI build through six turns. The transcript is
+`~/.config/harness/chat_history/sess_hk39dwd8.jsonl`; the lane is
+`run_hourglass_request` (defer at `harness/hourglass_lifecycle.py`), not the
+bounded simple-answer or conversation lanes.
+
+1. **Turn 1** — "can you audit this site…" deferred for clarification because
+   no site was named. Correct at that instant; the defer text was generic.
+2. **Turn 2** — same prompt, answered with a request for a URL **and** a
+   definition of "JEV assessment", citing unrelated Microsoft audit pages. The
+   lane did not know its own Jev/TypeSafe component.
+3. **Turn 3** — operator named `www.freeoffgridcalculator.com` and said to load
+   the TypeSafe AI skill. The answer invented a "seven Jev heuristics"
+   framework and audited fetched prose, not the driven UI.
+4. **Turn 4** — operator corrected a factual miss ("there is actually a
+   progress bar"), set the bar at 99/100 in every aspect, and asked for real
+   driving, on-grid/off-grid switching, exhaustive per-aspect scoring and
+   world-wide verification. The lane emitted `HARNESS_DEFER` claiming no URL
+   was specified and that the work was beyond the lane.
+5. **Turn 5** — "same site as before…" deferred with "I need one
+   clarification": the route judged a referent that existed two turns earlier
+   as missing.
+6. **Turn 6** — "summarize the entire text thread so far" produced a summary
+   that asserted the URL had never been provided and that Jev had never been
+   defined, contradicting turn 3 verbatim.
+
+The same site had already been audited in an earlier GUI session
+(`ad4f935cae34`, PR #355 web-evidence receipt), so the failure is not missing
+capability alone: it is missing conversation and session memory.
+
+Root causes, in the order they bite:
+
+- **A count/char cap, not a budget.** Both the hourglass and simple-answer
+  lanes called `relevant_history(prompt, turns, max_turns=3, max_chars=2400)`.
+  Turn 3's response is far longer than 2,400 characters, so the whole turn —
+  the turn that named the site — was dropped rather than clipped.
+- **No durable facts.** Nothing outside the transcript recorded that the
+  operator had named a site; a later session began blank.
+- **Clarification was not memory-aware.** The route asked Jev whether the
+  request was self-contained without showing it the remembered facts, so
+  "same site" was judged ambiguous by construction.
+- **Jev was not part of the model's self-model.** No turn loaded
+  `.agents/skills/typesafe-ai/SKILL.md` or `docs/JEV_GATE_POLICY_V1.md`; the
+  model improvised a framework instead of using the one in the repository.
+- **Fetched prose was treated as a driven audit.** No DOM/browser evidence was
+  attached per claim, so a visible progress bar was missed, and the lane then
+  refused the driving request instead of naming the missing driver capability.
+- **Assessment was not exhaustive.** Fixed request ceilings and a
+  single-request pack cannot honestly score "every aspect" at a 99/100 bar.
+
+#### Plan rows
+
+| ID | Owner | Prerequisites | Scope | Acceptance / exit |
+| --- | --- | --- | --- | --- |
+| `GUI-CTX-1` | Chat context | none | Durable conversation memory (sites, URLs, paths, latest request), budget-derived history, Jev recall judgment, memory-aware clarification. Landed in this worktree: `harness/conversation_context.py`, `history.save_chat_turn` projection, hourglass + conversation lanes. | Replay `sess_hk39dwd8`: turn 3's URL survives into turns 4-6; "same site as before" resolves to that site without a clarify defer; summary names the URL and prior findings. Hermetic tests: `tests/test_conversation_context.py` + `HourglassAnswerOnceTests` role/remembered cases. |
+| `GUI-JEV-1` | Identity / skill | none | Make Jev a first-class, named component of the assistant's system prompt: the TypeSafe skill and this canon are loaded before any "Jev assessment" is attempted; no invented heuristics, no asking the operator what Jev is. | A prompt naming Jev triggers the skill load; the answer cites the actual Jev gate policy and never describes Jev as "Jakob's Evaluation" or a made-up seven-heuristic method. Negative control: an unkeyed Jev lane says "Jev is unavailable" instead of improvising. |
+| `GUI-DRIVE-1` | Driver / vision | #355 | A site-verification lane that actually drives the URL: deterministic browser script for state switches (on-grid/off-grid, inputs, CTA), captures DOM + screenshot per claim, and refuses only when the driver is absent — naming that absence. | Each audit claim carries a DOM/screenshot evidence pointer; the progress bar and on-grid/off-grid transitions are verified by driving, not by reading fetched prose. A missing renderer produces a capability statement, not a false site claim. |
+| `GUI-AUDIT-1` | Jev assessment | `GUI-JEV-1`, `GUI-DRIVE-1` | Exhaustive assessment mode: every declared category/aspect is scored against operator-supplied bars (99/100 here), per-aspect evidence and shortfalls are reported, and no fixed Jev request ceiling truncates the state. `jev.max_input_tokens = 0` (or `--exhaustive`) sizes the reservation to the sanitized payload instead of 4k/64k/32k constants; candidate answers are not clipped before judgment. | No aspect is marked passed without evidence; below-bar aspects list the deduction; unassessed is reported as unassessed, never rounded to pass. Receipt records estimated vs observed input tokens and the sized reservation. Provider context-window limits and the spend governor still apply — "no token limit" means no artificial harness cap, not unbounded spend; the run must state which bound stopped it. |
+| `GUI-SUMMARY-1` | Thread digest | `GUI-CTX-1` | Summaries are built from the durable facts and saved turns, not from the model's recall. The digest lists named targets, decisions, open questions and the last result, and is injected as data. | Replaying turn 6 cannot produce "the URL was never provided" while memory contains it; the digest is stable across sessions and cites the turn where each fact was first seen. |
+
+#### Order and gates
+
+`GUI-CTX-1` lands first as its own phase PR (it is the only row with code in
+flight). `GUI-JEV-1` is independent and can follow. `GUI-DRIVE-1` precedes
+`GUI-AUDIT-1` because scoring cannot be exhaustive about UI that was never
+driven. `GUI-SUMMARY-1` follows `GUI-CTX-1`. Every row inherits G0-G4 and the
+canon completion rule: local hard gates plus green CI on the merge, no red-CI
+completion, no baseline gaming.
+
+Acceptance for the whole plan is one hermetic replay of this transcript plus
+one live GUI receipt on the operator's actual session, with the six prompts and
+the `freeoffgridcalculator.com` target. A live receipt that still defers on
+"same site" or summarizes the thread as never containing a URL fails the plan,
+regardless of unit-test color.
+
 ## Canonical current status — final burndown 2026-10-18
 
 Verified remote `main`: post-PR #240 (`a7daf425209b199b765c1368c2483a4ba3780c44`) and PR #241 (`feat/ev-burndown-unification`). All 12 core CI checks pass across the matrix (`audit`, `package`, 5 OS/Python hermetic suite legs, 3 installed-wheel legs, `handoff-scope`, `checkout-hygiene`). This section is the operational canon incorporating all operator rulings and completed burndown tracks.

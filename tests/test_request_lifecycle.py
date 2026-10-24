@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from harness.agent import AutonomousAgent
+from harness.request_router import RequestRoutingMixin
 from harness.request_intent import (
     classify_prompt_intent,
     is_literal_greeting_request,
@@ -66,6 +67,27 @@ def _site_jev(probability=0.999, *, fallback=False, calls=None,
     return Policy()
 
 
+class MissingSiteTargetRoutingTests(unittest.TestCase):
+    class _Router(RequestRoutingMixin):
+        history_dir = None
+
+    def test_vague_site_audit_defers_before_any_model_or_web_call(self):
+        router = self._Router()
+        with patch("harness.request_router.load_memory", return_value={}), \
+             patch("harness.request_router.sole_site", return_value=""), \
+             patch("harness.request_router.save_chat_turn") as saved, \
+             patch("harness.request_router.emit") as emitted:
+            result = router.run_prompt(
+                "can you audit this site and tell me how user friendly it is?")
+        self.assertEqual(result["status"], "deferred")
+        self.assertEqual(result["workflow_tier"], "clarification")
+        self.assertEqual(result["defer_reason"], "missing site target")
+        self.assertIn("URL or domain", result["response"])
+        saved.assert_called_once()
+        emitted.assert_called_once_with(
+            "clarification_required", reason_code="missing_site_target")
+
+
 class SiteCheckClassifierTests(unittest.TestCase):
     def test_incident_prompt_is_simple_action(self):
         self.assertTrue(is_site_check_prompt(
@@ -88,6 +110,15 @@ class SiteCheckClassifierTests(unittest.TestCase):
             with self.subTest(prompt=prompt):
                 self.assertTrue(is_site_check_prompt(prompt), prompt)
                 self.assertEqual(classify_prompt_intent(prompt), "simple-action")
+
+    def test_site_audit_is_not_an_availability_probe(self):
+        prompt = (
+            "Audit https://www.freeoffgridcalculator.com/ for "
+            "user-friendliness using the harness Jev assessment. The site "
+            "targets Google quality: 99/100 minimum. Drive the calculator "
+            "flow and verify the progress bar and on-grid/off-grid modes.")
+        self.assertFalse(is_site_check_prompt(prompt))
+        self.assertEqual(classify_prompt_intent(prompt), "conversation")
 
     def test_genuine_questions_stay_conversational(self):
         for prompt in [

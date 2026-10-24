@@ -9,6 +9,10 @@ break APIs between minor versions).
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.5.0] — 2026-10-23
+
 ### Added
 
 - **The assistant can propose and use a governed script (`SCR-3`).** SCR-2 made

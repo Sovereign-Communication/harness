@@ -104,7 +104,6 @@ class GateRunsOnThisOSTest(unittest.TestCase):
              patch("pathlib.Path.is_file", return_value=False):
             ver = harness._detect_version()
             self.assertEqual(ver, harness._FALLBACK_VERSION)
-            self.assertEqual(ver, "0.4.2")
 
     def test_compileall_gate(self):
         rc, out = run_gate(gate_argv("compileall"), cwd=REPO_ROOT)
