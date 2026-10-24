@@ -5,10 +5,12 @@ authoritative order, dependencies and acceptance exits remain
 [`docs/jev-roadmap.md`](../jev-roadmap.md); this queue is generated from that
 register plus the live GitHub open-issue set.
 
-**Snapshot 2026-10-24:** 58 open GitHub issues, all mapped to a canon row.
-Batch 1 implements **#347** (config/Jev override precedence); the other 57 are
-`queued` in [`queue.json`](queue.json). No issue is marked complete until its
-changes are merged with green CI.
+**Snapshot 2026-10-24:** the queue was generated at 58 open GitHub issues,
+all mapped to a canon row. Batch 1 landed **#347** (config/Jev override
+precedence, PR #365) and implements **#327** (checkout-root gate and route
+resolution) in the active slice; the remaining issues are `queued` in
+[`queue.json`](queue.json). No issue is marked complete until its changes
+are merged with green CI.
 
 ## Harness planner note
 
@@ -23,8 +25,9 @@ is not being hidden by relabeling the heuristic plan as a confirmed design.
 The canon's #347 contract was implemented and verified directly:
 
 - [`347.md`](347.md) — acceptance matrix, changes and test receipts.
-- [`queue.json`](queue.json) — all 58 open issues with owner, prerequisites,
-  acceptance and batch status.
+- [`327.md`](327.md) — gate/route root resolution, changes and test receipts.
+- [`queue.json`](queue.json) — all 58 generated issues with owner,
+  prerequisites, acceptance and batch status.
 
 ## Batch rules
 
