@@ -32,7 +32,9 @@
         title="Select a folder to allow file reads and edits inside that folder"
         autocomplete="off"
         spellcheck="false"
+        list="workspace-recents"
       />
+      <datalist id="workspace-recents"></datalist>
     </div>
 
     <div class="sidebar-divider"></div>
@@ -111,6 +113,9 @@
       <button type="button" id="btn-auth-toggle" class="mode-badge auth-badge" title="Configure or view X-Harness-Auth token">
         <span id="auth-icon">🔒</span> <span id="auth-text">Auth</span>
       </button>
+      <div class="mode-badge" id="script-badge" title="Governed script posture">
+        <span id="script-icon">🐍</span> <span id="script-text">Script —</span>
+      </div>
     </div>
   </header>
 

@@ -1309,15 +1309,855 @@ async function renderLegacy(root) {
   }
 }
 
+// ---- Operator parity helpers ---------------------------------------------
+// Every lane below is a thin face over an existing owner: the plan/bench/gate
+// run kinds in harness/server.py, or an existing read endpoint. No pane
+// re-implements policy; they collect the same arguments the CLI collects and
+// render the same envelopes.
+
+function textareaField(label, attrs = {}) {
+  const input = $("textarea", Object.assign({ class: "pane-input" }, attrs));
+  return { row: $("label", { class: "pane-field" }, $("span", {}, label), input),
+           input };
+}
+
+function checkboxField(label, attrs = {}) {
+  const input = $("input", Object.assign({ type: "checkbox" }, attrs));
+  return { row: $("label", { class: "pane-check" }, input, $("span", {}, label)),
+           input };
+}
+
+function currentWorkspace() {
+  return (typeof window !== "undefined"
+    && typeof window.getHarnessWorkspace === "function")
+    ? window.getHarnessWorkspace() : "";
+}
+
+function paneCard(title, body) {
+  return $("div", { class: "pane-card" },
+    $("div", { class: "pane-card-head" }, $("strong", {}, title)),
+    $("div", { class: "pane-card-body" }, body));
+}
+
+function paneDetails(label, data) {
+  return $("details", { class: "pane-details" },
+    $("summary", {}, label),
+    $("pre", { class: "pane-json" }, JSON.stringify(data, null, 2).slice(0, 40000)));
+}
+
+function paneError(area, err) {
+  area.replaceChildren($("p", { class: "small", style: "color: var(--bad);" },
+    `Error: ${err && err.message ? err.message : String(err)}`));
+}
+
+function paneStatus(ok, okText, badText) {
+  return $("span", { class: `driver-status-pill ${ok ? "pill-good" : "pill-bad"}` },
+    ok ? okText : badText);
+}
+
+function workspaceArgs(rootInput) {
+  const workspace = (rootInput.value || "").trim() || currentWorkspace();
+  rootInput.value = workspace;
+  return workspace;
+}
+
+// ---- Plan pane -----------------------------------------------------------
+
+function renderPlanResult(area, final) {
+  const res = final.result || final;
+  const plan = res.plan || res;
+  const dag = plan.dag || {};
+  const nodes = Array.isArray(dag.nodes) ? dag.nodes : [];
+  const status = res.status || plan.status || final.status;
+  area.replaceChildren();
+
+  const summary = paneCard(`Plan: ${status || "completed"}`, [
+    $("p", { class: "small" }, plan.summary || plan.reason
+      || plan.goal || res.goal || "The planner returned no summary."),
+    $("div", { class: "driver-meta-grid" },
+      $("div", {}, $("span", { class: "muted small" }, "Goal: "),
+        $("code", {}, plan.goal || res.goal || "—")),
+      $("div", {}, $("span", { class: "muted small" }, "DAG digest: "),
+        $("code", {}, (plan.digest || dag.digest || "—").slice(0, 16))),
+      $("div", {}, $("span", { class: "muted small" }, "Nodes: "),
+        $("b", {}, String(nodes.length))))
+  ]);
+  area.append(summary);
+
+  if (nodes.length) {
+    area.append($("h3", {}, "DAG nodes"));
+    area.append(table(
+      ["#", "node", "tier", "depends on", "target files"],
+      nodes.map((n, i) => [
+        i + 1,
+        n.instruction || n.task || n.id || n.node_id || "—",
+        n.tier || n.model_tier || "—",
+        (n.depends_on || n.deps || []).join(", ") || "—",
+        (n.target_files || n.files || []).join(", ") || "—",
+      ])));
+  } else {
+    area.append($("p", { class: "muted small" },
+      "No DAG nodes were produced; the plan envelope is below."));
+  }
+
+  if (res.execution) {
+    const summaryRow = res.execution.summary || res.execution;
+    const perNode = res.execution.results || res.execution.nodes || {};
+    const rows = Array.isArray(perNode) ? perNode : Object.entries(perNode).map(
+      ([key, value]) => Object.assign({ node_id: key }, value || {}));
+    area.append($("h3", {}, "Execution"));
+    area.append(paneCard(`Execution: ${summaryRow.status || summaryRow.all_ok ? "ok" : "check"}`, [
+      $("div", { class: "driver-meta-grid" },
+        $("div", {}, $("span", { class: "muted small" }, "All ok: "),
+          $("b", {}, String(Boolean(summaryRow.all_ok)))),
+        $("div", {}, $("span", { class: "muted small" }, "Completed: "),
+          $("b", {}, String(summaryRow.completed ?? "—"))),
+        $("div", {}, $("span", { class: "muted small" }, "Cost: "),
+          $("code", {}, money(summaryRow.total_cost)))),
+      rows.length ? table(
+        ["node", "status", "cost", "gate"],
+        rows.map(r => [r.node_id || r.id || "—", r.status || "—",
+          money(r.cost), r.gate || r.returncode || "—"])) : ""
+    ]));
+  }
+
+  area.append(paneDetails("Raw plan envelope", res));
+}
+
+async function renderPlan(root) {
+  root.append(
+    $("h2", {}, "Plan — decompose a goal into an executable DAG"),
+    $("p", { class: "muted" },
+      "The same `plan` run kind the CLI and MCP use. Preview first; tick Execute only when you want the executor to run every node. Planning needs a workspace folder because candidate files are resolved inside it."));
+
+  const form = $("form", { class: "pane-section" });
+  const goal = textareaField("Goal", { rows: "3",
+    placeholder: "e.g. Split the ledger report into reader functions and cover them with tests" });
+  const rootField = field("Workspace folder", { value: currentWorkspace(),
+    placeholder: "C:\\path\\to\\repo" });
+  const files = field("Candidate files (comma-separated, optional)", {
+    placeholder: "harness/ledger.py, tests/test_ledger.py" });
+  const frontier = field("Frontier model (optional)", { placeholder: "blank = configured tier" });
+  const workers = field("Max workers", { type: "number", min: "1", max: "16", value: "4" });
+  const runCost = field("Run cost ceiling ($)", { type: "number", min: "0", step: "0.01", value: "0.25" });
+  const taskCost = field("Per-task ceiling ($)", { type: "number", min: "0", step: "0.01", value: "0.05" });
+  const execute = checkboxField("Execute the DAG after planning (writes files)");
+
+  form.append(goal.row, rootField.row, files.row,
+    $("div", { class: "pane-grid three" }, frontier.row, workers.row, runCost.row, taskCost.row),
+    execute.row);
+  const submit = $("button", { class: "pane-fetch", type: "submit" }, "Plan with the configured ladder");
+  form.append($("div", { class: "pane-actions" }, submit));
+  root.append(form);
+
+  const area = $("div", { style: "margin-top: 1rem;" });
+  root.append(area);
+
+  form.onsubmit = async (ev) => {
+    ev.preventDefault();
+    const workspace = workspaceArgs(rootField.input);
+    if (!workspace) {
+      paneError(area, new Error("Select a workspace folder first."));
+      return;
+    }
+    if (!goal.input.value.trim()) {
+      paneError(area, new Error("A goal is required."));
+      return;
+    }
+    submit.disabled = true;
+    area.replaceChildren($("p", { class: "muted small" }, "Planning…"));
+    const started = Date.now();
+    const tick = setInterval(() => {
+      const p = area.querySelector("p");
+      if (p) p.textContent = `Planning… ${Math.round((Date.now() - started) / 1000)}s`;
+    }, 1000);
+    try {
+      const args = {
+        goal: goal.input.value.trim(),
+        root_dir: workspace,
+        execute: execute.input.checked,
+        max_workers: Number(workers.input.value) || 4,
+      };
+      const candidateFiles = files.input.value.split(/[,\n]/).map(s => s.trim()).filter(Boolean);
+      if (candidateFiles.length) args.files = candidateFiles;
+      if (frontier.input.value.trim()) args.frontier_model = frontier.input.value.trim();
+      if (runCost.input.value) args.max_cost = Number(runCost.input.value);
+      if (taskCost.input.value) args.task_max_cost = Number(taskCost.input.value);
+      const run = await postJson("/api/runs", { kind: "plan", args });
+      const final = await pollRunWithEvents(run.id, { timeoutMs: 900000 });
+      if (final.status === "error") throw new Error(final.error || "plan run failed");
+      renderPlanResult(area, final);
+    } catch (err) {
+      paneError(area, err);
+    } finally {
+      clearInterval(tick);
+      submit.disabled = false;
+    }
+  };
+}
+
+// ---- Bench pane ----------------------------------------------------------
+
+async function renderBench(root) {
+  root.append(
+    $("h2", {}, "Bench — measure the apply lane against a manifest"),
+    $("p", { class: "muted" },
+      "The same `bench` run kind the CLI uses: every task is restored in a sandbox, edited by the real apply lane, verified, and summarized. The workspace must contain the manifest path; the bundled efficiency manifest lives at bench/manifests/efficiency."));
+
+  const form = $("form", { class: "pane-section" });
+  const rootField = field("Workspace folder", { value: currentWorkspace(),
+    placeholder: "C:\\path\\to\\repo" });
+  const manifest = field("Manifest file or directory", {
+    value: "bench/manifests/efficiency",
+    placeholder: "bench/manifests/efficiency" });
+  const rounds = field("Max rounds per task (optional)", {
+    type: "number", min: "1", max: "8", placeholder: "manifest default" });
+
+  form.append(rootField.row, manifest.row, rounds.row);
+  const submit = $("button", { class: "pane-fetch", type: "submit" }, "Run bench");
+  form.append($("div", { class: "pane-actions" }, submit));
+  root.append(form);
+
+  const area = $("div", { style: "margin-top: 1rem;" });
+  root.append(area);
+
+  form.onsubmit = async (ev) => {
+    ev.preventDefault();
+    const workspace = workspaceArgs(rootField.input);
+    if (!workspace) {
+      paneError(area, new Error("Select a workspace folder first."));
+      return;
+    }
+    if (!manifest.input.value.trim()) {
+      paneError(area, new Error("A manifest path is required."));
+      return;
+    }
+    submit.disabled = true;
+    const seen = [];
+    area.replaceChildren($("p", { class: "muted small" }, "Bench accepted; tasks are running…"));
+    try {
+      const args = { root_dir: workspace, manifest: manifest.input.value.trim() };
+      if (rounds.input.value) args.max_rounds = Number(rounds.input.value);
+      const run = await postJson("/api/runs", { kind: "bench", args });
+      const final = await pollRunWithEvents(run.id, {
+        timeoutMs: 1800000,
+        onEvent: (e) => {
+          if (e.type === "bench_task" && e.phase === "end") {
+            seen.push(`${e.name || "task"}: ${e.status || "done"}`);
+            const p = area.querySelector("p");
+            if (p) p.textContent = `Bench running… ${seen.join(" · ")}`;
+          }
+        },
+      });
+      if (final.status === "error") throw new Error(final.error || "bench run failed");
+      const res = (final.result || final).bench || final.result || final;
+      const results = res.results || [];
+      area.replaceChildren(paneCard(`Bench: ${res.pass_rate === null || res.pass_rate === undefined ? "—" : pct(res.pass_rate)} pass rate`, [
+        $("div", { class: "driver-meta-grid" },
+          $("div", {}, $("span", { class: "muted small" }, "Tasks: "), $("b", {}, String(res.tasks ?? results.length))),
+          $("div", {}, $("span", { class: "muted small" }, "Total cost: "), $("code", {}, money(res.total_cost))),
+          $("div", {}, $("span", { class: "muted small" }, "Mean cost: "), $("code", {}, money(res.mean_cost))),
+          $("div", {}, $("span", { class: "muted small" }, "Rounds: "), $("b", {}, String(res.total_rounds ?? "—")))),
+        results.length ? table(
+          ["task", "status", "cost", "rounds", "rotations"],
+          results.map(r => [r.name || "task", r.status || "—", money(r.cost),
+            (r.rounds || []).length, r.rotations || 0])) : ""
+      ]));
+      area.append(paneDetails("Raw bench envelope", final.result || final));
+    } catch (err) {
+      paneError(area, err);
+    } finally {
+      submit.disabled = false;
+    }
+  };
+}
+
+// ---- Gates pane ----------------------------------------------------------
+
+function gateCard(gate, phaseInput, timeoutInput) {
+  const status = $("span", { class: "muted small" }, "not run in this view");
+  const out = $("pre", { class: "pane-json gate-output", hidden: true });
+  const run = $("button", { class: "pane-fetch", type: "button" }, "Run gate");
+  const card = paneCard(gate.name, [
+    $("p", { class: "muted small" }, gate.summary),
+    $("code", { class: "gate-command" }, gate.command),
+    $("div", { class: "pane-actions" }, run, status,
+      $("span", { class: "muted small" }, `default ${gate.timeout_s}s`)),
+    out,
+  ]);
+
+  run.addEventListener("click", async () => {
+    run.disabled = true;
+    out.hidden = true;
+    const started = Date.now();
+    status.textContent = "running… 0s";
+    const tick = setInterval(() => {
+      status.textContent = `running… ${Math.round((Date.now() - started) / 1000)}s`;
+    }, 1000);
+    try {
+      const args = { gate: gate.name };
+      if (gate.name === "jev-phase" && phaseInput.value.trim()) {
+        args.phase = phaseInput.value.trim();
+      }
+      if (timeoutInput.value.trim()) args.timeout = Number(timeoutInput.value);
+      const accepted = await postJson("/api/runs", { kind: "gate", args });
+      const final = await pollRunWithEvents(accepted.id, {
+        timeoutMs: (Number(gate.timeout_s) + 120) * 1000,
+      });
+      const res = final.result || {};
+      const ok = final.status === "passed" || Boolean(res.passed);
+      status.replaceChildren(paneStatus(ok,
+        `passed · exit ${res.exit_code ?? 0} · ${res.duration_s ?? "?"}s`,
+        final.status === "error" ? "error" :
+          `failed · exit ${res.exit_code ?? "?"} · ${res.duration_s ?? "?"}s`));
+      if (final.status === "error") {
+        out.textContent = final.error || "gate run failed";
+      } else {
+        out.textContent = res.output || "(the gate printed nothing)";
+      }
+      out.hidden = false;
+      if (res.output_truncated) {
+        out.textContent += "\n\n[output truncated to the last 20,000 characters]";
+      }
+    } catch (err) {
+      status.textContent = String(err.message || err);
+    } finally {
+      clearInterval(tick);
+      run.disabled = false;
+    }
+  });
+  return card;
+}
+
+async function renderGates(root) {
+  root.append(
+    $("h2", {}, "Gates — run the documented quality checks"),
+    $("p", { class: "muted" },
+      "The same registry and the same shell-free runner as `harness gates --run`. The checkout is the cwd, so a gate cannot be pointed at another tree. Long gates (unittest, audit) stream no progress; elapsed time is shown by the button state."));
+
+  const controls = $("div", { class: "pane-grid three" },
+    field("Phase for jev-phase", { value: "JEV-P0" }).row,
+    field("Timeout override (seconds)", {
+      type: "number", min: "1", max: "3600", placeholder: "gate default" }).row);
+  const phaseInput = controls.querySelectorAll("input")[0];
+  const timeoutInput = controls.querySelectorAll("input")[1];
+  root.append(controls);
+
+  const area = $("div", { class: "pane-cards" });
+  root.append($("p", { class: "muted small" }, "Loading gate registry…"), area);
+  const note = root.querySelector(".muted.small");
+
+  try {
+    const data = await api(`/api/gates?phase=${encodeURIComponent(phaseInput.value || "JEV-P0")}`);
+    note.remove();
+    for (const gate of data.gates || []) area.append(gateCard(gate, phaseInput, timeoutInput));
+    phaseInput.addEventListener("change", async () => {
+      try {
+        const refreshed = await api(`/api/gates?phase=${encodeURIComponent(phaseInput.value || "JEV-P0")}`);
+        area.replaceChildren();
+        for (const gate of refreshed.gates || []) area.append(gateCard(gate, phaseInput, timeoutInput));
+      } catch (err) {
+        paneError(area, err);
+      }
+    });
+  } catch (err) {
+    note.textContent = `Gate registry unavailable: ${err.message}`;
+  }
+}
+
+// ---- Ledger pane ---------------------------------------------------------
+
+async function renderLedger(root) {
+  root.append(
+    $("h2", {}, "Ledger — verify, inspect, and repair the hash chain"),
+    $("p", { class: "muted" },
+      "Read-only verification and tail views over the one ledger owner. Repair is the only write here and it is destructive to the invalid tail only; the exact word is required."));
+
+  const chainArea = $("div", {}, $("p", { class: "muted small" }, "Verifying the chain…"));
+  const tailArea = $("div", {}, $("p", { class: "muted small" }, "Loading recent entries…"));
+  const reportArea = $("div");
+  const repairArea = $("div");
+  root.append(chainArea, $("div", { class: "pane-actions" }), tailArea, reportArea, repairArea);
+  const actions = root.querySelector(".pane-actions");
+
+  function chainCard(data) {
+    const chain = data.chain || {};
+    const ok = data.verified ?? chain.ok;
+    return paneCard(`Chain: ${ok ? "verified" : "BROKEN"}`, [
+      $("div", { class: "driver-meta-grid" },
+        $("div", {}, $("span", { class: "muted small" }, "First bad seq: "),
+          $("code", {}, String(data.first_bad_seq ?? chain.first_bad_seq ?? "none"))),
+        $("div", {}, $("span", { class: "muted small" }, "Retained entries: "),
+          $("b", {}, String(chain.entries ?? "—"))),
+        $("div", {}, $("span", { class: "muted small" }, "Segments: "),
+          $("b", {}, String((chain.segments || []).length || "—"))),
+        $("div", {}, $("span", { class: "muted small" }, "Pruned prefix: "),
+          $("b", {}, chain.pruned ? `yes (from seq ${chain.first_retained_seq ?? "?"})` : "no")),
+        $("div", {}, $("span", { class: "muted small" }, "Quarantined on load: "),
+          $("b", {}, String(chain.quarantined ?? 0)))),
+      paneStatus(Boolean(ok), "✓ links verify", "✗ chain is broken"),
+      paneDetails("Raw chain verdict", data),
+    ]);
+  }
+
+  async function refreshChain() {
+    try {
+      chainArea.replaceChildren(chainCard(await api("/api/ledger/verify")));
+    } catch (err) {
+      paneError(chainArea, err);
+    }
+  }
+
+  async function refreshTail() {
+    try {
+      const data = await api("/api/ledger/tail?n=25");
+      const rows = (data.entries || []).slice().reverse().map(e => [
+        e.seq ?? "—", e.ts || "—", e.event || e.kind || "—",
+        e.site || "—", e.task_id || "—", e.verdict || "—", money(e.cost)]);
+      tailArea.replaceChildren(
+        $("h3", {}, "Recent entries"),
+        table(["seq", "time", "event", "site", "task", "verdict", "cost"], rows),
+        $("p", { class: "muted small" },
+          `${data.count ?? (data.entries || []).length} entries retained. Newest first in this table.`));
+    } catch (err) {
+      paneError(tailArea, err);
+    }
+  }
+
+  const verifyBtn = $("button", { class: "pane-fetch", type: "button" }, "Verify chain");
+  const tailBtn = $("button", { class: "pane-fetch", type: "button" }, "Refresh tail");
+  const reportBtn = $("button", { class: "pane-fetch", type: "button" }, "Participation report");
+  const deferBtn = $("button", { class: "pane-fetch", type: "button" }, "Why runs deferred");
+  actions.append(verifyBtn, tailBtn, reportBtn, deferBtn);
+  verifyBtn.addEventListener("click", refreshChain);
+  tailBtn.addEventListener("click", refreshTail);
+  reportBtn.addEventListener("click", async () => {
+    try {
+      reportArea.replaceChildren($("h3", {}, "Participation"),
+        paneDetails("Participation report", await api("/api/ledger/report")));
+    } catch (err) {
+      paneError(reportArea, err);
+    }
+  });
+  deferBtn.addEventListener("click", async () => {
+    try {
+      reportArea.replaceChildren($("h3", {}, "Deferral reasons"),
+        paneDetails("Defer statistics", await api("/api/ledger/defer-stats?window=500")));
+    } catch (err) {
+      paneError(reportArea, err);
+    }
+  });
+
+  const confirm = field("Type repair to enable the button", {
+    placeholder: "repair", autocomplete: "off" });
+  const repairBtn = $("button", { class: "pane-fetch", type: "button" }, "Repair ledger tail");
+  repairBtn.disabled = true;
+  confirm.input.addEventListener("input", () => {
+    repairBtn.disabled = confirm.input.value !== "repair";
+  });
+  const repairOut = $("div");
+  repairBtn.addEventListener("click", async () => {
+    if (!window.confirm("Repair deletes the invalid ledger tail and every newer segment. Archive the ledger first. Continue?")) return;
+    repairBtn.disabled = true;
+    try {
+      const res = await postJson("/api/ledger/repair", { confirm: "repair" });
+      repairOut.replaceChildren(paneCard("Repair result", [
+        $("p", {}, `Kept ${res.kept} entr${res.kept === 1 ? "y" : "ies"}; dropped ${res.dropped}.`),
+        paneDetails("Before and after", { before: res.before, after: res.after }),
+      ]));
+      await refreshChain();
+      await refreshTail();
+    } catch (err) {
+      paneError(repairOut, err);
+    } finally {
+      repairBtn.disabled = confirm.input.value !== "repair";
+    }
+  });
+  repairArea.append(
+    $("h3", {}, "Repair"),
+    $("p", { class: "small", style: "color: var(--warn);" },
+      "Destructive: the invalid tail and every newer segment are removed. Healthy older segments stay byte-identical. Archive the ledger first."),
+    confirm.row,
+    $("div", { class: "pane-actions" }, repairBtn),
+    repairOut);
+
+  await refreshChain();
+  await refreshTail();
+}
+
+// ---- Models & Cost pane --------------------------------------------------
+
+function mapTable(label, mapping) {
+  const rows = Object.entries(mapping || {}).map(([key, value]) => {
+    if (value && typeof value === "object") {
+      const cost = value.cost ?? value.total_cost ?? value.total ?? value.spend;
+      const calls = value.calls ?? value.events ?? value.count;
+      return [key, cost === undefined ? "—" : money(cost), calls ?? "—"];
+    }
+    return [key, money(value), "—"];
+  });
+  return rows.length
+    ? [ $("h4", { class: "pane-subhead" }, label),
+        table(["key", "cost", "calls"], rows) ]
+    : [];
+}
+
+function modelRows(models, limit = 40) {
+  return (models || []).slice(0, limit).map(m => [
+    m.model || m.id || m.slug || "—",
+    m.free === undefined ? (m.is_free ? "yes" : "—") : (m.free ? "yes" : "no"),
+    m.context ?? m.context_length ?? "—",
+    m.json_reliable ?? m.json_declared ?? "—",
+    m.capability ?? m.reliability_structured ?? "—",
+  ]);
+}
+
+async function renderModels(root) {
+  root.append(
+    $("h2", {}, "Models & Cost — routing posture, catalog, and spend"),
+    $("p", { class: "muted" },
+      "Read-only faces over the existing owners: capability registry, free catalog, cost report, rankings report, economics and session spend. Nothing here writes config or probes a model."));
+
+  const grid = $("div", { class: "pane-cards" });
+  root.append(grid);
+
+  function card(title, note, path, render, { auto = false } = {}) {
+    const out = $("div");
+    const btn = $("button", { class: "pane-fetch", type: "button",
+      "aria-label": `Load ${title}` }, "Load");
+    const box = paneCard(title, [
+      $("p", { class: "muted small" }, note),
+      $("div", { class: "pane-actions" }, btn),
+      out,
+    ]);
+    async function load() {
+      const label = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "Loading…";
+      try {
+        const data = await api(path);
+        out.replaceChildren(...[render(data), paneDetails("Raw response", data)].flat());
+      } catch (err) {
+        paneError(out, err);
+      } finally {
+        btn.textContent = label;
+        btn.disabled = false;
+      }
+    }
+    btn.addEventListener("click", load);
+    grid.append(box);
+    if (auto) load();
+    return { box, load };
+  }
+
+  card("Session spend", "Governor spend, ceiling and remaining for this server session.",
+    "/api/spend", (d) => {
+      const s = d.session || {};
+      return $("div", { class: "driver-meta-grid" },
+        $("div", {}, $("span", { class: "muted small" }, "Spent: "), $("code", {}, money(s.spent))),
+        $("div", {}, $("span", { class: "muted small" }, "Ceiling: "), $("code", {}, money(s.ceiling))),
+        $("div", {}, $("span", { class: "muted small" }, "Remaining: "), $("code", {}, money(s.remaining))));
+    }, { auto: true });
+
+  card("Cost report", "The same AutonomyLedger.cost_report `harness cost` uses; tier and model breakdowns.",
+    "/api/cost?by_tier=1&by_model=1&savings=1", (d) => [
+      $("div", { class: "driver-meta-grid" },
+        $("div", {}, $("span", { class: "muted small" }, "Total: "), $("code", {}, money(d.total_cost))),
+        $("div", {}, $("span", { class: "muted small" }, "Events: "), $("b", {}, String(d.events_count ?? "—"))),
+        $("div", {}, $("span", { class: "muted small" }, "Billable: "), $("b", {}, String(d.billable_calls ?? "—"))),
+        $("div", {}, $("span", { class: "muted small" }, "Free calls: "), $("b", {}, String(d.free_calls ?? "—")))),
+      ...mapTable("By tier", d.by_tier),
+      ...mapTable("By model", d.by_model),
+      d.savings ? paneDetails("Savings vs frontier baseline", d.savings) : "",
+    ], { auto: true });
+
+  card("Capability registry", "Profile rows for the configured pools and judge; fetched catalog cached for a day.",
+    "/api/capabilities", (d) => [
+      $("p", { class: "muted small" },
+        `${d.count ?? (d.models || []).length} rows · captured ${d.captured_at || "—"}${d.refreshed ? " · refreshed" : ""}`),
+      table(["model", "free", "context", "json", "capability"], modelRows(d.models)),
+    ]);
+
+  card("Free catalog", "The live free-model catalog the router can discover (network read, no probe).",
+    "/api/models?limit=40", (d) => [
+      $("p", { class: "muted small" }, `${d.count ?? (d.models || []).length} free models`),
+      table(["model", "free", "context", "json", "capability"], modelRows(d.models)),
+    ]);
+
+  card("Rankings", "The latest read-only rankings report; refresh stays `harness rankings`.",
+    "/api/rankings", (d) => {
+      if (!d.available) {
+        return $("p", { class: "muted small" }, d.note || d.error || "No rankings report is available.");
+      }
+      const report = d.report || {};
+      const rows = (report.top || report.models || report.ranked || []).slice(0, 20).map(m => [
+        m.model || m.id || m.slug || "—", m.tokens ?? m.total_tokens ?? "—",
+        m.trend ?? "—"]);
+      return [
+        $("p", { class: "muted small" }, `Latest: ${d.latest || "—"}`),
+        rows.length ? table(["model", "tokens", "trend"], rows) : paneDetails("Report", report),
+      ];
+    });
+
+  card("Economics", "EV-1..EV-5: tier snapshot freshness, seat share, rotation proposal and cost summary.",
+    "/api/economics", (d) => [
+      $("div", { class: "driver-meta-grid" },
+        $("div", {}, $("span", { class: "muted small" }, "Freshness: "),
+          $("code", {}, JSON.stringify(d.freshness || {}).slice(0, 120))),
+        $("div", {}, $("span", { class: "muted small" }, "Rotation: "),
+          $("code", {}, d.rotation_proposal?.action || d.rotation_proposal?.status || "—"))),
+      ...mapTable("Seat share", d.seat_share),
+      paneDetails("Unlisted tier fallbacks", d.unlisted_tier_fallbacks || []),
+      paneDetails("Rotation proposal", d.rotation_proposal || {}),
+    ]);
+}
+
+// ---- Missions pane -------------------------------------------------------
+
+function missionCard(mission, onOpen) {
+  const budget = mission.dual_budget || {};
+  const open = $("button", { class: "pane-fetch", type: "button" }, "Open pack");
+  open.addEventListener("click", () => onOpen(mission.id));
+  return paneCard(mission.id, [
+    $("div", { class: "pane-actions" },
+      $("span", {
+        class: `driver-status-pill ${mission.terminal ? "pill-warn" : "pill-good"}`,
+      }, mission.terminal
+        ? `terminal: ${mission.phase || "done"}`
+        : `phase: ${mission.phase || "in_progress"}`),
+      $("span", { class: "muted small" },
+        `working ${money(budget.working_remaining)} · reserve ${money(budget.terminal_reserve_cost_usd)}`),
+      open),
+  ]);
+}
+
+async function renderMissions(root) {
+  root.append(
+    $("h2", {}, "Missions — packs, budgets, and initialization"),
+    $("p", { class: "muted" },
+      "Read the packs the CLI and MCP already use, or create one through the same `build_mission_spec` + `init_mission_pack` owner. Packs live under the server's ./missions directory; the browser cannot pick another root."));
+
+  const listArea = $("div", { class: "pane-cards" });
+  const detailArea = $("div");
+  const pager = $("div", { class: "pane-actions" });
+  root.append($("h3", {}, "Existing packs"), listArea, pager, detailArea);
+
+  let offset = 0;
+  const limit = 25;
+  let total = 0;
+
+  async function openDetail(id) {
+    detailArea.replaceChildren($("p", { class: "muted small" }, `Loading ${id}…`));
+    try {
+      const d = await api(`/api/missions/${encodeURIComponent(id)}`);
+      detailArea.replaceChildren(paneCard(`Mission ${d.id}`, [
+        $("p", {}, d.request || "—"),
+        $("div", { class: "driver-meta-grid" },
+          $("div", {}, $("span", { class: "muted small" }, "Phase: "),
+            $("code", {}, d.phase || "—")),
+          $("div", {}, $("span", { class: "muted small" }, "Terminal: "),
+            $("b", {}, String(Boolean(d.terminal)))),
+          $("div", {}, $("span", { class: "muted small" }, "Success: "),
+            $("span", {}, d.success_definition || "—")),
+          $("div", {}, $("span", { class: "muted small" }, "Max cost: "),
+            $("code", {}, money(d.limits?.max_cost_usd)))),
+        paneDetails("Full pack summary", d),
+      ]));
+    } catch (err) {
+      paneError(detailArea, err);
+    }
+  }
+
+  async function refresh() {
+    listArea.replaceChildren($("p", { class: "muted small" }, "Loading missions…"));
+    try {
+      const d = await api(`/api/missions?limit=${limit}&offset=${offset}`);
+      total = d.total || 0;
+      listArea.replaceChildren();
+      if (!(d.missions || []).length) {
+        listArea.append($("p", { class: "muted small" },
+          "No mission packs yet. Create one below, or run `harness mission init`."));
+      }
+      for (const m of d.missions || []) listArea.append(missionCard(m, openDetail));
+      pager.replaceChildren();
+      if (!total) {
+        pager.append($("span", { class: "muted small" }, "No packs to page"));
+        return;
+      }
+      const prev = $("button", { class: "pane-fetch", type: "button" }, "Previous");
+      const next = $("button", { class: "pane-fetch", type: "button" }, "Next");
+      prev.disabled = offset <= 0;
+      next.disabled = offset + limit >= total;
+      prev.addEventListener("click", () => { offset = Math.max(0, offset - limit); refresh(); });
+      next.addEventListener("click", () => { offset += limit; refresh(); });
+      pager.append(prev, next,
+        $("span", { class: "muted small" },
+          `${offset + 1}–${Math.min(offset + limit, total)} of ${total}`));
+    } catch (err) {
+      paneError(listArea, err);
+    }
+  }
+
+  const form = $("form", { class: "pane-section" });
+  form.append($("h3", {}, "Initialize a mission pack"));
+  const id = field("Mission id", { placeholder: "e.g. ledger-hardening" });
+  const request = textareaField("Request", { rows: "3",
+    placeholder: "What should the mission accomplish?" });
+  const success = textareaField("Success definition", { rows: "2",
+    placeholder: "What observable result proves it done?" });
+  const maxCost = field("Max cost (USD)", { type: "number", min: "0", step: "0.01", value: "1.00" });
+  const reserve = field("Terminal reserve (USD)", { type: "number", min: "0", step: "0.01", value: "0.10" });
+  const inScope = textareaField("In scope (one item per line)", { rows: "2" });
+  const outScope = textareaField("Out of scope (one item per line)", { rows: "2" });
+  const verifier = field("Verifier kind", { value: "unspecified" });
+  const missionRoot = field("Missions root", { value: "missions" });
+  const submit = $("button", { class: "pane-fetch", type: "submit" }, "Create mission pack");
+  form.append(id.row, request.row, success.row,
+    $("div", { class: "pane-grid three" }, maxCost.row, reserve.row, verifier.row),
+    inScope.row, outScope.row, missionRoot.row,
+    $("div", { class: "pane-actions" }, submit));
+  root.append(form);
+
+  const initOut = $("div");
+  root.append(initOut);
+
+  form.onsubmit = async (ev) => {
+    ev.preventDefault();
+    submit.disabled = true;
+    initOut.replaceChildren($("p", { class: "muted small" }, "Creating pack…"));
+    try {
+      const payload = {
+        id: id.input.value.trim(),
+        request: request.input.value.trim(),
+        success_definition: success.input.value.trim(),
+        max_cost_usd: Number(maxCost.input.value),
+        terminal_reserve_cost_usd: Number(reserve.input.value) || 0,
+        in_scope: inScope.input.value.split("\n").map(s => s.trim()).filter(Boolean),
+        out_of_scope: outScope.input.value.split("\n").map(s => s.trim()).filter(Boolean),
+        verifier_kind: verifier.input.value.trim() || "unspecified",
+        root: missionRoot.input.value.trim() || "missions",
+      };
+      const created = await postJson("/api/missions", payload);
+      initOut.replaceChildren(paneCard(`Created ${created.id}`, [
+        $("p", {}, created.request || payload.request),
+        paneDetails("Pack summary", created),
+      ]));
+      offset = 0;
+      await refresh();
+      await openDetail(created.id);
+    } catch (err) {
+      paneError(initOut, err);
+    } finally {
+      submit.disabled = false;
+    }
+  };
+
+  await refresh();
+}
+
+// ---- Provision pane ------------------------------------------------------
+
+async function renderProvision(root) {
+  root.append(
+    $("h2", {}, "Provision — probe this host and plan setup"),
+    $("p", { class: "muted" },
+      "Host facts are probed through the same owner as `harness provision probe`; plans are generated by `plan_provision` and validated before they are shown. Mutating execution stays an explicit `harness provision apply --execute` step."));
+
+  const probeArea = $("div");
+  root.append($("h3", {}, "Host probe"), probeArea);
+  try {
+    const p = await api("/api/provision/probe");
+    probeArea.replaceChildren(paneCard(`${p.os} · ${p.arch}`, [
+      $("div", { class: "driver-meta-grid" },
+        $("div", {}, $("span", { class: "muted small" }, "Python: "), $("code", {}, p.python_version || "—")),
+        $("div", {}, $("span", { class: "muted small" }, "GPU: "), $("b", {}, p.gpu_present ? "present" : "none")),
+        $("div", {}, $("span", { class: "muted small" }, "Free disk: "),
+          $("code", {}, p.free_disk_bytes ? `${(p.free_disk_bytes / (1024 ** 3)).toFixed(1)} GB` : "—"))),
+      table(["manager", "usable", "version"],
+        (p.package_managers || []).map(m => [m.name, m.usable ? "yes" : "no", m.version || "—"])),
+      paneDetails("Raw probe", p),
+    ]));
+  } catch (err) {
+    paneError(probeArea, err);
+  }
+
+  const form = $("form", { class: "pane-section" });
+  form.append($("h3", {}, "Plan a provisioning goal"));
+  const goal = textareaField("Goal", { rows: "2",
+    placeholder: "e.g. install ruff" });
+  const planRoot = field("Approved root", { value: currentWorkspace(),
+    placeholder: "C:\\path\\to\\workspace" });
+  const submit = $("button", { class: "pane-fetch", type: "submit" }, "Generate plan");
+  form.append(goal.row, planRoot.row, $("div", { class: "pane-actions" }, submit));
+  root.append(form);
+
+  const area = $("div");
+  root.append(area);
+
+  form.onsubmit = async (ev) => {
+    ev.preventDefault();
+    const workspace = workspaceArgs(planRoot.input);
+    if (!goal.input.value.trim()) {
+      paneError(area, new Error("A provisioning goal is required."));
+      return;
+    }
+    if (!workspace) {
+      paneError(area, new Error("An approved root is required."));
+      return;
+    }
+    submit.disabled = true;
+    area.replaceChildren($("p", { class: "muted small" }, "Planning…"));
+    try {
+      const plan = await postJson("/api/provision/plan", {
+        goal: goal.input.value.trim(), root: workspace,
+      });
+      const steps = plan.steps || [];
+      const download = $("button", { class: "pane-fetch", type: "button" }, "Download plan JSON");
+      download.addEventListener("click", () => {
+        const blob = new Blob([JSON.stringify(plan, null, 2)], { type: "application/json" });
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = `provision-${(plan.digest || "plan").slice(0, 12)}.json`;
+        link.click();
+        URL.revokeObjectURL(link.href);
+      });
+      area.replaceChildren(paneCard(`Plan: ${plan.recipe || "custom"}`, [
+        $("p", { class: "muted small" },
+          `digest ${(plan.digest || "—").slice(0, 16)} · source ${plan.source || "—"} · root ${plan.root || "—"}${plan.review_required ? " · per-step review required" : ""}`),
+        (plan.notes || []).length
+          ? $("ul", { class: "pane-notes" }, (plan.notes || []).map(n => $("li", {}, n)))
+          : "",
+        steps.length ? table(["#", "step", "class", "argv", "effect"], steps.map((s, i) => [
+          i + 1, s.id || "—", s.classification || "—",
+          (s.argv || []).join(" "), s.expected_effect || "—"])) : "",
+        $("div", { class: "pane-actions" }, download),
+        $("pre", { class: "pane-json" }, plan.rendered || ""),
+        paneDetails("Raw plan", plan),
+      ]));
+    } catch (err) {
+      paneError(area, err);
+    } finally {
+      submit.disabled = false;
+    }
+  };
+}
+
 // ---- Tab wiring ----------------------------------------------------------
 
 const PANES = [
   ["proof", "Proof", renderProof],
   ["insights", "Insights", renderInsights],
   ["driver", "Driver", renderDriver],
+  ["plan", "Plan", renderPlan],
   ["apply", "Apply", renderApply],
   ["verify", "Verify", renderVerify],
   ["continue", "Continue", renderContinue],
+  ["bench", "Bench", renderBench],
+  ["gates", "Gates", renderGates],
+  ["ledger", "Ledger", renderLedger],
+  ["models", "Models & Cost", renderModels],
+  ["missions", "Missions", renderMissions],
+  ["provision", "Provision", renderProvision],
   ["dogfood", "Dogfood", renderDogfood],
   ["legacy", "Legacy API", renderLegacy],
 ];

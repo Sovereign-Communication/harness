@@ -104,6 +104,9 @@ SITE_TYPES = {
     ".svg": "image/svg+xml",
 }
 MAX_EVENT_BUFFER = 4000
+# A gate's output is evidence, but the browser does not need an unbounded log.
+# Keep the tail (where failures speak) and say that it was cut.
+GATE_OUTPUT_LIMIT = 20_000
 
 # Rankings reports (advisory, read-only mirror): the `harness rankings`
 # output layout -- rankings/rankings-YYYY-MM-DD.json -- the same files the
@@ -224,7 +227,7 @@ def validate_dispatch(kind, args):
     """CLI-boundary validation for UI dispatch. Same discipline as the CLI
     parsers: untrusted input is range-checked before anything runs."""
     if kind not in ("apply", "verify", "continue", "bench", "chat", "dogfood",
-                    "plan", "driver_task", "script"):
+                    "plan", "driver_task", "script", "gate"):
         raise HarnessError(f"unknown dispatch kind '{kind}'")
     args = dict(args or {})
     if kind == "driver_task":
@@ -252,6 +255,32 @@ def validate_dispatch(kind, args):
             args["task_max_cost"] = _finite_float(args["task_max_cost"], "task_max_cost", 0.0, HARD_TASK_MAX_COST)
         if args.get("max_cost") is not None:
             args["max_cost"] = _finite_float(args["max_cost"], "max_cost", 0.0, HARD_MAX_COST)
+    elif kind == "gate":
+        # Gates are documented argv data, not free-form commands. The name must
+        # come from the registry, the phase only exists for jev-phase, and the
+        # timeout is bounded by the same budget the CLI uses. The runner pins
+        # cwd to this checkout so the pane cannot be aimed at another tree.
+        from .gate_runner import GATE_ORDER, GATES
+        name = _opt_str(args, "gate", required=True).strip()
+        if name not in GATES:
+            raise HarnessError(
+                f"unknown gate '{name}' (known: {', '.join(GATE_ORDER)})")
+        args["gate"] = name
+        phase = _opt_str(args, "phase")
+        if name == "jev-phase":
+            phase = (phase or "JEV-P0").strip()
+            if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", phase):
+                raise HarnessError(
+                    "phase must be 1-64 characters of letters, digits, '.', "
+                    "'_' or '-', starting with a letter or digit")
+            args["phase"] = phase
+        elif phase:
+            raise HarnessError("phase only applies to the jev-phase gate")
+        else:
+            args["phase"] = None
+        if args.get("timeout") is not None:
+            args["timeout"] = _finite_float(
+                args["timeout"], "timeout", 1.0, 3600.0)
     elif kind == "script":
         # Structural checks only. Consent and the sha re-check belong to the
         # run so a refusal can leave the same terminal script_end frame a
@@ -359,7 +388,13 @@ def validate_dispatch(kind, args):
     else:  # bench
         root = _dispatch_workspace(args, required=True)
         m = _opt_str(args, "manifest", required=True)
-        args["manifest"] = _dispatch_file(root, m, "manifest")
+        manifest = resolve_workspace_path(root, m, must_exist=True)
+        # bench.load_manifest accepts a single JSON file OR a directory of
+        # task.json packs. _dispatch_file would reject the directory form the
+        # CLI documents, so this branch checks the two shapes itself.
+        if not (manifest.is_file() or manifest.is_dir()):
+            raise HarnessError(f"manifest must be a file or directory: {m}")
+        args["manifest"] = str(manifest)
         _opt_int(args, "max_rounds", 1, 8, None)
     return args
 
@@ -438,6 +473,50 @@ def run_continue_task(task_id, args, cancel_check):
             verify_cmd=args.get("verify"),
             max_rounds=args.get("max_rounds") or 3,
             continuation=continuation))
+
+
+def run_gate_task(task_id, args, cancel_check):
+    """Run one documented gate through the ONE shell-free runner.
+
+    Gates are evidence, so the result keeps the gate's exit code and its
+    bounded output tail. ``cancel_check`` is observed once, before the
+    process starts; ``osal.run`` owns the hard timeout and the child gets
+    no interactive input. Cancelling mid-gate cannot kill the child (the
+    runner has no cancel seam), so a cancelled run still returns the gate's
+    own verdict -- the UI states this rather than pretending it stopped.
+    """
+    from .gate_runner import GATES, STAGE_GATE_TIMEOUT, VERIFY_TIMEOUT, run_gate
+
+    name = args["gate"]
+    spec = GATES[name]
+    params = ({"phase": args.get("phase") or "JEV-P0"}
+              if name == "jev-phase" else {})
+    command = spec.command(**params)
+    timeout = args.get("timeout") or (
+        STAGE_GATE_TIMEOUT if name in ("unittest", "audit") else VERIFY_TIMEOUT * 2)
+    if cancel_check():
+        raise ToolCancelled("cancelled before the gate started")
+    _events.emit("gate_start", task_id=task_id, gate=name,
+                 command=command, timeout_s=timeout)
+    started = time.time()
+    rc, output = run_gate(spec.argv(**params), timeout=int(timeout),
+                          cwd=str(Path(__file__).resolve().parent.parent))
+    duration = round(time.time() - started, 3)
+    passed = rc == 0
+    truncated = len(output) > GATE_OUTPUT_LIMIT
+    tail = output[-GATE_OUTPUT_LIMIT:]
+    _events.emit("gate_end", task_id=task_id, gate=name, passed=passed,
+                 rc=rc, duration_s=duration, output_tail=tail[-2000:])
+    return {
+        "status": "passed" if passed else "failed",
+        "gate": name,
+        "command": command,
+        "exit_code": rc,
+        "passed": passed,
+        "duration_s": duration,
+        "output": tail,
+        "output_truncated": truncated,
+    }
 
 
 def run_bench_task(task_id, args, cancel_check):
@@ -1154,6 +1233,7 @@ RUNNERS = {
     "plan": run_plan_task,
     "driver_task": run_driver_task,
     "script": run_script_task,
+    "gate": run_gate_task,
 }
 
 
@@ -1281,6 +1361,23 @@ class UiState:
         if with_result:
             out["result"] = record.get("result")
         return out
+
+
+def _script_posture(settings=None):
+    """The resolved script policy as a browser-safe posture block.
+
+    One owner: ``harness.script.resolve_script_policy`` (settings, then env,
+    then the disabled default). The UI shows this so an operator can tell
+    whether `/script` will offer a card at all -- no guessing from env vars
+    they cannot see.
+    """
+    policy = _script.resolve_script_policy(settings)
+    return {
+        "enabled": bool(policy.enabled),
+        "timeout_s": int(policy.timeout_s),
+        "max_output_bytes": int(policy.max_output_bytes),
+        "allow_network": bool(policy.allow_network),
+    }
 
 
 def _settings_view():
@@ -1523,6 +1620,8 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 return self._api_ledger_report()
             if path == "/api/ledger/defer-stats":
                 return self._api_ledger_defer_stats(q)
+            if path == "/api/gates":
+                return self._api_gates(q)
             if path == "/api/capabilities":
                 return self._api_capabilities()
             if path == "/api/models":
@@ -1620,6 +1719,10 @@ class UiRequestHandler(BaseHTTPRequestHandler):
                 return self._api_driver_start(body)
             if parsed.path == "/api/driver/drive":
                 return self._api_driver_drive(body)
+            if parsed.path == "/api/ledger/repair":
+                return self._api_ledger_repair(body)
+            if parsed.path == "/api/missions":
+                return self._api_mission_init(body)
             if parsed.path == "/api/provision/plan":
                 from . import provision as pv
                 goal = str(body.get("goal") or "").strip()
@@ -1713,6 +1816,7 @@ class UiRequestHandler(BaseHTTPRequestHandler):
             "status": "ok", "started_at": self.ui.started_at,
             "auth_required": bool(self.ui.auth_token),
             "events_buffered": len(self.ui.events), "runs": runs[:50],
+            "scripting": _script_posture(load_settings()),
         })
 
     def _api_trust(self, q):
@@ -1892,6 +1996,93 @@ class UiRequestHandler(BaseHTTPRequestHandler):
             "route": combo,
             "is_fallback": bool(combo.get("is_fallback")),
         })
+
+    def _api_gates(self, q):
+        """The documented gates as data, exactly as `harness gates --json`
+        renders them: name, proof, argv, platform command and default timeout.
+        """
+        from .gate_runner import (GATES, GATE_ORDER, STAGE_GATE_TIMEOUT,
+                                  VERIFY_TIMEOUT)
+        phase = (q.get("phase") or ["JEV-P0"])[0] or "JEV-P0"
+        if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", phase):
+            raise HarnessError(
+                "phase must be 1-64 characters of letters, digits, '.', "
+                "'_' or '-', starting with a letter or digit")
+        gates = []
+        for name in GATE_ORDER:
+            spec = GATES[name]
+            params = {"phase": phase} if name == "jev-phase" else {}
+            gates.append({
+                "name": name,
+                "summary": spec.summary,
+                "argv": spec.argv(**params),
+                "command": spec.command(**params),
+                "timeout_s": (STAGE_GATE_TIMEOUT
+                              if name in ("unittest", "audit")
+                              else VERIFY_TIMEOUT * 2),
+            })
+        return self._send_json({"gates": gates, "phase": phase})
+
+    def _api_ledger_repair(self, body):
+        """Truncate the invalid ledger tail after an explicit confirmation.
+
+        Destructive by design, so the exact word is required: a browser
+        button alone is not consent. The response says what was kept and
+        dropped and returns both chain verdicts, before and after.
+        """
+        if not isinstance(body, dict) or body.get("confirm") != "repair":
+            raise HarnessError(
+                "ledger repair requires the explicit body {\"confirm\": "
+                "\"repair\"}; nothing was changed")
+        ledger = ledger_for(load_settings())
+        before = ledger.chain_status()
+        kept, dropped = ledger.repair()
+        return self._send_json({
+            "ok": True, "kept": kept, "dropped": dropped,
+            "before": before, "after": ledger.chain_status(),
+        })
+
+    def _api_mission_init(self, body):
+        """Create one mission pack through the existing owner.
+
+        Same validation as `harness mission init`: ``build_mission_spec``
+        normalizes, then ``init_mission_pack`` refuses an existing id. The
+        root is confined to the server's missions directory by
+        ``resolve_missions_root``; the browser cannot pick an arbitrary path.
+        """
+        from . import mission_record as mr
+        if not isinstance(body, dict):
+            raise HarnessError("mission init requires a JSON object")
+        raw_root = str(body.get("root") or "missions").strip() or "missions"
+        root = mr.resolve_missions_root(raw_root)
+        in_scope = body.get("in_scope") or []
+        out_of_scope = body.get("out_of_scope") or []
+        if isinstance(in_scope, str):
+            in_scope = [s.strip() for s in in_scope.splitlines() if s.strip()]
+        if isinstance(out_of_scope, str):
+            out_of_scope = [s.strip() for s in out_of_scope.splitlines() if s.strip()]
+        if not isinstance(in_scope, list) or not all(
+                isinstance(s, str) for s in in_scope):
+            raise HarnessError("in_scope must be a list of strings")
+        if not isinstance(out_of_scope, list) or not all(
+                isinstance(s, str) for s in out_of_scope):
+            raise HarnessError("out_of_scope must be a list of strings")
+        spec = mr.build_mission_spec(
+            mission_id=str(body.get("id") or "").strip(),
+            request=str(body.get("request") or "").strip(),
+            success_definition=str(body.get("success_definition") or "").strip(),
+            max_cost_usd=_finite_float(body.get("max_cost_usd"), "max_cost_usd",
+                                       0.0, 1000.0),
+            terminal_reserve_cost_usd=_finite_float(
+                body.get("terminal_reserve_cost_usd") or 0.0,
+                "terminal_reserve_cost_usd", 0.0, 1000.0),
+            in_scope=in_scope,
+            out_of_scope=out_of_scope,
+            persistence_root=raw_root,
+            verifier_kind=str(body.get("verifier_kind") or "unspecified").strip(),
+        )
+        pack = mr.init_mission_pack(root, spec)
+        return self._send_json(mr.pack_summary(pack), code=201)
 
     def _api_ledger_defer_stats(self, q):
         window = int((q.get("window") or ["500"])[0] or 500)

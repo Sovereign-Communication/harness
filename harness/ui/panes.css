@@ -562,5 +562,76 @@
   font-weight: 600;
 }
 
+/* Operator-parity panes (Plan / Bench / Gates / Ledger / Models / Missions /
+   Provision). Additive; all classes are pane-scoped. */
+.pane-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  max-width: 980px;
+}
+.pane-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.pane-card-head {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.pane-card-body { padding: 0.65rem 0.75rem; }
+.pane-grid { display: grid; gap: 0.8rem; max-width: 860px; }
+.pane-grid.three {
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  margin-bottom: 0.5rem;
+}
+.pane-grid .pane-field { max-width: none; margin-bottom: 0; }
+.pane-check {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.3rem 0 0.8rem;
+  font-size: 0.85rem;
+}
+.pane-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin: 0.5rem 0;
+}
+.pane-details { margin-top: 0.6rem; }
+.pane-details summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+.pane-details .pane-json { margin-top: 0.4rem; }
+.pane-subhead {
+  margin: 0.8rem 0 0.3rem;
+  font-size: 0.85rem;
+  color: var(--accent);
+}
+.pane-notes {
+  margin: 0.4rem 0;
+  padding-left: 1.1rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+.gate-command {
+  display: block;
+  margin: 0.3rem 0;
+  padding: 0.35rem 0.5rem;
+  background: var(--bg);
+  border-radius: 6px;
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+.gate-output { max-height: 320px; }
+
 
 

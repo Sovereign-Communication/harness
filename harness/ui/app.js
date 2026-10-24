@@ -225,6 +225,7 @@ let webEnabled = localStorage.getItem("harness_web_enabled") === "true";
 // Retire the old profile-global workspace: blank now means chat-only.
 localStorage.removeItem("harness_workdir");
 const workspaceKey = (id) => `harness_workspace:${id}`;
+const RECENT_WORKSPACES_KEY = "harness_workspace_recents";
 let workDir = sessionStorage.getItem(workspaceKey(sessionId)) || "";
 window.getHarnessWorkspace = () => workDir.trim();
 let currentRunId = null;
@@ -241,6 +242,7 @@ window.addEventListener("DOMContentLoaded", () => {
   setupSidebar();
   setupStarterChips();
   loadHistory();
+  loadScriptPosture();
   pollSpend();
   pollRoute();
   setInterval(pollSpend, 8000);
@@ -248,14 +250,73 @@ window.addEventListener("DOMContentLoaded", () => {
 });
 
 // Setup Sidebar (session list, workdir)
+function recentWorkspaces() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(RECENT_WORKSPACES_KEY) || "[]");
+    return Array.isArray(parsed) ? parsed.filter(p => typeof p === "string" && p.trim()) : [];
+  } catch (_e) {
+    return [];
+  }
+}
+
+function rememberWorkspace(path) {
+  const value = String(path || "").trim();
+  if (!value) return;
+  const next = [value, ...recentWorkspaces().filter(p => p !== value)].slice(0, 8);
+  try { localStorage.setItem(RECENT_WORKSPACES_KEY, JSON.stringify(next)); } catch (_e) {}
+  renderWorkspaceRecents();
+}
+
+function renderWorkspaceRecents() {
+  const list = $("#workspace-recents");
+  if (!list) return;
+  list.replaceChildren();
+  for (const path of recentWorkspaces()) {
+    const option = document.createElement("option");
+    option.value = path;
+    list.appendChild(option);
+  }
+}
+
+async function loadScriptPosture() {
+  const badge = $("#script-badge");
+  const text = $("#script-text");
+  const icon = $("#script-icon");
+  if (!badge || !text) return;
+  try {
+    const status = await api("/api/status");
+    const posture = status.scripting || {};
+    if (posture.enabled) {
+      text.textContent = `Script on · ${posture.timeout_s || "?"}s`;
+      if (icon) icon.textContent = "🐍";
+      badge.title = `Governed scripting is enabled (timeout ${posture.timeout_s || "?"}s, `
+        + `network ${posture.allow_network ? "allowed" : "recorded but not enforced"}). `
+        + "A /script proposal still needs the exact sha approved.";
+    } else {
+      text.textContent = "Script off";
+      if (icon) icon.textContent = "🚫";
+      badge.title = "Governed scripting is disabled. Set HARNESS_SCRIPT_ENABLED=1 and restart "
+        + "harness serve to offer /script proposals; approval still binds to the sha.";
+    }
+  } catch (_e) {
+    text.textContent = "Script ?";
+    badge.title = "Script posture unavailable (the server did not answer /api/status).";
+  }
+}
+
 function setupSidebar() {
   const workdirInput = $("#workdir-input");
+  renderWorkspaceRecents();
   if (workdirInput) {
     workdirInput.value = workDir;
     workdirInput.addEventListener("change", () => {
       workDir = workdirInput.value.trim();
-      if (workDir) sessionStorage.setItem(workspaceKey(sessionId), workDir);
-      else sessionStorage.removeItem(workspaceKey(sessionId));
+      if (workDir) {
+        sessionStorage.setItem(workspaceKey(sessionId), workDir);
+        rememberWorkspace(workDir);
+      } else {
+        sessionStorage.removeItem(workspaceKey(sessionId));
+      }
     });
   }
   refreshSessionList();
