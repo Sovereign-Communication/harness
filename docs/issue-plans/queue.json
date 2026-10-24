@@ -1,0 +1,585 @@
+{
+  "schema": "harness-issue-queue-v1",
+  "source": "docs/jev-roadmap.md#issue295-implementation-plan + GitHub open issues at generation",
+  "generated": "2026-10-24",
+  "batch": 1,
+  "notes": "Derived execution view; the canon register remains authoritative. Only #347 is implemented in batch 1; no issue is complete until merged with green CI.",
+  "open_issue_count": 58,
+  "issues": [
+    {
+      "issue": 347,
+      "title": "[config] Honor explicit Jev disabling overrides without silently restoring installed credentials",
+      "owner": "Config",
+      "prerequisites": [],
+      "acceptance": "Explicit disabling/clearing precedence, zero ambient dispatch, existing evaluator disabling preserved.",
+      "status": "implemented-pending-ci"
+    },
+    {
+      "issue": 270,
+      "title": "[driver] Add launch_app action to vocabulary",
+      "owner": "Declared app launch",
+      "prerequisites": [
+        292,
+        300
+      ],
+      "acceptance": "Default-off flag, allowlisted OS adapters, bounded startup; no arbitrary string-built shell execution.",
+      "status": "queued"
+    },
+    {
+      "issue": 271,
+      "title": "[driver] NL planner: natural language to action plan",
+      "owner": "NL proposal",
+      "prerequisites": [
+        270,
+        324
+      ],
+      "acceptance": "10s bounded planner validates declared actions/params and empty/malformed output; proposal grants no execution authority.",
+      "status": "queued"
+    },
+    {
+      "issue": 272,
+      "title": "[driver] Vision verification for computer control",
+      "owner": "Visual verification",
+      "prerequisites": [
+        270
+      ],
+      "acceptance": "Optional2s/5s screenshot checks and bounded Jev latency; truthful timeout, no replacement of consent, flag-off preserved.",
+      "status": "queued"
+    },
+    {
+      "issue": 273,
+      "title": "[driver] GUI wiring: /driver/nl endpoint + confirmation card",
+      "owner": "GUI action consent",
+      "prerequisites": [
+        271,
+        272,
+        299
+      ],
+      "acceptance": "Resolve wording with explicit boolean: false previews, true executes bound approved plan, absent/malformed400; token/Run/events/cancel/default-off404.",
+      "status": "queued"
+    },
+    {
+      "issue": 275,
+      "title": "Hourglass/HUL: integrate Freebuff mission-mode findings (full dossier)",
+      "owner": "Mission deltas",
+      "prerequisites": [
+        342,
+        344,
+        273
+      ],
+      "acceptance": "New L1-L7 trace/decision/grade/time/authority/retry/receipt deltas, preserve shipped L8-L9, enforce L10 length, L11 driver classes and L12 metering allocation.",
+      "status": "queued"
+    },
+    {
+      "issue": 276,
+      "title": "fix(audit): measure D12 coverage against the merge-base at CI time; disposition S5 ruff resolution",
+      "owner": "Audit measurement",
+      "prerequisites": [
+        278
+      ],
+      "acceptance": "Merge-base D12 >=95%, no manual baseline gaming; moving main does not stale measurement; explicit S5 disposition.",
+      "status": "queued"
+    },
+    {
+      "issue": 277,
+      "title": "dogfood: structured round 2 - checklist pass with filed report (GUI/MCP/website weighted)",
+      "owner": "Surface receipts",
+      "prerequisites": [
+        276,
+        331,
+        327,
+        330
+      ],
+      "acceptance": "Filed CLI/GUI/MCP/site matrix with runtime, outputs, exits, calls, timing and costs; fix/file each failure;403/unverified never pass.",
+      "status": "queued"
+    },
+    {
+      "issue": 278,
+      "title": "[tools] Unified external-tool resolution + preflight (gate interpreter, ruff)",
+      "owner": "Tool resolution",
+      "prerequisites": [
+        327
+      ],
+      "acceptance": "One interpreter/ruff resolver across apply/verify/dogfood/audit; python3-only works; missing tools refuse before billing.",
+      "status": "queued"
+    },
+    {
+      "issue": 279,
+      "title": "[cli] harness doctor: one-command environment preflight",
+      "owner": "Doctor",
+      "prerequisites": [
+        278,
+        347
+      ],
+      "acceptance": "Tool/key-presence/DNS/driver/GUI states with remediation, no secrets; distinguish local from separately budgeted live checks.",
+      "status": "queued"
+    },
+    {
+      "issue": 280,
+      "title": "[efficiency] Calibration-driven first-rung selection + earlier rotation",
+      "owner": "First-rung calibration",
+      "prerequisites": [
+        302,
+        340
+      ],
+      "acceptance": "Task-family calibration and early structured-failure rotation with visible reasons; no-history fallback and completion rate preserved.",
+      "status": "queued"
+    },
+    {
+      "issue": 281,
+      "title": "[bench] Published benchmark evidence via Proof Bench pipeline",
+      "owner": "Benchmark export",
+      "prerequisites": [
+        340,
+        277
+      ],
+      "acceptance": "Manifest-hashed reproducible bundle through existing export gates; labeled requested free benchmark plus budgeted cheap-paid integration; publication separately authorized.",
+      "status": "queued"
+    },
+    {
+      "issue": 282,
+      "title": "[gui-tests] Playwright smoke layer: 5 critical journeys, single worker",
+      "owner": "GUI journeys",
+      "prerequisites": [],
+      "acceptance": "Identify actual runtime; five single-worker critical journeys; broken-journey negative control; hermetic CI.",
+      "status": "queued"
+    },
+    {
+      "issue": 283,
+      "title": "[gui-tests] Jest tests for IPC handlers / main-process logic",
+      "owner": "GUI handlers",
+      "prerequisites": [
+        282
+      ],
+      "acceptance": "Test actual IPC or HTTP handlers after runtime finding; record rescope; errors/cancel/state synchronization covered.",
+      "status": "queued"
+    },
+    {
+      "issue": 284,
+      "title": "[mcp] Tool-description lint: When/What-in/What-out formula, wired into driver_core audit",
+      "owner": "MCP descriptions",
+      "prerequisites": [],
+      "acceptance": "Every tool has When/Input/Output; audit negative control; no execution behavior change.",
+      "status": "queued"
+    },
+    {
+      "issue": 285,
+      "title": "[mcp] Agent-eval layer: tool selection/chaining scored by pass-rate",
+      "owner": "MCP evaluation",
+      "prerequisites": [
+        284,
+        335,
+        333,
+        334
+      ],
+      "acceptance": "Declared tasks/tool chains and pass-rate threshold; per-case results, wrong-chain control, explicitly costed live mode.",
+      "status": "queued"
+    },
+    {
+      "issue": 286,
+      "title": "[mcp] Structured file logging + additive-only tool versioning policy",
+      "owner": "MCP observability",
+      "prerequisites": [],
+      "acceptance": "Secret-scanned file logs, zero stdout contamination, additive-only schemas and truthful outcomes.",
+      "status": "queued"
+    },
+    {
+      "issue": 287,
+      "title": "[ci] cancel-in-progress + paths filters: skip the hermetic matrix for docs/site-only changes",
+      "owner": "CI scheduling",
+      "prerequisites": [
+        276,
+        327
+      ],
+      "acceptance": "Cancel stale runs; docs light path retains audit; code retains every required check; workflow negative controls.",
+      "status": "queued"
+    },
+    {
+      "issue": 288,
+      "title": "[ci] Type checking (pyright/pyrefly) in CI for new code only",
+      "owner": "Changed-code typing",
+      "prerequisites": [
+        276
+      ],
+      "acceptance": "Document checker/baseline; grandfather untouched errors, fail deliberate new error on changed code.",
+      "status": "queued"
+    },
+    {
+      "issue": 289,
+      "title": "[build] Migrate dependency management to uv (old requirements stay until uv CI is green)",
+      "owner": "Dependency workflow",
+      "prerequisites": [
+        278,
+        276
+      ],
+      "acceptance": "uv/lock works with identical test/skip accounting; keep requirements until green; exact rollback.",
+      "status": "queued"
+    },
+    {
+      "issue": 290,
+      "title": "[docs] Hermetic/audit triage runbook: environment failures vs real failures",
+      "owner": "Triage runbook",
+      "prerequisites": [
+        347,
+        278,
+        276
+      ],
+      "acceptance": "Effective-settings, environment failures, unknown usage and real-defect distinctions linked from contributor/audit docs.",
+      "status": "queued"
+    },
+    {
+      "issue": 291,
+      "title": "[refine] Execute the Phase 0 pilot: 20 cycles (TIER 2 only, no auto-merge)",
+      "owner": "Refine pilot",
+      "prerequisites": [
+        276,
+        325,
+        340
+      ],
+      "acceptance": "Reconcile existing cycles and finish remaining original20 TIER2 cycles with rubric/held-out receipts and graduation disposition; zero auto-merge.",
+      "status": "queued"
+    },
+    {
+      "issue": 292,
+      "title": "[driver-core] Sync vendored driver_core v3.4.0 to standalone v3.5.0 + CI drift check",
+      "owner": "Vendored driver",
+      "prerequisites": [
+        301
+      ],
+      "acceptance": "Reconcile actual revisions, sync intended delta, record diff and documented drift check; no blind old-version replay.",
+      "status": "queued"
+    },
+    {
+      "issue": 293,
+      "title": "[tests] Cover the 6 suite-unexecuted edge lines left by #274",
+      "owner": "Edge coverage",
+      "prerequisites": [
+        276
+      ],
+      "acceptance": "Map six historic lines to current source; execute or disposition with traced evidence; no shipped lifecycle replay.",
+      "status": "queued"
+    },
+    {
+      "issue": 294,
+      "title": "[provider-onboarding] Completion: pane browser test, 50 live key validations, verifier sweep, final Jev gate",
+      "owner": "Onboarding evidence",
+      "prerequisites": [
+        282,
+        277,
+        340
+      ],
+      "acceptance": "Reconcile existing branch; pane journey,50 budgeted validations, live sweep and>=0.90 feature gate; operator retains router flag.",
+      "status": "queued"
+    },
+    {
+      "issue": 295,
+      "title": "[burndown] TRACKER: full completion burndown \u00e2\u20ac\u201d all remaining work, waved and ordered",
+      "owner": "Tracker",
+      "prerequisites": [],
+      "acceptance": "Evidence-backed closure/disposition, one phase PR/merge, green merge-result CI; roadmap owns plan, tracker owns execution receipts.",
+      "status": "queued"
+    },
+    {
+      "issue": 299,
+      "title": "fix(server): cap POST body size before reading \u00e2\u20ac\u201d return 413 over the limit",
+      "owner": "GUI HTTP",
+      "prerequisites": [],
+      "acceptance": "Over-cap POST returns413 before body read; normal chat/driver/apply unchanged.",
+      "status": "queued"
+    },
+    {
+      "issue": 300,
+      "title": "fix(driver_core): check_batch docstring overstates the irreversible-mix guarantee it enforces",
+      "owner": "Driver contract",
+      "prerequisites": [],
+      "acceptance": "Minimal documented-rule correction plus focused cases; stronger enforcement requires a separately reviewed real-caller need.",
+      "status": "queued"
+    },
+    {
+      "issue": 301,
+      "title": "ci: driver_core is outside the ruff scope \u00e2\u20ac\u201d dead import (F401) sits unseen on main",
+      "owner": "Lint scope",
+      "prerequisites": [
+        278
+      ],
+      "acceptance": "driver_core included in common lint/CI; remove F401 and prove scope sees violations.",
+      "status": "queued"
+    },
+    {
+      "issue": 302,
+      "title": "harden(apply): screen refusal/non-code model output at intake; stop crediting model health for missing-marker responses",
+      "owner": "Apply intake",
+      "prerequisites": [],
+      "acceptance": "Refusal/non-code rotates before candidacy; code-shaped missing-marker behavior preserved; truthful health and billing.",
+      "status": "queued"
+    },
+    {
+      "issue": 303,
+      "title": "fix(site-check): non-http(s) schemes in prose prompts bypass the scheme gate via extractor normalization (minor)",
+      "owner": "Site extraction",
+      "prerequisites": [],
+      "acceptance": "Explicit scheme refusal/disclosed normalization in prose; direct HTTPS and SSRF admission preserved.",
+      "status": "queued"
+    },
+    {
+      "issue": 304,
+      "title": "feat(economics): include Fireworks in automatic cheapest-capable routing with dynamic price checking \u00e2\u20ac\u201d completes EV-8",
+      "owner": "Cross-provider routing",
+      "prerequisites": [
+        340
+      ],
+      "acceptance": "Actual pool selection consumes fresh enabled-provider whole-endpoint price/capability evidence; explicit stale policy and shared budget.",
+      "status": "queued"
+    },
+    {
+      "issue": 306,
+      "title": "ops(fireworks): place the Fireworks key into the harness config environment and complete EV-8 verification",
+      "owner": "EV-8 evidence",
+      "prerequisites": [],
+      "acceptance": "Respect prior marker/receipt, never delete to rerun; only genuinely unrun <=$0.01 one-shot with new case allocation; confirmations stand, key private.",
+      "status": "queued"
+    },
+    {
+      "issue": 308,
+      "title": "[planning] Split waist.py by planning responsibility",
+      "owner": "Planning structure",
+      "prerequisites": [
+        346,
+        342
+      ],
+      "acceptance": "Separate decomposition/review/evidence/budget concerns; preserve one policy owner and public envelopes.",
+      "status": "queued"
+    },
+    {
+      "issue": 309,
+      "title": "[jev] Separate domain evaluators from shared policy dispatch",
+      "owner": "Jev structure",
+      "prerequisites": [
+        324,
+        342
+      ],
+      "acceptance": "Domain evaluators separate from one dispatch/spend/ledger owner; preserve sites, fallback, cancellation and dedupe.",
+      "status": "queued"
+    },
+    {
+      "issue": 310,
+      "title": "[provision] Split admission, approval, and execution by trust boundary",
+      "owner": "Provision structure",
+      "prerequisites": [
+        276
+      ],
+      "acceptance": "Separate admission/approval/recipes/execution with one authority and durable no-replay; injected runners only in tests.",
+      "status": "queued"
+    },
+    {
+      "issue": 311,
+      "title": "[local-fit] Exercise training and export extra in hermetic CI",
+      "owner": "Optional local-fit CI",
+      "prerequisites": [
+        276
+      ],
+      "acceptance": "Extra job trains/exports/reloads/scores temporary deterministic artifacts; no provider calls or heavy default runtime.",
+      "status": "queued"
+    },
+    {
+      "issue": 313,
+      "title": "eval(models): evaluate Inception Mercury 3 (diffusion LLM) for cheapest-capable routing",
+      "owner": "Mercury evidence",
+      "prerequisites": [
+        340
+      ],
+      "acceptance": "Independent evidence packet can precede the intake build: routable slug, dynamic price and structured/capability evidence; native viability>=90; #319 consumes it without a parallel manual insertion path.",
+      "status": "queued"
+    },
+    {
+      "issue": 314,
+      "title": "feat(jev): offline Jev-like judge modules (local inference backends)",
+      "owner": "Optional offline judges",
+      "prerequisites": [
+        325,
+        309
+      ],
+      "acceptance": "Stage seam/provisioning/Laya/Kev/engine-gated Needle with calibrated provenance; no default change or offline substitute for native-required approval.",
+      "status": "queued"
+    },
+    {
+      "issue": 318,
+      "title": "route(selection): continuous recursive self-improving model selection \u00e2\u20ac\u201d always-on auditing, dynamic as needed",
+      "owner": "Selection feedback",
+      "prerequisites": [
+        340,
+        280,
+        333
+      ],
+      "acceptance": "Outcome/probation/trigger schema first; measured costs, bounded self-audits, held-out gates; missing telemetry preserves ordering.",
+      "status": "queued"
+    },
+    {
+      "issue": 319,
+      "title": "route(models): automated model intake pipeline \u00e2\u20ac\u201d all OpenRouter models auto-screened into pools",
+      "owner": "Model intake",
+      "prerequisites": [
+        318
+      ],
+      "acceptance": "Existing session/15min/weekly cadence, bounded filters/native screens, logged insertion/holds, explicit stale policy; no manual per-model pipeline.",
+      "status": "queued"
+    },
+    {
+      "issue": 325,
+      "title": "[jev][MED] v1 assessment gate (5-aspect suite + flexibility rule) has no code counterpart",
+      "owner": "Assessment procedure",
+      "prerequisites": [
+        324
+      ],
+      "acceptance": "Declare five rubric bands and investigation actor before automation; retain raw distributions; preserve absolute audit/phase hard bars.",
+      "status": "queued"
+    },
+    {
+      "issue": 327,
+      "title": "[cli][MAJOR] gates resolve CWD-relative: compileall gate reports green having checked zero files",
+      "owner": "Gate runner",
+      "prerequisites": [],
+      "acceptance": "Repo-root resolution or explicit refusal; outside-CWD cannot pass having checked zero files.",
+      "status": "queued"
+    },
+    {
+      "issue": 328,
+      "title": "[cli][MINOR] no version surface: --version / -v / version all exit 2",
+      "owner": "CLI version",
+      "prerequisites": [],
+      "acceptance": "Standard version surface returns package version successfully; bad usage remains nonzero.",
+      "status": "queued"
+    },
+    {
+      "issue": 329,
+      "title": "[cli] polish: desktop usage line + shared --out/--quiet/--events/--no-color flags missing on defer/media/driver",
+      "owner": "CLI help/flags",
+      "prerequisites": [],
+      "acceptance": "Correct desktop usage and actual out/quiet/events/no-color behavior; no parsed-but-inert flags.",
+      "status": "queued"
+    },
+    {
+      "issue": 330,
+      "title": "[dogfood][HIGH] `harness dogfood` crashes unconditionally: _run_claims_verify() got an unexpected keyword argument 'cancel_check'",
+      "owner": "Dogfood verifier",
+      "prerequisites": [],
+      "acceptance": "Supported cancellation arguments at real caller; once-only terminal state and usage settlement.",
+      "status": "queued"
+    },
+    {
+      "issue": 332,
+      "title": "[audit] inconsistent fallback model labeling: is_fallback=True with model=jev-latest vs model=local-heuristic",
+      "owner": "Fallback identity",
+      "prerequisites": [],
+      "acceptance": "Consistent actual backend labeling; configured model distinct from observed fallback.",
+      "status": "queued"
+    },
+    {
+      "issue": 333,
+      "title": "[mcp][MEDIUM] defer_work fabricates success for nonexistent task_ids; phantom entries pollute the ledger",
+      "owner": "Task/ledger boundary",
+      "prerequisites": [],
+      "acceptance": "Never-offered task defer refuses without phantom row; valid defer preserves real partial work.",
+      "status": "queued"
+    },
+    {
+      "issue": 334,
+      "title": "[mcp][LOW] log_judgment reports ok when zero items were live-judged",
+      "owner": "Judgment envelope",
+      "prerequisites": [],
+      "acceptance": "Zero live judgments cannot be unqualified native success; fallback coverage/provenance retained.",
+      "status": "queued"
+    },
+    {
+      "issue": 335,
+      "title": "[mcp][LOW] tool annotations inaccurate: read_only_hint missing on read-only tools, absent on mutating ones",
+      "owner": "MCP annotations",
+      "prerequisites": [],
+      "acceptance": "Classify actual read/mutation/destructive effects, including ledger/config effects; descriptions and annotations agree.",
+      "status": "queued"
+    },
+    {
+      "issue": 336,
+      "title": "ledger: self-pruning via anchored compaction + automatic canary updates",
+      "owner": "Ledger compaction",
+      "prerequisites": [
+        333,
+        345
+      ],
+      "acceptance": "Anchors preserve chain; spend/trust/gate-cited rows never pruned; labeled bounded canaries excluded from reliability; no unbudgeted scheduled calls.",
+      "status": "queued"
+    },
+    {
+      "issue": 337,
+      "title": "ledger: validated criteria-prompt library for interrogating the ledger across models",
+      "owner": "Ledger criteria",
+      "prerequisites": [
+        336,
+        318,
+        340
+      ],
+      "acceptance": "Full26-criterion target; first3 data-quality/reliability/measured-cost fixtures; capstone provisional until all dependencies validate; stale fixtures demote.",
+      "status": "queued"
+    },
+    {
+      "issue": 340,
+      "title": "[economics][MEDIUM] harness-reported costs drift \\u00b115\\u201340% off measured spend; #318 metric must use measured",
+      "owner": "Measured economics",
+      "prerequisites": [
+        345
+      ],
+      "acceptance": "Measured/provider usage separate from estimates; cost-per-success uses measured provenance; unexplained drift retained.",
+      "status": "queued"
+    },
+    {
+      "issue": 342,
+      "title": "[research] Implement the missing shared model-proposed ResearchPlan and native Jev review lifecycle",
+      "owner": "Shared research",
+      "prerequisites": [
+        345,
+        346,
+        324
+      ],
+      "acceptance": "Typed model proposal, bounded native review before retrieval, one lifecycle owner and real GUI/CLI/MCP callers; decline means zero retrieval.",
+      "status": "queued"
+    },
+    {
+      "issue": 343,
+      "title": "[web] Reject unrelated hits individually instead of accepting a mixed target-site result batch",
+      "owner": "Research evidence",
+      "prerequisites": [
+        342
+      ],
+      "acceptance": "Every candidate/final URL meets accepted domain/subject/freshness/evidence requirements; mixed Microsoft hit excluded before answer.",
+      "status": "queued"
+    },
+    {
+      "issue": 344,
+      "title": "[lifecycle] Bind resumed web context to the current request and retrieval decision",
+      "owner": "Checkpoints",
+      "prerequisites": [
+        342
+      ],
+      "acceptance": "Request/plan-receipt/freshness binding; changed/declined routes drop incompatible evidence; valid resume avoids replay.",
+      "status": "queued"
+    },
+    {
+      "issue": 345,
+      "title": "[spend] Attribute request caps independently of unrelated concurrent session spending",
+      "owner": "Spend governor",
+      "prerequisites": [],
+      "acceptance": "Independent request actual/outstanding/unknown liability plus shared session cap; nested scopes/cancellation/cleanup remain correct.",
+      "status": "queued"
+    },
+    {
+      "issue": 346,
+      "title": "[planning] Exclude completed planning calls from the remaining execution allowance",
+      "owner": "Planning allowance",
+      "prerequisites": [
+        345
+      ],
+      "acceptance": "Paid/reserved/unknown calls counted once; compare remaining work with remaining funds; genuinely unfunded execution refuses.",
+      "status": "queued"
+    }
+  ]
+}

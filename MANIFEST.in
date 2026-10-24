@@ -4,5 +4,14 @@ include THREAT_MODEL.md
 include LICENSE
 include README.md
 recursive-include docs *.md
+
+# Operator-lane handoffs contain absolute local paths and machine-specific
+# launch recipes. They stay in git for the maintainers but must not ship in a
+# public sdist; their user-facing counterparts (README, docs/mcp.md,
+# docs/security.md, docs/ui-readiness.md) still do.
+exclude docs/claude-context.md
+exclude docs/jev-dogfood.md
+exclude docs/jev-roadmap.md
+
 recursive-exclude * __pycache__
 recursive-exclude * *.py[cod]

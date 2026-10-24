@@ -4,15 +4,34 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sovereign-harness"
-version = "0.4.2"
+version = "0.5.0"
 description = "Cost-bounded multi-model verification & coding harness with AI sovereignty — consent, continued consensus, and a verifiable participation ledger. Pure Python stdlib, zero dependencies."
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
 keywords = ["openrouter", "mcp", "llm", "verification", "agent", "sovereignty", "autonomy", "consent"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Software Development :: Quality Assurance",
+  "Topic :: Software Development :: Testing",
+]
 
 [project.urls]
 Homepage = "https://github.com/Sovereign-Communication/harness"
+Repository = "https://github.com/Sovereign-Communication/harness"
+Documentation = "https://github.com/Sovereign-Communication/harness#readme"
+Changelog = "https://github.com/Sovereign-Communication/harness/blob/main/CHANGELOG.md"
 Issues = "https://github.com/Sovereign-Communication/harness/issues"
 
 [project.scripts]
@@ -28,7 +47,17 @@ include = ["harness*", "driver_core*"]
 # desktop` read these files at runtime (harness/ui/), so an installed wheel
 # must carry them or every static page 500s.
 [tool.setuptools.package-data]
-harness = ["ui/*.html", "ui/*.js", "ui/*.css"]
+harness = [
+  "ui/*.html",
+  "ui/*.js",
+  "ui/*.css",
+  # Runtime prompt/rubric/taxonomy files read by jev_completion and
+  # refine. A wheel that omits these still imports but fails when the lane
+  # is used.
+  "data/*.md",
+  "data/*.json",
+]
+
 [project.optional-dependencies]
 dev = ["ruff>=0.6", "build>=1.2", "twine>=5"]
 local-fit-train = ["numpy", "onnx", "onnxruntime"]

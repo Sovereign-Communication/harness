@@ -3,7 +3,7 @@
 > Early public release: suitable for expert interactive use, but not a sandbox
 > for untrusted verification commands. Model agreement is advisory; a real
 > verification gate is the authority for code changes. See
-> [docs/security.md](docs/security.md) and [docs/mcp.md](docs/mcp.md).
+> [docs/security.md](https://github.com/Sovereign-Communication/harness/blob/main/docs/security.md) and [docs/mcp.md](https://github.com/Sovereign-Communication/harness/blob/main/docs/mcp.md).
 
 **Cost-bounded multi-model verification & coding — with AI sovereignty.**
 
@@ -45,7 +45,7 @@ FusionLite's engine it adds:
    true`.
 5. **System One & Calibrated Decision Support** — Fast-path pre-flight triage,
    calibrated confidence thresholds for pre-gate deferral, and sub-second machine-native
-   jury panels (see [docs/system-one-integration.md](docs/system-one-integration.md)).
+   jury panels (see [docs/system-one-integration.md](https://github.com/Sovereign-Communication/harness/blob/main/docs/system-one-integration.md)).
 
    Multi-file edits (`--file` × N) always return the **batch envelope**:
    `"batch": true` with a `results` list (one result per file, task-suffixed
@@ -55,6 +55,21 @@ FusionLite's engine it adds:
    result there would make a batch death indistinguishable from a one-file
    run). A single-file run returns the bare result shape; exit codes follow
    the terminal status.
+
+## A 0.23¢ audit, with receipts
+
+On 2026-10-24 the web lane drove
+[freeoffgridcalculator.com](https://www.freeoffgridcalculator.com/) in a real
+browser — switching on-grid/off-grid, pressing *Size My System*, and capturing
+the result — alongside a raw fetch. The complete turn, including the Jev
+review, cost **$0.002306** (0.23¢).
+
+It scored six aspects it actually exercised: three met the requested 99/100
+bar, three did not, and two were left **unassessed** rather than given a
+synthetic score. The turn ended `needs_review` (Jev answer sufficiency 0.49),
+not a pass. Cheap does not mean invented — and the receipt is public.
+
+[Read the full case study and evidence →](https://github.com/Sovereign-Communication/harness/blob/main/docs/case-studies/freeoffgridcalculator-2026-10-24.md)
 
 ## Why this exists
 
@@ -84,11 +99,14 @@ that and its hard guarantees:
 
 ## Install & configure
 
-`sovereign-harness` is not available from PyPI yet. The tag-publish workflow is
-ready, but its one-time PyPI trusted-publisher registration is still pending
-(see [issue #107](https://github.com/Sovereign-Communication/harness/issues/107)).
-Until that release step is complete, install the default build from the public
-GitHub repository.
+```bash
+python -m pip install sovereign-harness
+```
+
+The first PyPI upload is still pending owner registration (see [issue
+#107](https://github.com/Sovereign-Communication/harness/issues/107)); until it
+lands, that command returns "No matching distribution found". Install the
+default build from the public GitHub repository instead:
 
 Create a virtual environment and install the default build:
 
@@ -128,6 +146,17 @@ with the venv activated. Without the extra, `harness-desktop` falls back to the
 system browser. Both install modes provide `harness`, `harness-mcp`,
 `harness-desktop`, and `driver-core`.
 
+Two packaging facts matter when installing:
+
+- The distribution is `sovereign-harness`; the import name is `harness`. PyPI
+  also hosts an unrelated distribution named `harness` that owns the same
+  top-level package. Installing both into one environment overwrites files in
+  `site-packages`, so use a dedicated virtual environment.
+- A wheel carries the code, the browser UI, and the built-in model-tier
+  fallbacks. `packs/` and `audits/` are not shipped: a wheel user gets the
+  model tiers frozen into that release. Install the sdist or a checkout when
+  you need the operator evidence packs.
+
 ### Credentials and local auth
 
 Harness settings, provider key files, chat history, the UI token, and default
@@ -157,7 +186,7 @@ These credentials are separate:
 | Jev / System One | Optional for workflows that use Jev. Precedence: `HARNESS_JEV_KEY` in the environment, `jev_api_key` in `config.json`, `~/.config/scmorc/jev.env`, `$HARNESS_CONFIG_DIR/jev.env`, then `TYPESAFE_API_KEY` or `JEV_API_KEY` in the environment. |
 | Direct Fireworks lane | Only needed when selected. Key file order: `~/.config/scmorc/fireworks.env`, then `$HARNESS_CONFIG_DIR/fireworks.env`, then `FIREWORKS_API_KEY` in the environment. |
 | Web / desktop UI | `harness serve --open` and `harness desktop` use `--auth-token`, then `HARNESS_UI_AUTH_TOKEN`, then a generated and reused `$HARNESS_CONFIG_DIR/desktop_token`. This token protects the local UI/API; it is not a model key. |
-| Local MCP stdio | No separate token by default; the MCP host process is the trust boundary. `HARNESS_MCP_AUTH_TOKEN` / `mcp_auth_token` can add a shared token. File edits still require allowed roots and write/verify authorization; see [docs/mcp.md](docs/mcp.md). |
+| Local MCP stdio | No separate token by default; the MCP host process is the trust boundary. `HARNESS_MCP_AUTH_TOKEN` / `mcp_auth_token` can add a shared token. File edits still require allowed roots and write/verify authorization; see [docs/mcp.md](https://github.com/Sovereign-Communication/harness/blob/main/docs/mcp.md). |
 | Media adapter | Its service-specific token comes from `$HARNESS_CONFIG_DIR/media.json`, then `MEDIA_TOKEN`; `MEDIA_CONFIG_PATH` relocates that file. |
 | Driver adapter | Its service-specific token comes from `DRIVER_TOKEN` or `$HARNESS_CONFIG_DIR/driver.json`; `DRIVER_CONFIG_PATH` relocates that file. |
 
@@ -208,14 +237,14 @@ with `HARNESS_*` env overrides:
 | `jev_api_key` | `null` | TypeSafe AI Jev structural evaluation API key (HARNESS_JEV_KEY) |
 | `jev_endpoint` | `https://api.typesafe.ai/v1/systemone` | Jev structural verification endpoint |
 | `min_confidence` | `0.70` | calibrated abstention confidence threshold (HARNESS_MIN_CONFIDENCE) |
-| `jev_model` | `jev-latest` | TypeSafe model alias; pin `jev-1.13.0` when calibrating (see [docs/jev-dogfood.md](docs/jev-dogfood.md) freeze procedure) |
+| `jev_model` | `jev-latest` | TypeSafe model alias; pin `jev-1.13.0` when calibrating (see [docs/jev-dogfood.md](https://github.com/Sovereign-Communication/harness/blob/main/docs/jev-dogfood.md) freeze procedure) |
 
 Jev ops notes (JEV-P4): key present → default plan/write lanes run typed Jev
 through the one `jev_policy` owner; unkeyed → explicit `is_fallback` local
 structural checks. `HARNESS_JEV_DISABLE=1` forces the unkeyed path for
 with/without dogfood comparison. Ledger analytics (`harness ledger report`)
 include `jev_calibration`. Evidence template + pin/threshold freeze:
-[docs/jev-dogfood.md](docs/jev-dogfood.md).
+[docs/jev-dogfood.md](https://github.com/Sovereign-Communication/harness/blob/main/docs/jev-dogfood.md).
 
 `harness models` lists the current live free models (refreshed from
 OpenRouter). Hardcoded slugs go stale — the curated pools are validated live
@@ -482,8 +511,8 @@ human confirmation step on top, never instead.
 Security posture: loopback bind only (non-loopback Host headers are refused —
 DNS-rebinding guard), token-protected API routes, and secrets shown as
 presence-only in the settings view. The desktop shell reuses the persisted UI
-token and passes it via the URL fragment. See [docs/security.md](docs/security.md)
-and [docs/ui-readiness.md](docs/ui-readiness.md) for details.
+token and passes it via the URL fragment. See [docs/security.md](https://github.com/Sovereign-Communication/harness/blob/main/docs/security.md)
+and [docs/ui-readiness.md](https://github.com/Sovereign-Communication/harness/blob/main/docs/ui-readiness.md) for details.
 
 ### Web evidence: one fetch ladder
 

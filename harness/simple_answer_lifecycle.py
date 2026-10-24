@@ -7,9 +7,15 @@ from typing import Any, Dict, Optional
 from .chat_policy import is_research_question
 from .chat import governed_completion
 from .config import effective_lane_policy
+from .conversation_context import (
+    assemble_history,
+    facts_block,
+    load_memory,
+)
 from .errors import HarnessError, ToolCancelled
 from .events import cancellation_context, emit
 from .history import ChatResumePayload, load_chat_history, save_chat_turn
+from .jev_identity import jev_identity_block, jev_mentioned
 from .lifecycle import review_probability
 from .jev_policy import policy_for
 from .session import governor_for, ledger_for
@@ -18,7 +24,7 @@ from .simple_request import (
     answer_prompt as simple_answer_prompt,
     is_current_information_request,
     is_simple_answer_request,
-    relevant_history as simple_relevant_history,
+    is_summary_request,
     resolve_answer_retry as resolve_simple_answer_retry,
 )
 from .token_budget import resolve_lane_max_tokens as _resolve_lane_max_tokens
@@ -169,12 +175,42 @@ class SimpleAnswerLifecycleMixin:
                 ledger=ledger)
             saved_turns = load_chat_history(sid, self.history_dir)
             effective_prompt = resolve_simple_answer_retry(prompt, saved_turns)
-            turns = simple_relevant_history(effective_prompt, saved_turns)
+            memory = load_memory(self.history_dir)
+            answer_tokens, _answer_effort = effective_lane_policy(
+                "answer", max_tokens=max_tokens,
+                reasoning_effort=reasoning_effort)
+            history_budget = max(2400, int(answer_tokens) * 4)
+            remembered = facts_block(
+                memory, budget_chars=max(1200, history_budget // 2),
+                focus=effective_prompt)
+            turns = assemble_history(
+                effective_prompt, saved_turns, budget_chars=history_budget,
+                memory=memory,
+                # A summary needs the whole thread; an ordinary follow-up
+                # keeps the topical slice.  Fact-bearing turns are admitted
+                # by assemble_history even without expansion, so "same site"
+                # still reaches the turn that named it.
+                expand=is_summary_request(effective_prompt))
             if resuming:
-                turns = [turn for turn in turns
-                         if turn.get("prompt") != prompt]
+                # Drop the saved current turn as a pair: removing only the
+                # user message leaves its assistant answer as an orphan and
+                # feeds the duplicate back into the review context.
+                deduped = []
+                skip_assistant = False
+                for turn in turns:
+                    role = turn.get("role")
+                    if role == "user" and turn.get("content") == prompt:
+                        skip_assistant = True
+                        continue
+                    if skip_assistant and role == "assistant":
+                        skip_assistant = False
+                        continue
+                    skip_assistant = False
+                    deduped.append(turn)
+                turns = deduped
             context_text = "\n".join(
-                f"User: {turn['prompt']}\nAssistant: {turn['response']}"
+                f"{str(turn.get('role') or 'user').capitalize()}: "
+                f"{turn.get('content') or ''}"
                 for turn in turns)
 
             if not isinstance(pre, dict):
@@ -270,7 +306,10 @@ class SimpleAnswerLifecycleMixin:
                 target_tokens, lane_effort = effective_lane_policy(
                     "answer", max_tokens=max_tokens,
                     reasoning_effort=reasoning_effort)
-                generation_prompt = simple_answer_prompt(effective_prompt, turns)
+                generation_prompt = simple_answer_prompt(
+                    effective_prompt, turns, facts=remembered,
+                    jev_context=(jev_identity_block()
+                                 if jev_mentioned(effective_prompt) else ""))
                 allocated = _resolve_lane_max_tokens(
                     gov, model, generation_prompt, target_tokens,
                     token_budget=token_budget)
@@ -375,7 +414,8 @@ class SimpleAnswerLifecycleMixin:
                     "post_review_available": review_available,
                     "post_review_passed": review_passed,
                     "generation_calls": 1,
-                    "history_turns": len(turns),
+                    "history_turns": sum(
+                        1 for turn in turns if turn.get("role") == "user"),
                     "deadline_seconds": float(max_wall_seconds),
                     **({"resolved_prompt": effective_prompt}
                        if effective_prompt != prompt else {}),

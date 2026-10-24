@@ -9,61 +9,61 @@
     "A": 10.0,
     "R": 10.0,
     "SM": 10.0,
-    "SD": 5.0
+    "SD": 10.0
   },
-  "jev_gate_pass": false,
+  "jev_gate_pass": true,
   "jev_eval": {
     "dimensions": {
       "A": {
         "name": "Security",
-        "level_index": null,
-        "level": "not_evaluated",
-        "score": null,
-        "bar_met": false,
-        "confidence": null,
-        "evaluated": false
+        "level_index": 4,
+        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
+        "score": 10.0,
+        "bar_met": true,
+        "confidence": 1.0,
+        "evaluated": true
       },
       "R": {
         "name": "Reliability",
-        "level_index": null,
-        "level": "not_evaluated",
-        "score": null,
-        "bar_met": false,
-        "confidence": null,
-        "evaluated": false
+        "level_index": 4,
+        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
+        "score": 10.0,
+        "bar_met": true,
+        "confidence": 1.0,
+        "evaluated": true
       },
       "SM": {
         "name": "Structural hygiene & maintainability",
-        "level_index": null,
-        "level": "not_evaluated",
-        "score": null,
-        "bar_met": false,
-        "confidence": null,
-        "evaluated": false
+        "level_index": 4,
+        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
+        "score": 10.0,
+        "bar_met": true,
+        "confidence": 0.99,
+        "evaluated": true
       },
       "SD": {
         "name": "Documentation & release integrity",
-        "level_index": 0,
-        "level": "failing \u2014 severe defect or broken guarantee (<7.0)",
-        "score": 5.0,
-        "bar_met": false,
-        "confidence": 0.0,
+        "level_index": 4,
+        "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
+        "score": 10.0,
+        "bar_met": true,
+        "confidence": 0.91,
         "evaluated": true
       }
     },
     "scores": {
-      "A": null,
-      "R": null,
-      "SM": null,
-      "SD": 5.0
+      "A": 10.0,
+      "R": 10.0,
+      "SM": 10.0,
+      "SD": 10.0
     },
-    "bar_95_pass": false,
-    "min_score": 5.0,
+    "bar_95_pass": true,
+    "min_score": 10.0,
     "is_fallback": false,
     "reasons": [],
     "model": "jev-1.14.0",
-    "cost": 4.5444e-05,
-    "input_tokens": 1082,
+    "cost": 5.5566e-05,
+    "input_tokens": 1323,
     "output_tokens": 60
   },
   "checks": {
@@ -224,7 +224,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 4952 tests in 328.169s\n\nOK (env clean; empty home)"
+        "evidence": "unittest: Ran 5039 tests in 315.570s\n\nOK (env clean; empty home)"
       },
       {
         "id": "R14",
@@ -268,7 +268,7 @@
         "id": "S6",
         "label": "test tree mirrors product tree",
         "score": 1.0,
-        "evidence": "108/108 modules imported by tests"
+        "evidence": "111/111 modules imported by tests"
       },
       {
         "id": "S7",
@@ -312,7 +312,7 @@
         "id": "D5",
         "label": "version single-sourced",
         "score": 1.0,
-        "evidence": "pyproject=0.4.2 __version__=0.4.2 (one source)"
+        "evidence": "pyproject=0.5.0 __version__=0.5.0 (one source)"
       },
       {
         "id": "D6",
@@ -354,7 +354,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "changed harness lines are suite-executed (changed-line coverage 107/107 = 100% (bar 95%) vs baseline 503ae2796e)"
+        "evidence": "changed harness lines are suite-executed (changed-line coverage 585/588 = 99% (bar 95%) vs baseline 0737e62005; untested: conversation_context.py:127,152,393)"
       }
     ]
   }

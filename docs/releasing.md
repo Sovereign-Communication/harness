@@ -17,7 +17,7 @@
    python -W error::ResourceWarning -m unittest discover -s tests -v
    python audits/self/audit.py
    python -m build
-   python -m twine check dist/*
+   python -m twine check --strict dist/*
    ```
 
 5. Smoke-test the installed artifacts outside the repository, including both
@@ -53,8 +53,8 @@ run's OIDC identity for a short-lived upload token.
 3. Tag the merge commit and push the tag:
 
    ```bash
-   git tag v0.4.2          # must equal the pyproject version, with the v
-   git push origin v0.4.2
+   git tag v0.5.0          # must equal the pyproject version, with the v
+   git push origin v0.5.0
    ```
 
    The tag is what triggers the publish. The workflow refuses to upload if
@@ -62,7 +62,7 @@ run's OIDC identity for a short-lived upload token.
    allow a released version to be overwritten: a mismatch would permanently
    publish a version number that the distribution's own metadata contradicts.
 
-4. Watch the `publish` run. It builds, runs `twine check`, verifies
+4. Watch the `publish` run. It builds, runs `twine check --strict`, verifies
    three-way version parity (pyproject, the importable `harness.__version__`,
    and the tag), smoke-installs the built wheel in a clean virtualenv, and
    only then uploads.
@@ -104,3 +104,48 @@ The workflow sets no GitHub `environment`, so the Environment field must stay
 empty — a mismatch there is the most common cause of a 403 that looks
 otherwise correct. After registering, run a dry run first, then push a real
 tag.
+
+## Readiness snapshot - 0.5.0 (2026-10-23)
+
+Audited against the `0.5.0` tree. `https://pypi.org/pypi/sovereign-harness/json`
+returns **404**: no version has ever been published, so the first upload claims
+the name and nothing can be overwritten afterwards.
+
+Verified locally on that tree (Windows, CPython 3.14, setuptools 84):
+
+| Check | Result |
+|---|---|
+| `python -m build` | sdist 1.9 MB + wheel 982 KB, `py3-none-any`, version `0.5.0` |
+| `python -m twine check --strict dist/*` | PASSED on both artifacts |
+| Wheel metadata | Metadata-Version 2.4, `License-Expression: MIT`, `Requires-Python: >=3.9`, no runtime `Requires-Dist`, four extras intact, supported-version classifiers and Repository/Documentation/Changelog URLs present |
+| Wheel package data | all five `harness/ui/*` files plus the three runtime `harness/data/*` files (`experience.md`, `refine_propose_prompt.md`, `task_families.json`) |
+| sdist contents | 424 entries; operator-lane docs excluded; no `__pycache__`/`.pyc`; no operator-home command lines |
+| README | no relative Markdown links; install note states the `sovereign-harness` name vs `harness` import conflict and frozen model tiers in a wheel |
+| Clean-venv wheel install | `harness`, `harness-mcp`, `harness-desktop`, `driver-core` all `--help` cleanly; `pip check` clean; reports `0.5.0` |
+| Installed-wheel server | `/`, `/app.js`, `/app.css`, `/panes.js`, `/panes.css`, `/api/status`, `/api/settings`, `/api/capabilities` all 200 |
+| Clean-venv sdist install | builds, imports, reports `0.5.0`, runtime data present; `pip check` clean |
+| Release state | version `0.5.0` in `pyproject.toml` and the fallback literal; `[Unreleased]` is `Nothing yet.`; dated `[0.5.0]` changelog section present |
+| Lint / compile | `ruff check harness tests audits` clean; `compileall` clean |
+| Full hermetic battery | 5,006 tests, `OK (skipped=72)`, under `-W error::ResourceWarning` |
+| Self-audit | **BAR MET**: A/R/SM/SD all `10.0`; Jev 95% gate PASS; D12 changed-line coverage pass |
+| Credential scan of both artifacts | no keys/tokens; only redaction patterns and `sk-...` test fixtures |
+
+Only one blocker remains, and it is owner-only:
+
+1. **Trusted publisher not registered.** Register under the
+   `sovereign-harness` project at pypi.org with the exact values in the table
+   above (workflow `publish.yml`, repository
+   `Sovereign-Communication/harness`, Environment left empty). Until that
+   entry exists, a tag push runs every build/verify step and fails at upload
+   with a 403.
+
+The release edits themselves are prepared in the tree. Land them on `main`
+through a reviewed PR with green CI, confirm the post-merge CI run is
+completed/success, then push `v0.5.0`. The workflow performs the same build,
+strict metadata check, three-way version parity, clean-venv wheel smoke, and
+OIDC upload. Do not tag before the merge.
+
+The publish workflow was reviewed line by line and matches this document: one
+interpreter, one artifact of each kind, three-way version parity,
+`twine check --strict`, clean-venv wheel smoke with `pip check`, and OIDC
+trusted publishing with no stored token.

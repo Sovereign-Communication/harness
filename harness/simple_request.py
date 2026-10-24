@@ -72,6 +72,20 @@ _ANAPHORA_WORDS = frozenset({
     "again", "earlier", "previous", "same", "another", "more",
 })
 
+_SITE_TARGET_RE = re.compile(
+    r"\b(?:site|website|web\s+site|webpage|web\s+page|page|url|app)\b",
+    re.IGNORECASE)
+_AUDIT_VERB_RE = re.compile(
+    r"\b(?:audit|review|assess|evaluate|inspect|check|verify|test|analy[sz]e)\b",
+    re.IGNORECASE)
+_SUMMARY_RE = re.compile(
+    r"\b(?:summari[sz]e|summary|recap|digest)\b"
+    r"|\bentire\s+(?:text\s+)?thread\b"
+    r"|\b(?:whole|full)\s+(?:text\s+)?thread\b"
+    r"|\bcontext\s+together\b"
+    r"|\bconversation\s+so\s+far\b",
+    re.IGNORECASE)
+
 _RETRY_REQUEST_RE = re.compile(
     r"^(?:(?:please|can you|could you)\s+)?"
     r"(?:try again|retry(?: that)?|answer again|"
@@ -113,6 +127,39 @@ _TZ_RE = re.compile(
     r"\b(HST|AKST|AKDT|PST|PDT|MST|MDT|CST|CDT|EST|EDT|AST|"
     r"GMT|UTC|CET|CEST|JST|IST|AEST)\b"
 )
+
+
+def is_summary_request(prompt: str) -> bool:
+    """True when the request asks for a recap of this conversation."""
+    return bool(_SUMMARY_RE.search(str(prompt or "")))
+
+
+def is_site_audit_request(prompt: str) -> bool:
+    """True when the request asks for a site assessment, not uptime."""
+    text = str(prompt or "")
+    return bool(_SITE_TARGET_RE.search(text) and _AUDIT_VERB_RE.search(text))
+
+
+def missing_site_target(prompt: str, *, known_site: str = "") -> Optional[str]:
+    """Return a clarification when a site audit has no identifiable target.
+
+    A vague "audit this site" must reconcile immediately instead of spending a
+    web search and a model turn guessing.  A remembered site is a target; a
+    URL or domain in the prompt is a target.  Only the genuinely missing case
+    asks, and it asks for the one thing that is missing.
+    """
+    text = str(prompt or "")
+    if known_site:
+        return None
+    if not (_SITE_TARGET_RE.search(text) and _AUDIT_VERB_RE.search(text)):
+        return None
+    from .conversation_context import extract_facts
+
+    if extract_facts(text):
+        return None
+    return ("I need the site URL or domain before I can run this audit. "
+            "Reply with the site and I'll drive it against the Jev criteria; "
+            "nothing has been fetched or processed yet.")
 
 
 def parse_clock_request(prompt: str) -> Optional[str]:
@@ -314,7 +361,8 @@ def relevant_history(prompt: str, turns: Iterable[Dict[str, Any]], *,
     return kept
 
 
-def answer_prompt(prompt: str, turns: Iterable[Dict[str, str]]) -> str:
+def answer_prompt(prompt: str, turns: Iterable[Dict[str, str]], *,
+                  facts: str = "", jev_context: str = "") -> str:
     """Build the single-generation prompt with honest capability boundaries."""
     chunks = [
         "Answer the user's ordinary request directly and concisely. This is a "
@@ -324,10 +372,18 @@ def answer_prompt(prompt: str, turns: Iterable[Dict[str, str]]) -> str:
         "is a valid answer when required. For arithmetic, do not describe the "
         "result as calculator-verified because this lane did not run one.",
     ]
+    if facts:
+        chunks.append(facts)
+    if jev_context:
+        chunks.append(jev_context)
     turns = list(turns)
     if turns:
         chunks.append("Relevant earlier conversation:")
         for turn in turns:
+            if "role" in turn and "content" in turn:
+                chunks.append(str(turn["role"]).capitalize() + ": "
+                              + str(turn["content"]))
+                continue
             chunks.append("User: " + turn["prompt"])
             if turn.get("response"):
                 chunks.append("Assistant: " + turn["response"])

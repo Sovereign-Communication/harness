@@ -176,6 +176,16 @@ function updateAuthDisplay() {
 }
 
 // API Fetch Helper
+function networkError(netErr) {
+  const origin = (typeof location !== "undefined" && location.origin && location.origin !== "null")
+    ? location.origin : "the local Harness server";
+  const err = new Error(
+    `Cannot reach the Harness server at ${origin}. Start or restart \`harness serve\`, reload this page, then retry (${netErr.message}).`
+  );
+  err.networkError = true;
+  return err;
+}
+
 async function api(path, opts = {}) {
   const headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
   const token = getAuthToken();
@@ -184,7 +194,7 @@ async function api(path, opts = {}) {
   try {
     res = await fetch(path, Object.assign({}, opts, { headers }));
   } catch (netErr) {
-    throw new Error(`Network error calling ${path}: ${netErr.message}`);
+    throw networkError(netErr);
   }
   let body = null;
   try { body = await res.json(); } catch (_e) {}
@@ -193,7 +203,11 @@ async function api(path, opts = {}) {
     const entered = await promptForAuthToken(errReason);
     if (entered) {
       headers["X-Harness-Auth"] = entered;
-      res = await fetch(path, Object.assign({}, opts, { headers }));
+      try {
+        res = await fetch(path, Object.assign({}, opts, { headers }));
+      } catch (netErr) {
+        throw networkError(netErr);
+      }
       try { body = await res.json(); } catch (_e) {}
     }
   }
@@ -662,7 +676,17 @@ async function submitPrompt(prompt) {
       } catch (err) {
         if (generation !== runGeneration || activeAgentMessage !== agentMsg) return;
         agentMsg.stepper.hidden = true;
-        agentMsg.body.innerHTML = `<p style="color:var(--red);">Error starting task: ${esc(err.message)}</p>`;
+        if (err && err.networkError) {
+          // The POST never reached the server. Put the draft back so a long
+          // prompt is not lost when the local UI server has stopped.
+          ta.value = prompt;
+          ta.dispatchEvent(new Event("input"));
+          ta.focus();
+          agentMsg.body.innerHTML = `<p style="color:var(--red);">${esc(err.message)}</p>`
+            + `<p>Your prompt was restored to the box. Send it again once the server is back.</p>`;
+        } else {
+          agentMsg.body.innerHTML = `<p style="color:var(--red);">Error starting task: ${esc(err.message)}</p>`;
+        }
         activeAgentMessage = null;
         setInFlight(false);
       }

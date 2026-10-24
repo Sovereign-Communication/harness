@@ -977,6 +977,22 @@ def load_settings(overrides=None):
                                HARD_TOKEN_BUDGET_OUTPUT,
                                DEFAULT_TOKEN_BUDGET_OUTPUT)
 
+    # Settings contract (#347): an omitted key override keeps normal
+    # configured/ambient resolution; an explicitly supplied None clears the
+    # key for this Settings instance; jev_disabled=True always yields no key
+    # and no native dispatch. Explicit False permits resolution unless the
+    # key was cleared. An explicit override outranks the environment switch.
+    if overrides and "jev_disabled" in overrides:
+        jev_disabled = _as_bool(overrides["jev_disabled"])
+    else:
+        jev_disabled = os.environ.get("HARNESS_JEV_DISABLE") == "1"
+    if jev_disabled:
+        jev_api_key = None
+    elif overrides and "jev_api_key" in overrides:
+        jev_api_key = overrides["jev_api_key"]
+    else:
+        jev_api_key = get("jev_api_key", None) or resolve_jev_key()
+
     return Settings(
         use_free=use_free,
         use_fireworks=use_fireworks,
@@ -1028,9 +1044,8 @@ def load_settings(overrides=None):
                           if get("max_price_prompt", None) is not None else None),
         max_price_completion=(float(get("max_price_completion", None))
                               if get("max_price_completion", None) is not None else None),
-        jev_disabled=(os.environ.get("HARNESS_JEV_DISABLE") == "1"),
-        jev_api_key=(None if os.environ.get("HARNESS_JEV_DISABLE") == "1"
-                     else (get("jev_api_key", None) or resolve_jev_key())),
+        jev_disabled=jev_disabled,
+        jev_api_key=jev_api_key,
         jev_endpoint=str(get("jev_endpoint", "https://api.typesafe.ai/v1/systemone")),
         jev_model=str(get("jev_model", "jev-latest")),
         min_confidence=_num("min_confidence", float, 0.0, 1.0, 0.70),
