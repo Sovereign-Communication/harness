@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from harness import script
+from harness import events, script
 from harness.errors import HarnessError
 
 
@@ -317,12 +317,20 @@ class ModelProposalTests(unittest.TestCase):
             "goal", {"response": "Just an answer.\n```python\nprint(1)\n```"},
             root=self.root, policy=self.policy))
 
-    def test_a_bad_draft_stays_prose_with_a_refusal_note(self):
+    def test_a_bad_draft_stays_prose_and_the_frame_carries_the_refusal(self):
+        frames = []
+        sink = frames.append
+        events.add_sink(sink)
+        self.addCleanup(events.remove_sink, sink)
         draft = {"response": "Draft:\n```harness-script\nprint(\n```",
                  "model": "m", "cost": 0.0}
         self.assertIsNone(script.proposal_turn(
             "goal", draft, root=self.root, policy=self.policy))
-        self.assertIn("Script proposal refused (syntax)", draft["response"])
+        self.assertEqual(draft["response"], "Draft:")
+        ends = [e for e in frames if e.get("type") == "script_end"]
+        self.assertEqual(len(ends), 1)
+        self.assertEqual(ends[0]["status"], "refused")
+        self.assertEqual(ends[0]["reason"], "syntax")
 
     def test_untrusted_output_cannot_close_the_envelope(self):
         receipt = {"status": "ok", "exit_code": 0, "killed": False,
