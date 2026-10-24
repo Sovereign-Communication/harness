@@ -66,8 +66,8 @@ review, cost **$0.002306** (0.23¢).
 
 It scored six aspects it actually exercised: three met the requested 99/100
 bar, three did not, and two were left **unassessed** rather than given a
-synthetic score. Jev ended the turn `needs_review`, not a pass. Cheap does not
-mean invented — and the receipt is public.
+synthetic score. The turn ended `needs_review` (Jev answer sufficiency 0.49),
+not a pass. Cheap does not mean invented — and the receipt is public.
 
 [Read the full case study and evidence →](https://github.com/Sovereign-Communication/harness/blob/main/docs/case-studies/freeoffgridcalculator-2026-10-24.md)
 
