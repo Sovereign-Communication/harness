@@ -61,6 +61,7 @@ from .spend import discover_free_models
 from .filesafety import VERIFY_TIMEOUT, validate_target_file, validate_verify_command
 from .gate_runner import (GATES, GATE_ORDER, STAGE_GATE_TIMEOUT, gate_help,
                           run_gate)
+from .paths import REPO_ROOT
 from . import osal
 from .output import eprint
 from .session import (apply_session as _session, governor_for as _governor,
@@ -162,6 +163,12 @@ def _read_json(path, what):
         return json.loads(text)
     except ValueError as e:
         raise HarnessError(f"{what} is not valid JSON: {path} ({e})") from e
+
+
+#: `route` ships one declared ladder with the checkout. Its relative path
+#: was the same fail-open class as the gate argv: it only worked when the
+#: caller happened to stand in the repo root.
+_DEFAULT_ROUTE_PACK = os.path.join(REPO_ROOT, "packs", "model_route.pack.json")
 
 
 # Composition lives in harness/session.py (the ONE owner); the aliases below
@@ -583,8 +590,9 @@ def _cmd_route(opts, settings):
     heuristic with is_fallback=true. Same composition shape as issue-sort:
     policy + ledger only.
     """
+    pack_path = getattr(opts, "pack", None) or _DEFAULT_ROUTE_PACK
     try:
-        pack = validate_route_pack(_read_json(opts.pack, "route pack"))
+        pack = validate_route_pack(_read_json(pack_path, "route pack"))
     except ValueError as exc:
         raise HarnessError(f"route pack invalid: {exc}") from exc
     ledger = _ledger(settings)
@@ -1466,6 +1474,11 @@ def _cmd_gates(opts, settings):
     if spec is None:
         raise HarnessError(
             f"unknown gate: {run_name} (known: {', '.join(GATE_ORDER)})")
+    missing = spec.missing_targets()
+    if missing:
+        raise HarnessError(
+            f"gate {run_name} cannot run from {REPO_ROOT}: missing "
+            + ", ".join(missing))
     params = {"phase": getattr(opts, "phase", None) or "JEV-P0"} \
         if run_name == "jev-phase" else {}
     timeout = getattr(opts, "timeout", None)
@@ -1473,6 +1486,7 @@ def _cmd_gates(opts, settings):
         spec.argv(**params),
         timeout=int(timeout) if timeout else
         (STAGE_GATE_TIMEOUT if run_name in ("unittest", "audit") else VERIFY_TIMEOUT * 2),
+        cwd=REPO_ROOT,
     )
     if output:
         eprint(output.rstrip())

@@ -390,10 +390,11 @@ def build_parser():
                                            "tier heuristic)")
     proute.add_argument("--goal", required=True,
                         help="the request to route")
-    proute.add_argument("--pack", default="packs/model_route.pack.json",
+    proute.add_argument("--pack", default=None,
                         help="operator route pack: {id, rungs: [{rung_id, tier, model, "
                              "cost_class, observed_success?, samples?, guidance?, notes?}]} "
-                             "(default: packs/model_route.pack.json)")
+                             "(default: packs/model_route.pack.json at the Harness "
+                             "checkout root, not the current directory)")
     proute.add_argument("--max-cost", type=float, default=None,
                         help="jev run ceiling in dollars (default: configured "
                              "max_cost; hard cap applies)")
