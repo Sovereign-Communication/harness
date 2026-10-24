@@ -19,10 +19,12 @@ letters, UNC prefixes and backslash paths survive intact), and the
 the exact command for *this* platform instead of every doc carrying a
 Windows-flavoured string.
 """
+import os
 import re
 from dataclasses import dataclass
 
 from .errors import HarnessError
+from .paths import REPO_ROOT
 from . import osal
 
 # The documented verify gate budget; the stage gate gets a bigger one
@@ -151,26 +153,36 @@ class GateSpec:
 
     ``template`` never hardcodes an interpreter path -- ``{python}`` is
     filled from :func:`sys.executable` at render time, which is what makes
-    the same registry correct on Linux, macOS and Windows.
+    the same registry correct on Linux, macOS and Windows. ``{root}`` is
+    filled from :data:`harness.paths.REPO_ROOT`, so a gate targets the
+    checkout that owns the command, not the caller's current directory.
     """
 
     name: str
     summary: str
     template: tuple
+    requires: tuple = ()
 
-    def argv(self, **params):
-        """The argv list for this platform; ``{python}`` is ``sys.executable``."""
-        values = {"python": osal.python_exe()}
+    def argv(self, repo_root=None, **params):
+        """The argv list for this platform; paths resolve from the checkout."""
+        values = {"python": osal.python_exe(),
+                  "root": repo_root if repo_root is not None else REPO_ROOT}
         values.update(params)
         return [str(part).format(**values) for part in self.template]
 
-    def command(self, **params):
+    def command(self, repo_root=None, **params):
         """A copy-pasteable single-line form (quoting paths with spaces)."""
         out = []
-        for part in self.argv(**params):
+        for part in self.argv(repo_root=repo_root, **params):
             out.append(part if not any(c.isspace() for c in part)
                        else f'"{part}"')
         return " ".join(out)
+
+    def missing_targets(self, repo_root=None):
+        """Checkout-relative targets this gate needs; empty means runnable."""
+        root = repo_root if repo_root is not None else REPO_ROOT
+        return [rel for rel in self.requires
+                if not os.path.exists(os.path.join(root, rel))]
 
 
 #: The gates CLAUDE.md tells every contributor to run before a PR. The docs
@@ -179,17 +191,24 @@ class GateSpec:
 GATES = {
     spec.name: spec for spec in (
         GateSpec("ruff", "lint the package, tests and audit script",
-                 ("{python}", "-m", "ruff", "check", "harness", "tests", "audits")),
+                 ("{python}", "-m", "ruff", "check",
+                  "{root}/harness", "{root}/tests", "{root}/audits"),
+                 requires=("harness", "tests", "audits")),
         GateSpec("compileall", "byte-compile every module (syntax gate)",
-                 ("{python}", "-m", "compileall", "-q", "harness", "tests")),
+                 ("{python}", "-m", "compileall", "-q",
+                  "{root}/harness", "{root}/tests"),
+                 requires=("harness", "tests")),
         GateSpec("unittest", "hermetic suite, no network, warnings as errors",
                  ("{python}", "-W", "error::ResourceWarning", "-m", "unittest",
-                  "discover", "-s", "tests")),
+                  "discover", "-s", "{root}/tests"),
+                 requires=("tests",)),
         GateSpec("audit", "4-dimensional self-audit (9.5+ bar on every dimension)",
-                 ("{python}", "audits/self/audit.py")),
+                 ("{python}", "{root}/audits/self/audit.py"),
+                 requires=("audits/self/audit.py",)),
         GateSpec("jev-phase", "Jev bar for one phase (hermetic, local-only)",
                  ("{python}", "-m", "harness.cli", "jev-phase", "--phase",
-                  "{phase}", "--repo-root", ".", "--local-only")),
+                  "{phase}", "--repo-root", "{root}", "--local-only"),
+                 requires=("harness",)),
         GateSpec("import", "installed-package smoke: import + version",
                  ("{python}", "-c",
                   "import harness; print(harness.__version__)")),
@@ -208,20 +227,20 @@ def gate(name):
             f"unknown gate: {name} (known: {', '.join(GATE_ORDER)})") from None
 
 
-def gate_argv(name, **params):
+def gate_argv(name, repo_root=None, **params):
     """The argv list for a documented gate on this platform."""
-    return gate(name).argv(**params)
+    return gate(name).argv(repo_root=repo_root, **params)
 
 
-def gate_command(name, **params):
+def gate_command(name, repo_root=None, **params):
     """A copy-pasteable command line for a documented gate on this platform."""
-    return gate(name).command(**params)
+    return gate(name).command(repo_root=repo_root, **params)
 
 
 def gate_help():
     """The documented gate table (name, what it proves, this platform's command)."""
     width = max(len(n) for n in GATE_ORDER)
-    lines = []
+    lines = [f"checkout root: {REPO_ROOT}", ""]
     for name in GATE_ORDER:
         spec = GATES[name]
         lines.append(f"{spec.name:<{width}}  {spec.summary}")
