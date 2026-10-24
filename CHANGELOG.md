@@ -71,6 +71,13 @@ break APIs between minor versions).
 
 ### Fixed
 
+- **`harness dogfood` reaches the verify phase again (#330).** The production
+  seam passed `cancel_check=` into `_run_claims_verify`, whose signature did not
+  accept it, so every run crashed with a `TypeError` after the ground phase. The
+  seam now accepts and forwards the cancellation check, and a contract test drives
+  the real `service.run_dogfood` → CLI seam wiring instead of patching the seam
+  itself.
+
 - **A refused script now closes its step (`SCR-2` follow-up).** A `/script` refusal
   used to end the run with `error_kind: script_refused` but no `script_end`, so the UI
   showed a step that never finished and had no receipt to render. Refusals now leave the
