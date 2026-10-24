@@ -471,13 +471,18 @@ harness serve --auth-token <secret> --open  # use an explicit UI token
 harness-desktop          # pywebview native window over the same UI (browser fallback)
 ```
 
-The third face of the same core: dispatch apply/verify/continue/bench from the
-browser, watch the run timeline live (typed progress events from
-`harness/events.py` — the same stream `--events FILE` writes), browse the
-autonomy ledger + chain integrity, and read capabilities/reliability tables.
-Every dispatch re-runs the exact CLI engine path — consent, spend preflight,
-verify-gate validation, and the trust gates are never bypassed; the UI adds a
-human confirmation step on top, never instead.
+The third face of the same core: dispatch every run kind the server owns
+(apply, verify, continue, plan, bench, gate) from the browser, watch the run
+timeline live (typed progress events from `harness/events.py` — the same
+stream `--events FILE` writes), browse the autonomy ledger + chain integrity,
+run the documented gates, repair the ledger's invalid tail with an explicit
+confirmation, read capabilities/cost/rankings/economics, manage mission packs,
+and probe/plan host provisioning. Every dispatch re-runs the exact CLI engine
+path — consent, spend preflight, verify-gate validation, and the trust gates
+are never bypassed; the UI adds a human confirmation step on top, never
+instead. The header shows the resolved scripting posture, and the workspace
+field remembers recent folders (a browser cannot hand the server a native
+folder path, so the path stays typed; no folder picker exists yet).
 
 Security posture: loopback bind only (non-loopback Host headers are refused —
 DNS-rebinding guard), token-protected API routes, and secrets shown as

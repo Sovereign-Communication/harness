@@ -110,6 +110,15 @@ is unchanged and still no sandbox.
 - **Desktop token.** `harness desktop` persists a generated token in
   `desktop_token` under the config directory, created owner-only (0600 on
   POSIX; on Windows rely on the profile ACL, as with key files above).
+- **Operator writes behind the same token.** `POST /api/ledger/repair`
+  truncates the invalid ledger tail and every newer segment; it requires the
+  literal body `{"confirm":"repair"}` as well as the UI token, and returns the
+  before/after chain verdicts. `POST /api/missions` creates a mission pack
+  under the server's `./missions` directory (the root is jailed by
+  `mission_record.resolve_missions_root`), and the `gate` run kind executes only
+  argv templates from `gate_runner.GATES` with a bounded timeout. These are
+  local-operator actions, not sandboxed remote capabilities: keep the UI token
+  secret, keep the server on loopback, and archive the ledger before repair.
 - **Driver token.** The in-process driver uses `DRIVER_TOKEN` if declared and
   otherwise a random per-start token held only by the adapter; there is no
   fixed fallback.
