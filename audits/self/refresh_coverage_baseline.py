@@ -22,6 +22,7 @@ Cost: one traced battery run, roughly two to five minutes -- run this when
 you want a committed fast-path document, not per commit. The trace artifacts
 stay in-memory; nothing is written except the coverage JSON.
 """
+import inspect
 import io
 import json
 import subprocess
@@ -34,8 +35,27 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+
+
+def _pin_checkout(root):
+    """Trace this checkout, never an installed distribution of the same name.
+
+    An editable install puts a meta-path finder ahead of the normal path
+    finder. If a previous run already imported ``harness``, or the checkout
+    is on ``sys.path`` behind site-packages, the traced battery can measure
+    the installed copy and D12 sees no execution for source lines. Purge any
+    preloaded package and put the checkout first; the battery also asserts
+    the resolved origin before recording coverage.
+    """
+    root_text = str(Path(root).resolve())
+    while root_text in sys.path:
+        sys.path.remove(root_text)
+    sys.path.insert(0, root_text)
+    for name in [n for n in sys.modules if n == "harness" or n.startswith("harness.")]:
+        del sys.modules[name]
+
+
+_pin_checkout(ROOT)
 
 
 def main():
@@ -72,7 +92,29 @@ def main():
 
     def run_battery():
         import contextlib
+        import importlib.util
+        # Python 3.11's package importer does not emit trace events for the
+        # package __init__ it executes. Run the same source loader under the
+        # trace so import-time lines are measurable, then let normal imports
+        # resolve the submodules through the package path.
+        for name in [n for n in sys.modules if n == "harness" or n.startswith("harness.")]:
+            del sys.modules[name]
+        init = Path(root) / "harness" / "__init__.py"
+        spec = importlib.util.spec_from_file_location(
+            "harness", init, submodule_search_locations=[str(init.parent)]
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"cannot load package source: {init}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["harness"] = module
+        spec.loader.exec_module(module)
+        import harness
         import harness.output
+        origin = Path(harness.__file__).resolve()
+        if Path(ROOT).resolve() not in origin.parents:
+            raise RuntimeError(
+                f"coverage traced {origin}, outside the checkout {Path(ROOT).resolve()}"
+            )
         orig_quiet = harness.output.QUIET
         harness.output.QUIET = True
         err_stream = io.StringIO()
@@ -127,6 +169,27 @@ def main():
             continue
         if rel == "harness" or rel.startswith("harness" + chr(47)):
             executed.setdefault(rel, set()).add(ln)
+    # The package's own import line always executes. If it is absent, the
+    # trace measured an installed copy or a preloaded module rather than this
+    # checkout; fail with the origin instead of writing a misleading document.
+    import harness as traced_harness
+    source_lines, start = inspect.getsourcelines(traced_harness)
+    fallback_line = start + next(
+        i for i, line in enumerate(source_lines) if line.startswith("_FALLBACK_VERSION")
+    ) + 1
+    init_lines = executed.get("harness/__init__.py", set())
+    print(
+        f"traced harness origin: {Path(traced_harness.__file__).resolve()}",
+        file=sys.stderr,
+    )
+    if fallback_line not in init_lines:
+        print(
+            f"ERROR: harness/__init__.py:{fallback_line} was not executed; "
+            f"recorded lines: {sorted(init_lines)}",
+            file=sys.stderr,
+        )
+        return 1
+
     baseline = {}
     for mod in sorted(pkg.rglob("*.py")):
         rel = mod.relative_to(ROOT).as_posix()
