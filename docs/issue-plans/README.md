@@ -6,7 +6,9 @@ authoritative order, dependencies and acceptance exits remain
 register plus the live GitHub open-issue set.
 
 **Snapshot 2026-10-25:** the queue was generated at 58 open GitHub issues,
-all mapped to a canon row. Seven campaign items have landed with receipts:
+all mapped to a canon row. Six later tracking issues (#377–#382, opened
+2026-10-25) were appended after generation, so the queue now holds 64 rows and
+all **59** live open issues are represented. Seven campaign items have landed with receipts:
 **#339** (efficiency evidence, `76a95f6`, outside the 58-issue queue),
 **#330** (dogfood `cancel_check`, PR #364, `0737e62`), **#347** (config/Jev
 override precedence, PR #365, `4d9fea4`), **#327** (checkout-root gate and
@@ -28,7 +30,7 @@ hung to the 300 s timeout, every HTTP plan failed before the composer, and
 HTTP/MCP dogfood crashed on a `None` line limit. Its evidence is
 [`audits/self/dogfood/SWEEP_2026-10-25_SEAMS.md`](../../audits/self/dogfood/SWEEP_2026-10-25_SEAMS.md).
 `main` is `40ad46e` with 12/12 merge-result CI green, a 5,100-test hermetic
-suite and **53 open issues**; their status and blockers are in
+suite and **59 open issues**; their status and blockers are in
 [`queue.json`](queue.json).
 The [closing report](closing-report-2026-10-25.md) is the 54-open snapshot
 before #276; the current inventory is on #295. No issue is marked complete
