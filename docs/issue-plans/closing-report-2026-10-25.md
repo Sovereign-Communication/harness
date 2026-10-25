@@ -1,5 +1,9 @@
 # Closing report — issue program, batch 1
 
+> **Historical snapshot:** this report records the 54-open state before #276
+> landed (`f54f8aa`). Current inventory: #295. The #276 row below is no longer
+> accurate as an open item; see [`276.md`](276.md) for its receipt.
+
 **Date:** 2026-10-25  
 **Repository state at this report's cut:** `main` `4155b687`; merge-result CI [run 40145105145](https://github.com/Sovereign-Communication/harness/actions/runs/40145105145) 12/12 green.  
 **Open issues:** 54. **Waved:** 29. **Not yet waved:** 25.  
