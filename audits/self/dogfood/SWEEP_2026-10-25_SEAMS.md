@@ -87,17 +87,61 @@ CLI faces below.
    `tests/test_dogfood.py::DogfoodVerifySeamContractTests::test_run_dogfood_defaults_max_lines_for_non_cli_faces`.
    Re-verified through HTTP (final `ok`) and MCP (`status=ok`).
 
-## Honest limits
+## Plan `--execute`, after the first seam pass
 
-- HTTP `continue` success was not reached: the trust gate refused at combined
-  -1 after the intentionally failing apply. The continuation mechanism is
-  proven on MCP (`continue_work` `ok`) and CLI (two rounds, second `ok`).
+The first CLI plan preview exposed a second real defect: the preview's nodes
+had `local_gate: null`, because `_plan_compose` did not pass the tree root to
+the composer. On execute, the write-time trust gate then refused every node as
+"a write with no verification gate" at unknown trust (`plan-exec1.out`, exit 2,
+0/2 nodes, final gate run against untouched files). The CLI now passes its CWD
+as the plan root (`root=os.getcwd()`), so `plan_task` derives each node's gate
+exactly as the HTTP and MCP faces already did. Regression test:
+`tests/test_cli.py::PlanAllowHeuristicPreviewWiringTests::test_plan_composition_is_rooted_at_the_cli_cwd`.
+
+Re-verified with a real two-node chain, goal "1. fix add in add.py\n2. fix mul
+in mul.py", candidate files `add.py` and `mul.py`:
+
+| Stage | Observed | Receipt |
+|---|---|---|
+| Preview after fix | `planned`; batches `[[task_1], [task_2]]`; `task_2` depends on `task_1`; each node has a `py_compile` gate | `plan-preview-gated.out` |
+| Execute, default attestation | fail-closed: `diff verifier (google/gemma-4-31b-it:free) returned no usable verdict`; no files changed | `plan-exec2.out` |
+| Execute, `--no-attestation` | exit 0; `status=ok`, 2/2 nodes, both node gates passed, final gate `ok`; `add` changed `a - b` → `a + b`, `mul` changed `a + b` → `a * b`; cost `$0.000286` | `plan-exec3.out` |
+| Ledger | 2 `dispatch_start`, 2 `verify_round`, 2 `complete`, 5 `jev_eval` | `plan-exec/ledger3.jsonl` |
+
+The executed results are ordered but do not repeat the DAG `node_id`; each
+carries its own `task_id` and `file`. The attestation run is the honest
+default: a free judge that returns no verdict refuses the write rather than
+skipping the check.
+
+## HTTP `continue` — policy, not wiring
+
+A controlled run on a fresh HTTP ledger answered the open question. The HTTP
+continue lane builds the same engine through `apply_session` and reaches the
+same `apply_batch(continuation=...)` call as MCP and the CLI; no settings or
+seam is missing. The earlier refusal was trust arithmetic:
+
+- With `task_max_cost=0.5` on a fresh ledger, the first successful apply also
+  recorded a **guidance denial** (the request exceeded the `0.4` task ceiling
+  unlocked by correctness 0). Host trust became `-1`, and the next apply was
+  correctly refused at preview-only trust (`http-trust-continue.json`).
+- With `task_max_cost=0.3`, a successful apply, then a deliberately failing
+  apply, left trust at `0` with no denials. The HTTP `continue` run then
+  returned final `200 status=ok result=ok` (`http-trust-continue2.json`).
+
+So the earlier `-1` was correct fail-closed policy on that ledger, not an HTTP
+wiring defect. No HTTP continue change is warranted.
+
+## Remaining limits
+
+- HTTP `continue` has no success receipt from the first sweep because that
+  fixture asked for a task ceiling the fresh ledger had not unlocked; the
+  controlled run above now proves success.
 - `panel_verify` synthesis is unavailable when the free judge is rate-limited
   (HTTP 429); the tool correctly returns raw panel output and an explicit
   `inconclusive` consensus rather than inventing a verdict.
-- `harness plan --execute` was not run; only preview mode was exercised. The
-  planned result is real, but a full DAG execution through that CLI face
-  remains unexercised in this sweep.
+- Plan execution used `--no-attestation` for the green DAG run; the default
+  attestation path was exercised and failed closed when the free judge returned
+  no verdict. A paid-judge attestation run remains unexercised.
 
 No audit or JEV bar, coverage baseline, pinned score, or global ceiling was
 changed. #277, #340, #304, #333 and #306 were not started or decided.

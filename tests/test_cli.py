@@ -268,6 +268,27 @@ class PlanAllowHeuristicPreviewWiringTests(unittest.TestCase):
                 hourglass={"confirm": False, "decompose": False})
         self.assertFalse(captured["allow_heuristic_preview"])
 
+    def test_plan_composition_is_rooted_at_the_cli_cwd(self):
+        """The CLI edits its CWD, so the plan must derive node gates against
+        it. A missing root left every node gateless and a fresh-ledger
+        `plan --execute` was refused at the write-time trust gate."""
+        from types import SimpleNamespace
+        captured = {}
+
+        def fake_compose(**kwargs):
+            captured.update(kwargs)
+            return {}
+
+        opts = SimpleNamespace(goal="g", allow_escalation=None,
+                              max_tokens=None, plan_consensus=False)
+        with mock.patch.object(cli, "_compose_plan", side_effect=fake_compose):
+            cli._plan_compose(
+                self._settings(), opts, None, None, None,
+                candidate_files=["a.py"], frontier_model=None, execute=False,
+                confirm=False, decompose_llm=False, plan_consensus=False,
+                hourglass={"confirm": False, "decompose": False})
+        self.assertEqual(captured["root"], os.getcwd())
+
     def test_cmd_plan_reads_opts_flag_into_plan_compose(self):
         """The CLI entry (_cmd_plan) must read opts.allow_heuristic_preview
         (set by --allow-heuristic-preview) and forward it into
