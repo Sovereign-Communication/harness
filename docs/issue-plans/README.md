@@ -5,13 +5,17 @@ authoritative order, dependencies and acceptance exits remain
 [`docs/jev-roadmap.md`](../jev-roadmap.md); this queue is generated from that
 register plus the live GitHub open-issue set.
 
-**Snapshot 2026-10-24:** the queue was generated at 58 open GitHub issues,
-all mapped to a canon row. Batch 1 landed **#347** (config/Jev override
-precedence, PR #365) and **#327** (checkout-root gate and route resolution,
-PR #366), and implements **#278** (one external-tool resolver and preflight)
-in the active slice; the remaining issues are `queued` in
-[`queue.json`](queue.json). No issue is marked complete until its changes
-are merged with green CI.
+**Snapshot 2026-10-25:** the queue was generated at 58 open GitHub issues,
+all mapped to a canon row. Five campaign items have landed with receipts:
+**#339** (efficiency evidence, `76a95f6`, outside the 58-issue queue),
+**#330** (dogfood `cancel_check`, PR #364, `0737e62`), **#347** (config/Jev
+override precedence, PR #365, `4d9fea4`), **#327** (checkout-root gate and
+route resolution, PR #366, `8c4324a`), and **#278** (one external-tool
+resolver and preflight, PR #367, `4155b68`). `main` is `4155b687` with
+12/12 merge-result CI green and **54 open issues**; their status and blockers
+are in [`queue.json`](queue.json) and the
+[closing report](closing-report-2026-10-25.md). No issue is marked complete
+until its changes are merged with green CI.
 
 ## Harness planner note
 
@@ -28,6 +32,9 @@ The canon's #347 contract was implemented and verified directly:
 - [`347.md`](347.md) — acceptance matrix, changes and test receipts.
 - [`327.md`](327.md) — gate/route root resolution, changes and test receipts.
 - [`278.md`](278.md) — tool resolution, preflight and real-process receipts.
+- [`closing-report-2026-10-25.md`](closing-report-2026-10-25.md) — landed
+  receipts and the per-issue blocker/unblocker accounting for the 54 open
+  issues.
 - [`queue.json`](queue.json) — all 58 generated issues with owner,
   prerequisites, acceptance and batch status.
 
