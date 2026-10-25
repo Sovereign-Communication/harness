@@ -159,7 +159,7 @@ def _cwd_runner(cwd, timeout=None):
     return runner
 
 
-def run_bench(engine, manifest_tasks, runner=None):
+def run_bench(engine, manifest_tasks, runner=None, task_max_cost=None):
     """Run every task in a manifest through the engine's apply pipeline.
 
     `runner` overrides the verify runner (used by tests to avoid real
@@ -168,6 +168,10 @@ def run_bench(engine, manifest_tasks, runner=None):
     ``run_verify`` is never mutated (audit #17), so concurrent or interleaved
     use of the engine stays safe. Each task gets its own verify-timeout
     (``task['verify_timeout']``, default 300s).
+
+    ``task_max_cost`` is the per-task budget for manifests that do not pin one
+    themselves (the CLI's ``--task-max-cost``); a task's own ``task_max_cost``
+    still wins. The historical fallback stays 0.05 for library callers.
     """
     results = []
     sandboxes = []
@@ -194,7 +198,9 @@ def run_bench(engine, manifest_tasks, runner=None):
                     max_rounds=task.get("max_rounds", 3),
                     require_consent=task.get("require_consent", False),
                     max_tokens=task.get("max_tokens", 4096),
-                    task_max_cost=task.get("task_max_cost", 0.05),
+                    task_max_cost=task.get(
+                        "task_max_cost",
+                        0.05 if task_max_cost is None else task_max_cost),
                     renew_consent=task.get("renew_consent", False),
                     max_rotations=task.get("max_rotations", 3),
                     task_runner=task_runner,

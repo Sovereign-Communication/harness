@@ -2,5 +2,6 @@
   "name": "clamp",
   "file": "clamp.py",
   "instruction": "Implement clamp(x, lo, hi) so it clamps x into the inclusive range [lo, hi]. It currently just returns x.",
-  "verify": "python check.py"
+  "verify": "python check.py",
+  "task_max_cost": 0.25
 }

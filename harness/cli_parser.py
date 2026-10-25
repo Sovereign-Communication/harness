@@ -451,6 +451,10 @@ def build_parser():
     pb.add_argument("--max-rounds", type=int, default=None)
     pb.add_argument("--max-cost", type=float, default=None,
                     help="session cost ceiling in dollars (default: configured max_cost)")
+    pb.add_argument("--task-max-cost", type=float, default=None,
+                    help="per-task spend ceiling for manifest tasks that do not "
+                         "pin their own task_max_cost (default: the task's key, "
+                         "else $0.05)")
     _add_output_flags(pb)
 
     plint = sub.add_parser("lint-claims",

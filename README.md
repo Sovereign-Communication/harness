@@ -272,12 +272,22 @@ A task is one JSON file (or a `task.json` inside a per-task folder):
   "name": "add",
   "file": "adds.py",
   "instruction": "Fix adds.add(a, b) so it returns a + b instead of a - b.",
-  "verify": "python check.py"
+  "verify": "python check.py",
+  "task_max_cost": 0.25
 }
 ```
 
 `file` is relative to the task's own folder, and `verify` runs with that folder
-as its working directory.
+as its working directory. `task_max_cost` is the task's own spend ceiling
+(default `$0.05` when omitted); `--task-max-cost` supplies it for manifests
+that do not pin one. The bundled fixtures declare `$0.25` because a fresh
+ledger's trust gate may step a free primary to the cheapest paid rung, whose
+three-attempt worst case is about `$0.168`; actual spend is far lower, but the
+ceiling must cover the bound. Bench's session ceiling must cover it too, so the
+funded invocation is `harness bench bench/tasks --max-cost 0.5`
+(`HARNESS_MAX_COST` works the same way). A task or session budget below the
+worst case is refused before any call — raise it deliberately rather than
+expecting the run to start.
 
 - **Idempotent & re-runnable:** each target file is snapshotted on first run
   and restored before every run, so the manifest never degrades.
@@ -301,6 +311,15 @@ harness lint-claims --claims-file claims.json --source-file window.txt --definit
 harness apply --file core/src/store/outbox.rs \
   --instruction "Verify flush_on_connect() persists all peers" \
   --verify "cargo check -p scmessenger-core" --max-rounds 3
+
+# A fresh ledger's trust gate may step a free primary to the cheapest paid
+# rung. Its three-attempt worst case (~$0.168) exceeds the default $0.10
+# task ceiling, so apply refuses at preflight instead of starting a call it
+# cannot bound. Fund the run explicitly when that is intended:
+harness apply --file src/parser.py --instruction "Harden parse_header()" \
+  --verify "python -m unittest" --task-max-cost 0.5 --max-cost 0.5
+# --max-cost is the session ceiling (also HARNESS_MAX_COST); --task-max-cost
+# is per file. The refusal is deliberate and fail-closed.
 
 # MorphLite-compatible edit through the same governed engine; preview is read-only
 harness apply --backend morph --verify-only --file src/parser.py \
