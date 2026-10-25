@@ -1358,8 +1358,8 @@ class McpServer:
                 task_id=task_id,
                 max_cost=max_cost,
                 max_rounds=max_rounds,
-                apply_session_fn=lambda current_settings: apply_session(
-                    current_settings, allowed_roots=[str(root)]))
+                apply_session_fn=lambda current_settings, max_cost_override=None: apply_session(
+                    current_settings, max_cost_override, allowed_roots=[str(root)]))
         if name == "generate_brief":
             goal = validate_text(args.get("goal"), "goal", 20000, required=True)
             raw_files = args.get("files") or []

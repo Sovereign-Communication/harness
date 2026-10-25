@@ -400,7 +400,11 @@ def run_dogfood(settings=None, *,
 
     # ---- phase 3: gated self-apply ----
     session_caller = apply_session_fn if apply_session_fn is not None else apply_session
-    engine = session_caller(settings)
+    # The run's ceiling covers BOTH live phases. Verify already received it;
+    # the apply session used to be built without it and silently fell back to
+    # the configured ceiling (a `--max-cost 0.5` run stopped at $0.02 at apply).
+    # Seams take (settings, max_cost_override=None).
+    engine = session_caller(settings, max_cost)
     result = engine.apply_batch(
         [file], task_id=task_id, cancel_check=cancel_check,
         options=BatchOptions(

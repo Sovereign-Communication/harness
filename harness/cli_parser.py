@@ -9,7 +9,7 @@ import argparse
 
 
 def _add_engine_flags(p, *, max_tokens_default, verify_required=False,
-                      task_max_cost_help=None):
+                      task_max_cost_help=None, session_max_cost=True):
     """Flags shared by apply, continue, and dogfood -- the dispatches into the
     apply engine. One definition keeps the surfaces in lockstep (the historical
     bug class: a flag or default fixed on one but not the others)."""
@@ -32,6 +32,14 @@ def _add_engine_flags(p, *, max_tokens_default, verify_required=False,
                    help=task_max_cost_help or
                    "per-task spend ceiling in USD (default: the session's "
                    "configured/engine ceiling)")
+    if session_max_cost:
+        # Session-level ceiling (governor override) -- distinct from the
+        # per-task ceiling above. dogfood opts out because it declares its own
+        # --max-cost for the live verify+apply phases.
+        p.add_argument("--max-cost", type=float, default=None,
+                       help="session cost ceiling for the whole run in USD "
+                            "(default: the configured engine ceiling; env "
+                            "HARNESS_MAX_COST applies otherwise)")
     p.add_argument("--allow-escalation", dest="allow_escalation", action="store_true", default=None,
                    help="walk the paid escalation ladder when the cheap/free "
                         "lane exhausts its verify budget or saturates (429s). "
@@ -264,7 +272,7 @@ def build_parser():
                          "given, --task-max-cost takes precedence and this "
                          "flag is ignored (see --task-max-cost)")
     _add_engine_flags(
-        pp, max_tokens_default=4096,
+        pp, max_tokens_default=4096, session_max_cost=False,
         task_max_cost_help="maximum spend ceiling for the entire plan run; "
                            "when given, OVERRIDES --max-cost for this run "
                            "(precedence: --task-max-cost, then --max-cost, "
@@ -615,7 +623,8 @@ def build_parser():
                       help="target file for the gated self-apply phase")
     pdog.add_argument("--instruction", required=True,
                       help="edit instruction for the apply phase")
-    _add_engine_flags(pdog, max_tokens_default=None, verify_required=True)
+    _add_engine_flags(pdog, max_tokens_default=None, verify_required=True,
+                      session_max_cost=False)
     pdog.add_argument("--max-cost", type=float, default=None,
                       help="session cost ceiling for the live verify + apply phases")
     _add_output_flags(pdog)
