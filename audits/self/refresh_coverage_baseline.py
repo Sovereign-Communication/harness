@@ -182,6 +182,12 @@ def main():
             f"{[(rel, len(lines)) for rel, lines in executed.items() if rel.startswith('harness/')][:20]}",
             file=sys.stderr,
         )
+        raw_init = sorted({
+            str(filename) for (filename, _line) in tr.results().counts
+            if str(filename).endswith("__init__.py")
+        })
+        print(f"raw __init__ keys: {raw_init[:10]}", file=sys.stderr)
+        print(f"sys.prefix={sys.prefix} tests_dir={tests_dir}", file=sys.stderr)
         return 1
 
     baseline = {}
