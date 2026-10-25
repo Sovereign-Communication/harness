@@ -29,13 +29,48 @@ fixed three defects: MCP verify gates inherited the JSON-RPC stdin pipe and
 hung to the 300 s timeout, every HTTP plan failed before the composer, and
 HTTP/MCP dogfood crashed on a `None` line limit. Its evidence is
 [`audits/self/dogfood/SWEEP_2026-10-25_SEAMS.md`](../../audits/self/dogfood/SWEEP_2026-10-25_SEAMS.md).
-`main` is `9facb42` (the `v0.5.0` tag) with 12/12 merge-result CI green, a
-5,102-test hermetic suite and **59 open issues**; their status and blockers are
-in [`queue.json`](queue.json). The `0.5.0` distribution is published at
-`https://pypi.org/project/sovereign-harness/`.
+The inventory was verified at `main` `ba38b62` (the merge of PR #394) with
+12/12 merge-result CI green (run `40243573836`), a 5,102-test hermetic suite
+and **59 open issues**; their status and blockers are in
+[`queue.json`](queue.json). `v0.5.1` is tagged at `f6ebf6b` and published at
+`https://pypi.org/project/sovereign-harness/`; its PyPI description carries the
+corrected install story. Main branch protection was enabled after the release:
+11 required CI checks and no required approving reviews (API evidence in
+[`docs/releasing.md`](../releasing.md)).
 The [closing report](closing-report-2026-10-25.md) is the 54-open snapshot
 before #276; the current inventory is on #295. No issue is marked complete
 until its changes are merged with green CI.
+
+### Next chain item — #277
+
+[#277](https://github.com/Sovereign-Communication/harness/issues/277) remains
+**open and not started**; it is the next chain item. Its named prerequisites
+(`#276`, `#331`, `#327`, `#330`) are all closed as completed, and each merge
+commit is an ancestor of `origin/main`:
+
+| Prerequisite | Receipt | State |
+|---|---|---|
+| #330 dogfood verify seam | PR #364, `0737e62` | closed completed |
+| #327 checkout-root gates | PR #366, `8c4324a` | closed completed |
+| #276 runtime merge-base D12 | PR #369, `f54f8aa` | closed completed |
+| #331 D12 SKIP accounting | PR #371, `52f51b9` | closed completed |
+
+The earlier baseline mitigation, PR #349 (`f3cac6c`), is also merged; #276 is
+the permanent measurement fix. No PR implements #277.
+
+#277 is one structured round, not the old open-ended dogfood-until-zero form:
+a checklist pass with a filed report covering CLI, GUI, MCP and website, each
+with what was exercised, what was found, and what was fixed or filed. Every
+failure must be fixed with a test-bearing PR or filed as its own issue with a
+severity note; the report ends with one verdict per surface. Bug-fix and
+polish only, no new features. The recorded residual gaps belong in that
+evidence: the native `pywebview` shell is absent (GUI access is the loopback
+browser path only), the installed MCP runtime identity still needs a real
+client check, and no live model/Jev semantic approvals have been demonstrated.
+
+Explicit holds are unchanged: **#333** is the owner decision on the task/ledger
+boundary and **#306** is operator-gated on the Freebuff laptop key. Neither is
+decided or started by this inventory, and neither is a #277 prerequisite.
 
 ## Harness planner note
 
