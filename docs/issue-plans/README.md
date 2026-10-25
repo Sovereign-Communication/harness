@@ -29,9 +29,10 @@ fixed three defects: MCP verify gates inherited the JSON-RPC stdin pipe and
 hung to the 300 s timeout, every HTTP plan failed before the composer, and
 HTTP/MCP dogfood crashed on a `None` line limit. Its evidence is
 [`audits/self/dogfood/SWEEP_2026-10-25_SEAMS.md`](../../audits/self/dogfood/SWEEP_2026-10-25_SEAMS.md).
-`main` is `50d014d` with 12/12 merge-result CI green, a 5,101-test hermetic
-suite and **59 open issues**; their status and blockers are in
-[`queue.json`](queue.json).
+`main` is `9facb42` (the `v0.5.0` tag) with 12/12 merge-result CI green, a
+5,102-test hermetic suite and **59 open issues**; their status and blockers are
+in [`queue.json`](queue.json). The `0.5.0` distribution is published at
+`https://pypi.org/project/sovereign-harness/`.
 The [closing report](closing-report-2026-10-25.md) is the 54-open snapshot
 before #276; the current inventory is on #295. No issue is marked complete
 until its changes are merged with green CI.

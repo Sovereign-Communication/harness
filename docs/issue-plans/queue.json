@@ -3,7 +3,7 @@
   "source": "docs/jev-roadmap.md#issue295-implementation-plan + GitHub open issues at generation",
   "generated": "2026-10-25",
   "batch": 1,
-  "notes": "Derived execution view; the canon register remains authoritative. 58 issues were generated; six later tracking issues (#377-#382, opened 2026-10-25) were appended after generation, so the queue holds 64 rows and all 59 live open issues are represented. Five queue items landed with merge receipts (#330 0737e62, #347 4d9fea4, #327 8c4324a, #278 4155b68, #276 f54f8aa); #339 76a95f6 and #331 52f51b9 landed as campaign evidence outside this queue. State: main 40ad46e, 12/12 merge-result CI green, 59 open issues. Receipts: docs/issue-plans/276.md, docs/issue-plans/331.md. With #276/#331 landed, #277's prerequisites (#276, #331, #327, #330) are complete; next chain item #277.",
+  "notes": "Derived execution view; the canon register remains authoritative. 58 issues were generated; six later tracking issues (#377-#382, opened 2026-10-25) were appended after generation, so the queue holds 64 rows and all 59 live open issues are represented. Five queue items landed with merge receipts (#330 0737e62, #347 4d9fea4, #327 8c4324a, #278 4155b68, #276 f54f8aa); #339 76a95f6 and #331 52f51b9 landed as campaign evidence outside this queue. State: main 9facb42 (v0.5.0), 12/12 merge-result CI green, 59 open issues. Receipts: docs/issue-plans/276.md, docs/issue-plans/331.md. With #276/#331 landed, #277's prerequisites (#276, #331, #327, #330) are complete; next chain item #277.",
   "open_issue_count": 59,
   "issues": [
     {
