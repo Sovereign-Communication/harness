@@ -1,10 +1,10 @@
 {
   "schema": "harness-issue-queue-v1",
   "source": "docs/jev-roadmap.md#issue295-implementation-plan + GitHub open issues at generation",
-  "generated": "2026-10-24",
+  "generated": "2026-10-25",
   "batch": 1,
-  "notes": "Derived execution view; the canon register remains authoritative. #347 landed in PR #365 and #327 in PR #366; #278 is implemented pending merge-result CI. No issue is complete until merged with green CI.",
-  "open_issue_count": 58,
+  "notes": "Derived execution view; the canon register remains authoritative. 58 issues were generated. Four queue items landed with merge receipts (#330 0737e62, #347 4d9fea4, #327 8c4324a, #278 4155b68); #339 76a95f6 landed as campaign evidence outside this queue. State: main 4155b687, 12/12 merge-result CI green, 54 open issues. Closing accounting: docs/issue-plans/closing-report-2026-10-25.md.",
+  "open_issue_count": 54,
   "issues": [
     {
       "issue": 347,
@@ -101,7 +101,7 @@
         327
       ],
       "acceptance": "One interpreter/ruff resolver across apply/verify/dogfood/audit; python3-only works; missing tools refuse before billing.",
-      "status": "implemented-pending-ci"
+      "status": "complete"
     },
     {
       "issue": 279,
@@ -464,7 +464,7 @@
       "owner": "Dogfood verifier",
       "prerequisites": [],
       "acceptance": "Supported cancellation arguments at real caller; once-only terminal state and usage settlement.",
-      "status": "queued"
+      "status": "complete"
     },
     {
       "issue": 332,

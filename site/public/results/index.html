@@ -1,82 +1,120 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Results — Harness issue program</title>
-<meta name="description" content="Measured Harness issue-program results: explicit Jev override precedence, ledger and site gates, and the 0.23-cent driven audit receipt.">
-<link rel="stylesheet" href="../assets/site.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Results — Harness issue program</title>
+  <meta name="description" content="Measured Harness issue-program results: five landed items with merge commits, current test totals and the open-issue ledger.">
+  <meta property="og:title" content="Results — Harness issue program">
+  <meta property="og:description" content="Five landed items, 5,080 tests and 54 open issues — receipts first, no invented metrics.">
+  <meta property="og:type" content="website">
+  <link rel="canonical" href="https://harness.pages.dev/results/">
+  <link rel="stylesheet" href="../assets/site.css">
 </head>
 <body>
-<header class="site">
-  <h1>Proof Bench</h1>
-  <nav>
-    <a href="../index.html">Home</a>
-    <a href="../tiers/index.html">Tiers</a>
-    <a href="../router/index.html">Router</a>
-    <a href="../traces/index.html">Traces</a>
-    <a href="../publish/index.html">Publish</a>
-    <a href="../methodology/index.html">Methodology</a>
-    <a href="./index.html">Results</a>
-  </nav>
-</header>
-<main>
-  <h2>Issue program — batch 1</h2>
-  <p class="muted">One reviewed slice at a time. An issue is complete only after its
-  changes merge with green CI; queued rows are not claimed as done.</p>
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="../index.html">Harness</a>
+      <nav class="site-nav" aria-label="Site">
+        <a href="../methodology/index.html">Methodology</a>
+        <a href="../tiers/index.html">Tiers</a>
+        <a href="../router/index.html">Router</a>
+        <a href="../traces/index.html">Traces</a>
+        <a href="../results/index.html" aria-current="page">Results</a>
+        <a href="../publish/index.html">Publish</a>
+      </nav>
+    </div>
+  </header>
 
-  <table>
-    <thead>
-      <tr><th>Issue</th><th>Owner</th><th>Status</th><th>Evidence</th></tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td><a href="https://github.com/Sovereign-Communication/harness/issues/347">#347</a></td>
-        <td>Config</td>
-        <td><span class="badge warn">implemented — pending CI</span></td>
-        <td>9 focused regressions; 243 affected tests; real CLI preview with zero Jev transport</td>
-      </tr>
-      <tr>
-        <td>Remaining queue</td>
-        <td>Canon register</td>
-        <td><span class="badge">queued</span></td>
-        <td><a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/queue.json">57 remaining in the 58-issue queue</a></td>
-      </tr>
-    </tbody>
-  </table>
+  <main class="wrap">
+    <h1>Results: issue program, batch 1</h1>
+    <p class="lede">One reviewed slice at a time. An issue counts as complete only after its changes merge with green CI; a queued row is never presented as done.</p>
 
-  <h3>What changed in #347</h3>
-  <p><code>load_settings()</code> now gives an explicit <code>jev_disabled</code>
-  override precedence over the environment switch, and distinguishes an omitted
-  <code>jev_api_key</code> from an explicitly supplied <code>None</code>. A
-  disabled Settings object cannot resurrect an installed credential or dispatch
-  a native Jev request.</p>
-  <p><a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/347.md">Read the acceptance matrix and test receipt →</a></p>
+    <p class="small muted">Receipt base: <code>main</code> <code>4155b687</code> at this page's cut &middot; merge-result check <a href="https://github.com/Sovereign-Communication/harness/actions/runs/40145105145">run 40145105145</a> &middot; 12/12 green &middot; 54 open issues.</p>
 
-  <h3>Continued gates</h3>
-  <table>
-    <thead><tr><th>Gate</th><th class="num">Result</th><th>Scope</th></tr></thead>
-    <tbody>
-      <tr><td>Ledger suite</td><td class="num">58 / 58</td><td>hash chain, isolation, parity, Jev spend</td></tr>
-      <tr><td>Site pipeline</td><td class="num">67 / 67</td><td>export, aggregate, route pack, fold parity</td></tr>
-      <tr><td>Full hermetic suite</td><td class="num">OK</td><td>5,015 tests run; 72 skipped</td></tr>
-      <tr><td>Ruff</td><td class="num">clean</td><td>changed Python tree</td></tr>
-    </tbody>
-  </table>
+    <h2>Landed items</h2>
+    <table>
+      <thead>
+        <tr><th>Issue</th><th>Status</th><th>Merge commit</th><th>Measured receipt</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><a href="https://github.com/Sovereign-Communication/harness/issues/339">#339</a> Efficiency evidence</td>
+          <td>complete</td>
+          <td><code>76a95f6</code></td>
+          <td>$0.01209 spent against $0.10 authorized; 174/175 requests succeeded; peak pricing avoided</td>
+        </tr>
+        <tr>
+          <td><a href="https://github.com/Sovereign-Communication/harness/issues/330">#330</a> Dogfood <code>cancel_check</code></td>
+          <td>complete</td>
+          <td><code>0737e62</code></td>
+          <td>12/12 dogfood and 99/99 affected tests; verify phase reachable</td>
+        </tr>
+        <tr>
+          <td><a href="https://github.com/Sovereign-Communication/harness/issues/347">#347</a> Config/Jev precedence</td>
+          <td>complete</td>
+          <td><code>4d9fea4</code></td>
+          <td>9 regressions; a disabled Jev paid preview makes zero provider calls</td>
+        </tr>
+        <tr>
+          <td><a href="https://github.com/Sovereign-Communication/harness/issues/327">#327</a> Checkout-root gates</td>
+          <td>complete</td>
+          <td><code>8c4324a</code></td>
+          <td>13 tests; a foreign-CWD <code>compileall</code> compiles the real tree</td>
+        </tr>
+        <tr>
+          <td><a href="https://github.com/Sovereign-Communication/harness/issues/278">#278</a> Tool resolver and preflight</td>
+          <td>complete</td>
+          <td><code>4155b68</code></td>
+          <td>84 focused tests; 5,080 suite; audit 10.00; D12 98%</td>
+        </tr>
+        <tr>
+          <td><a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/queue.json">Open issues</a></td>
+          <td>queued</td>
+          <td>—</td>
+          <td>54 remaining: the 58-issue queue minus the four landed queue items; #339 was outside the queue</td>
+        </tr>
+      </tbody>
+    </table>
 
-  <h3>Measured audit receipt</h3>
-  <p>The driven <code>freeoffgridcalculator.com</code> audit cost
-  <strong>$0.002306</strong> (0.23¢) including its Jev review: fetch + browser
-  evidence, six exercised aspects scored, two left unassessed, and the turn
-  ended <code>needs_review</code> rather than a synthetic pass.
-  <a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/case-studies/freeoffgridcalculator-2026-10-24.md">Read the case study and screenshot →</a></p>
+    <h2>Audit and test evidence</h2>
+    <p>Every number below is a receipt from a local or CI run, with the command and scope recorded in the issue plan. No value on this page is an estimate or a projection.</p>
+    <table>
+      <thead><tr><th>Check</th><th>Result</th><th>Detail</th></tr></thead>
+      <tbody>
+        <tr><td>Full hermetic suite</td><td>OK</td><td>5,080 tests run; 72 skipped</td></tr>
+        <tr><td>Audit A / R / SM / SD</td><td>10.00 / 10.00 / 10.00 / 10.00</td><td>All four dimensions at the ceiling</td></tr>
+        <tr><td>D12 coverage</td><td>98%</td><td>79 of 81 executable lines; the two unexecuted lines are named in the plan</td></tr>
+        <tr><td>JEV gate</td><td>PASS</td><td>Hard gates green; sentiment buckets pass</td></tr>
+        <tr><td>Ledger gate</td><td>PASS</td><td>58 of 58 entries valid</td></tr>
+        <tr><td>Site gate</td><td>PASS</td><td>67 tests</td></tr>
+        <tr><td>Ruff</td><td>clean</td><td><code>python -m ruff check harness tests</code></td></tr>
+        <tr><td>Merge-result CI</td><td>12/12</td><td><a href="https://github.com/Sovereign-Communication/harness/actions/runs/40145105145">run 40145105145</a> on <code>4155b68</code></td></tr>
+      </tbody>
+    </table>
 
-  <p class="small muted">This is a static results surface; the linked queue and
-  receipts are the source of truth. No public deployment is implied by this
-  local build.</p>
-</main>
-<footer class="site">
-  <p class="small muted">Failures are data. Ungated self-reports are not proof.</p>
-</footer>
+    <h2>What changed in this batch</h2>
+    <ul>
+      <li><strong>#339</strong> answered the efficiency question with live evidence: a cheaper apply model was selected, pay-per-token caching was measured, and the run stayed inside the authorized budget. The result was a verified efficiency receipt, not a claim of an arbitrary speedup.</li>
+      <li><strong>#330</strong> made the dogfood verification phase reachable from the CLI by accepting and forwarding <code>cancel_check</code>; a contract test pins the forwarding so the phase cannot silently disappear again.</li>
+      <li><strong>#347</strong> fixed config/Jev precedence: when Jev is disabled, the provider preview now stops before transport instead of issuing a paid call, and malformed override values are ignored rather than revived.</li>
+      <li><strong>#327</strong> decoupled gate execution from the caller's working directory: gate argv and paths resolve from the repo root, a missing route target is a loud refusal, and a foreign-CWD <code>compileall</code> is proven to compile the real tree.</li>
+      <li><strong>#278</strong> unified external-tool resolution and added strict preflight. <code>HARNESS_PYTHON</code> and <code>HARNESS_RUFF</code> are honored, a <code>python3</code>-only environment works, and apply refuses before spending when a tool is missing.</li>
+    </ul>
+
+    <h2>Measured cost case</h2>
+    <p>On a previous live task the apply seat produced a one-character fix for <strong>0.23&cent;</strong>. On the same task, the paid judge returned a post-response parse error plus a <strong>0.38&cent;</strong> protocol retry, so the run cost <strong>0.61&cent;</strong>. The number is unflattering, and it is published for that reason: the judge's retry cost more than the apply it reviewed.</p>
+
+    <h2>What remains open</h2>
+    <p>The <a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/closing-report-2026-10-25.md">closing report</a> gives every one of the 54 open issues a wave, a blocker and the specific thing that would unblock it; the <a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/queue.json">execution queue</a> carries the same state as machine-readable JSON. Two items are explicit holds rather than queue order: <strong>#333</strong> is the owner decision on an in-process registry versus a ledger-backed one, and <strong>#306</strong> is operator-gated on the Freebuff laptop key. The rest are blocked by named prerequisite issues or are ready and merely queued.</p>
+    <p class="small muted">This is a static results surface. Deployment is performed only by <code>.github/workflows/site.yml</code>, and only when the <code>CF_API_TOKEN</code> repository secret is configured. A merged page is not by itself a deployed page; the workflow run is the deployment record.</p>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <p>Harness &middot; evidence before adjectives.</p>
+      <p class="small muted"><a href="https://github.com/Sovereign-Communication/harness">Source</a> &middot; <a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/jev-roadmap.md">Roadmap</a></p>
+    </div>
+  </footer>
 </body>
 </html>
