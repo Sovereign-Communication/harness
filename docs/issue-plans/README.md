@@ -29,7 +29,7 @@ fixed three defects: MCP verify gates inherited the JSON-RPC stdin pipe and
 hung to the 300 s timeout, every HTTP plan failed before the composer, and
 HTTP/MCP dogfood crashed on a `None` line limit. Its evidence is
 [`audits/self/dogfood/SWEEP_2026-10-25_SEAMS.md`](../../audits/self/dogfood/SWEEP_2026-10-25_SEAMS.md).
-`main` is `40ad46e` with 12/12 merge-result CI green, a 5,100-test hermetic
+`main` is `50d014d` with 12/12 merge-result CI green, a 5,101-test hermetic
 suite and **59 open issues**; their status and blockers are in
 [`queue.json`](queue.json).
 The [closing report](closing-report-2026-10-25.md) is the 54-open snapshot
