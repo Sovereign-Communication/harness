@@ -2,8 +2,9 @@
 
 A real, non-CLI pass over the surfaces the previous full-surface sweep did not
 drive: the HTTP server API, the MCP stdio tool face, and the `plan`, `continue`
-and trust/ledger report paths. Run in the Freebuff worktree off `main` `92f188a`
-(PR #376). Raw stdout/stderr and JSON receipts live under
+and trust/ledger report paths. The first pass ran in the Freebuff worktree off
+`main` `92f188a` (PR #376); the parallel-DAG slice below ran off `main`
+`f4fde10` after PR #387. Raw stdout/stderr and JSON receipts live under
 `tmp/sweep-2026-10-25/receipts/` in the run's worktree (ignored by git); this
 file records what was observed.
 
@@ -113,6 +114,44 @@ carries its own `task_id` and `file`. The attestation run is the honest
 default: a free judge that returns no verdict refuses the write rather than
 skipping the check.
 
+## Parallel DAG with worktree isolation
+
+A second two-node plan proved the concurrent arm: two independent nodes, no
+dependency edges, one file each, so the preview's batch is
+`[[task_1, task_2]]` and both nodes are worktree-isolated. Files
+`tmp/parallel-dag-fixture/{alpha,beta}.py` each contained the same defect
+(`return a - b`); the goal was the single change `change return a - b to
+return a + b`, and the final gate imported both edited modules and asserted
+both results.
+
+| Stage | Observed | Receipt |
+|---|---|---|
+| Preview | `planned`; one batch `[[task_1, task_2]]`; no dependencies; each node has its own `py_compile` gate rooted at the CLI CWD | `parallel/preview-green.json` |
+| Concurrency | a 0.15 s worktree watcher took 32 samples; **30 samples showed both per-node worktrees existing at once**, at `task_1-22284-0a842fe8` and `task_2-22284-982764d0`, both based on `4e9a33d` | `parallel/wt-samples.log` |
+| Execute | exit 0; `status=ok`, **2/2 nodes**, both node gates `passed=true`, final gate `ok` (`both-ok`) | `parallel/execute4.json`, `parallel/execute4.log` |
+| Roots | `alpha.py` was edited in the task-1 worktree and `beta.py` in the task-2 worktree; each node's `py_compile` command names that same worktree path, so the gate compiled the edited copy, not the source copy | `parallel/execute4.json` |
+| Merge back | two merge commits, `86bf7a8` (`alpha.py`) and `7e98e24` (`beta.py`), each changing exactly its one declared file; combined `HEAD~2..HEAD` diff is two files | `git log`/`git show --stat` on the run branch |
+| Source tree | after the run both functions return `a + b`; no worktree remained and neither `harness/task_*` branch from this run survived | `git worktree list`, `git branch` |
+| Ledger | 15 rows: 2 `dispatch_start`, 2 `model_result`, 2 `readiness`, 2 `verify_round`, 2 `complete`, 5 `jev_eval`; both applies passed JEV at `supported=0.98`; total cost `$0.001699` | `parallel/ledger4.jsonl` |
+
+Fail-closed was exercised first. With a goal naming both files' different
+changes, each node's instruction described both edits while its diff made only
+one; JEV correctly refused both writes (`supported` 0.29–0.59 across the
+attempts), the worktrees
+were discarded, the source files stayed at `return a - b`, and the final gate—run
+against that real, untouched tree—reported `verify_failed`. The green run used
+a goal whose single change each node fully implemented. No JEV threshold, cost
+ceiling, or audit bar was changed to make it pass; a direct probe confirmed the
+difference is instruction content (bare single-change instruction `0.98–0.99`,
+combined two-change instruction `0.26–0.49`).
+
+The ledger rows are attributable to a node by their unique `task_id`
+(`dcb7975c`, `c876d964`), model, `passed` flag and cost, and by the
+`file`/worktree path in the result envelope and merge commit. They do not carry
+the DAG `node_id`—the apply ledger schema predates planned nodes and still owns
+only a task id—so the node name is recoverable from the result envelope and the
+merge commit, not from the ledger alone. That shape is unchanged.
+
 ## HTTP `continue` — policy, not wiring
 
 A controlled run on a fresh HTTP ledger answered the open question. The HTTP
@@ -145,3 +184,42 @@ wiring defect. No HTTP continue change is warranted.
 
 No audit or JEV bar, coverage baseline, pinned score, or global ceiling was
 changed. #277, #340, #304, #333 and #306 were not started or decided.
+
+## Surface exhaustion verdict
+
+Proven end-to-end by this sweep, with receipts above:
+
+| Surface | Evidence |
+|---|---|
+| CLI `apply` / `continue` / `dogfood` | green writes, rewinds, continuations and gates, including a legitimately failing gate |
+| CLI `plan` preview | grounded, tiered, rooted nodes with derived `py_compile` gates |
+| CLI `plan --execute`, serial | a real dependency chain: 2/2 nodes, both gates, final gate green |
+| CLI `plan --execute`, parallel | a real two-node independent stage: two simultaneous worktrees, per-node gates in the right roots, two one-file merges, final gate green |
+| CLI `ledger verify` / `report` | chain verified and participation report emitted |
+| MCP stdio | initialize/tools/list plus trust, participation, ledger, spend, `panel_verify`, `apply_edit` pass/fail, `continue_work`, `dogfood`, plan preview |
+| HTTP API | auth boundary, status/trust/ledger/spend, and runs for verify, apply, plan, dogfood and continue |
+| JEV write gate | semantic pass and fail-closed refusal both observed; fail-closed never wrote |
+
+Still unexercised, with the reason:
+
+- **Green default attestation.** The default path was exercised and refused
+  closed when the free judge returned no usable verdict; a paid-judge green run
+  was not bought for this sweep. This is a cost/availability limit, not a
+  wiring gap.
+- **Live merge conflict and live undeclared-write rejection.** Both are covered
+  hermetically (`tests/test_worktree.py`) but deliberately not induced here;
+  inducing a malicious worker or a conflicting write against the real tree
+  would be destructive and is outside a read/receipt pass.
+- **Parallel DAG execution through HTTP/MCP.** Their planning faces were
+driven and all three lanes share `PlanExecutor`, but only the CLI parallel
+  execution was run end-to-end.
+- **`EV-8` Fireworks.** Open only on a live Fireworks API key against the two
+  named models.
+- **`OC-HANDOFF` / PR #73** remains the experimental OpenClaw lane; **`GAP-jury`
+  / `JEV-P2-jury`** remain deferred by operator ruling; **`CIVICSCOPE-COMPLETION`**
+  is an external sibling repo.
+
+Every lane exercised here works end-to-end; the items above are deliberate
+scope limits or external blocks, not broken lanes. This run's worktree branches
+were removed, `main` was green, and the published issue queue still matches the
+live open set at 64 rows / 59 open issues.
