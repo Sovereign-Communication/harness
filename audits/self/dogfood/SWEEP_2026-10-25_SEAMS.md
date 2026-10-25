@@ -152,6 +152,40 @@ the DAG `node_id`—the apply ledger schema predates planned nodes and still own
 only a task id—so the node name is recoverable from the result envelope and the
 merge commit, not from the ledger alone. That shape is unchanged.
 
+## Paid default attestation
+
+The last refusal-only surface was the default (attested) plan write: the free
+judge had previously returned no verdict, so the write was correctly refused.
+With the operator's paid-judge approval, the same path was driven live through
+the real CLI on a fresh single-node fixture (`add.py` returning `a - b`).
+
+Credential check: `GET https://openrouter.ai/api/v1/key` returned **200** for
+the resolved key, `is_free_tier=false`, `limit=$1.50`, `remaining=$1.42` (no
+secret was printed). The JEV key was present and the live JEV gate returned
+typed verdicts.
+
+| Stage | Observed | Receipt |
+|---|---|---|
+| Green at $0.20 | exit 0; `status=ok`, 1/1; JEV `supported=0.98`; `diff_attestation` **allow** by `openai/gpt-5.6-sol`; final gate `add-ok`; total $0.00378 | `execute-attest2.json` |
+| Tight $0.08, before fix | exit 2; 0/1; the apply call and JEV had run, then the write was refused with `worst-case estimate $0.095755 exceeds remaining ceiling $0.080000 (outstanding reservations: $0.010000; phase=attempt)`; **no bytes written** | `execute-attest.json` |
+| Same $0.08, after fix | exit 0; `status=ok`, 1/1; JEV `supported=0.97`; `diff_attestation` **allow** by `openai/gpt-5.6-sol` at $0.0009009; final gate `add-ok`; total $0.004061; 13 ledger rows, chain verified | `execute-attest-final.json`, `ledger-attest-final.jsonl` |
+
+Root cause of the refusal: `GatePolicy.write_candidate` passed the apply
+request's output budget to `authorize_diff`, and a planned node leaves that
+unset, so the verifier inherited the whole-file default (4096 tokens). The
+verifier's answer is a small JSON verdict, but its reserve was priced as 4096
+frontier-judge output tokens — **$0.085755**, more than the entire $0.08 run
+ceiling. The fix bounds the verifier's own output budget at
+`ATTEST_MAX_TOKENS = 1024` while preserving any smaller caller pin, and records
+the verifier's reported cost on the `diff_attestation` ledger row instead of
+leaving it out of the spend trail. The diff-bound gate is unchanged: it still
+sees the exact resulting bytes and refuses on deny, unparseable output, or
+transport failure; only its reserve and cost attribution changed.
+
+No JEV threshold, audit bar, coverage baseline, pinned score, or global cost
+ceiling was changed. The 0.08 ceiling is an explicit per-task budget; the
+operator's configured ceiling is untouched.
+
 ## HTTP `continue` — policy, not wiring
 
 A controlled run on a fresh HTTP ledger answered the open question. The HTTP

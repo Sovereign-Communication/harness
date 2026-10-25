@@ -52,7 +52,10 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ["3.11"]
         include:
-          - os: ubuntu-latest
+          # ubuntu-latest moved to 26.04, whose setup-python no longer
+          # offers 3.9; pin the oldest supported interpreter to the last
+          # LTS image that does. Newer versions stay on latest.
+          - os: ubuntu-22.04
             python-version: "3.9"
           - os: ubuntu-latest
             python-version: "3.13"

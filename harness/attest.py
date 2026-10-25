@@ -170,6 +170,14 @@ def require_attestation(raw, *, diff_bytes, base_sha256, round_nonce, now,
 # digest for the ledger, NOT a cryptographic signature, and nothing here may
 # be presented as one.
 
+# The verifier's whole answer is a small JSON verdict with a one- or
+# two-sentence reason, not a file rewrite. Reserving the apply model's
+# whole-file output budget for it asked a frontier judge for 4096 output
+# tokens: the default-on gate then demanded more headroom than the edit it
+# guards, and a funded plan was refused at write time after the apply call
+# had already been paid for. The verdict budget is bounded independently.
+ATTEST_MAX_TOKENS = 1024
+
 DIFF_AUTH_SYSTEM_PROMPT = (
     "You are an independent verifier in a coding harness. You did NOT produce "
     "the proposed content and you gain nothing from it landing. Review the "
@@ -187,13 +195,20 @@ def _new_nonce():
 
 def authorize_diff(transport, api_key, governor, ledger, *, task_id, model,
                    file_path, instruction, current_content, new_content,
-                   round_no, max_tokens=4096):
+                   round_no, max_tokens=None):
     """Ask the independent verifier model to authorize the EXACT bytes about
     to be written. Returns the attestation record (also ledgered). Raises
     HarnessError on deny, unparseable output, transport error -- every
     failure path refuses the write (fail-closed, no fallback to intent)."""
     from .chat import chat, extract_content_and_cost, _extract_json, \
         _reported_cost, REASONING_FALLBACK_PREFIX
+
+    try:
+        requested = int(max_tokens)
+    except (TypeError, ValueError):
+        requested = 0
+    budget = (ATTEST_MAX_TOKENS if requested <= 0
+              else min(requested, ATTEST_MAX_TOKENS))
 
     new_sha = compute_diff_sha256(new_content)
     base_sha = compute_diff_sha256(current_content)
@@ -207,12 +222,12 @@ def authorize_diff(transport, api_key, governor, ledger, *, task_id, model,
     preflight = getattr(governor, "preflight", None)
     if preflight is not None:
         preflight(DIFF_AUTH_SYSTEM_PROMPT + "\n" + user,
-                  [(f"attest:{model}", model, max_tokens, 0)])
+                  [(f"attest:{model}", model, budget, 0)])
     governor.check_byok(model)
     status, resp = chat(transport, api_key, model,
                         [{"role": "system", "content": DIFF_AUTH_SYSTEM_PROMPT},
                          {"role": "user", "content": user}],
-                        max_tokens, reasoning_effort="none", governor=governor)
+                        budget, reasoning_effort="none", governor=governor)
     raw = ""
     if status == 200:
         content, _, _, is_byok = extract_content_and_cost(resp)
@@ -240,7 +255,7 @@ def authorize_diff(transport, api_key, governor, ledger, *, task_id, model,
         ledger.append("diff_attestation", task_id=task_id, model=model,
                       verdict=verdict, diff_sha256=new_sha,
                       base_sha256=base_sha, round=round_no,
-                      reason=reason[:200])
+                      cost=reported, reason=reason[:200])
     _events.emit("diff_attestation", task_id=task_id, round=round_no,
                  verdict=verdict, model=model)
     if verdict != "allow":
