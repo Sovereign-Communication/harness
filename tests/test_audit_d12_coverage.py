@@ -13,12 +13,17 @@ mechanical:
    SKIP locally;
 4. S5's ruff resolution is the shared resolver, and a missing tool is a named
    failure rather than an opaque ``No module named ruff``.
+5. a fail-open SKIP is ``skip`` in the text table and JSON receipt, and it
+   contributes to neither the measured-check numerator nor denominator.
 
 These tests pin the parser, the merge-base decision, the actual ratio over a
-real temporary git diff, and the explicit S5 disposition.
+real temporary git diff, the skip accounting through ``main``, and the
+explicit S5 disposition.
 """
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -141,6 +146,29 @@ class D12MergeBaseTests(unittest.TestCase):
         self.assertTrue(evidence.startswith("SKIP (fail-open)"))
         self.assertEqual(self.audit._mark(score, evidence), "skip")
 
+    def test_skip_is_excluded_from_the_dimension_mean(self):
+        rows = [
+            {"id": "measured-pass", "score": 1.0, "status": "pass",
+             "evidence": "measured"},
+            {"id": "measured-fail", "score": 0.0, "status": "FAIL",
+             "evidence": "measured"},
+            {"id": "D12", "score": None, "status": "skip",
+             "evidence": "SKIP (fail-open): no merge-base"},
+        ]
+        mean, measured, skipped = self.audit._dimension_result(rows)
+        self.assertAlmostEqual(mean, 0.5)
+        self.assertEqual([r["id"] for r in measured],
+                         ["measured-pass", "measured-fail"])
+        self.assertEqual([r["id"] for r in skipped], ["D12"])
+
+    def test_all_skip_dimension_has_no_measurement_to_average(self):
+        rows = [{"id": "D12", "score": None, "status": "skip",
+                 "evidence": "SKIP (fail-open): no merge-base"}]
+        mean, measured, skipped = self.audit._dimension_result(rows)
+        self.assertIsNone(mean)
+        self.assertEqual(measured, [])
+        self.assertEqual([r["id"] for r in skipped], ["D12"])
+
     def test_unreachable_merge_base_fails_closed_in_ci(self):
         score, evidence = self.audit.d12_unreachable("f" * 40, in_ci=True)
         self.assertEqual(score, 0.0)
@@ -259,6 +287,94 @@ class D12MergeBaseTests(unittest.TestCase):
             self.assertIn("no executable harness changes", evidence)
         finally:
             repo.close()
+
+
+class AuditSkipSurfaceTests(unittest.TestCase):
+    """The real audit entry point reports a SKIP without passing credit."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.audit = _load_audit()
+
+    def test_skip_is_explicit_in_text_and_receipt_and_not_scored(self):
+        def fake_evaluate(evidence):
+            sd = evidence.get("SD", {})
+            score = sd.get("score")
+            return {
+                "dimensions": {
+                    "SD": {"name": self.audit.DIM_NAMES["SD"],
+                           "score": score,
+                           "evaluated": score is not None},
+                },
+                "scores": {"SD": score},
+                "bar_95_pass": score is not None and score >= 9.5,
+                "is_fallback": True,
+                "model": "fake",
+            }
+
+        fake_policy = mock.Mock()
+        fake_policy.evaluate_audit_dimensions.side_effect = fake_evaluate
+
+        def measured_pass():
+            return 1.0, "measured pass"
+
+        def measured_fail():
+            return 0.0, "measured fail"
+
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            root = Path(tmp.name) / "repo"
+            here = root / "audits" / "self"
+            here.mkdir(parents=True)
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with mock.patch.object(self.audit, "ROOT", root), \
+                 mock.patch.object(self.audit, "HERE", here), \
+                 mock.patch.object(self.audit, "_IN_CI", False), \
+                 mock.patch.object(self.audit, "CHECKS", {"SD": [
+                     ("D-pass", "measured pass", measured_pass),
+                     ("D-fail", "measured fail", measured_fail),
+                     ("D12", "changed lines suite-executed (coverage)",
+                      self.audit.sd_coverage_changed),
+                 ]}), \
+                 mock.patch.object(self.audit, "d12_base_ref",
+                                   return_value=("", "test: no merge-base")), \
+                 mock.patch.object(self.audit, "_compose_audit_jev_policy",
+                                   return_value=fake_policy), \
+                 mock.patch("harness.config.load_settings",
+                            return_value=SimpleNamespace(max_cost=0.0,
+                                                         jev_api_key=None)), \
+                 mock.patch.object(sys, "argv", ["audit.py"]), \
+                 contextlib.redirect_stdout(stdout), \
+                 contextlib.redirect_stderr(stderr):
+                rc = self.audit.main()
+
+            text = stdout.getvalue()
+            self.assertEqual(rc, 1, text)
+            self.assertIn("D12 skip", text)
+            self.assertIn("5.00/10 (1/2 checks fully satisfied; 1 skipped)", text)
+            self.assertIn("SKIP (fail-open)", text)
+
+            payload = json.loads((here / "round2_scores.json").read_text(
+                encoding="utf-8"))
+            rows = {r["id"]: r for r in payload["checks"]["SD"]}
+            self.assertEqual(rows["D12"]["status"], "skip")
+            self.assertIsNone(rows["D12"]["score"])
+            self.assertTrue(rows["D12"]["evidence"].startswith("SKIP (fail-open)"))
+            self.assertEqual(payload["skipped_checks"]["SD"], ["D12"])
+            # A skip's nominal fail-open 1.0 must not lift the 5.00 measured
+            # score to 6.67 as a third check would.
+            self.assertEqual(payload["scores"]["SD"], 5.0)
+
+            evidence = fake_policy.evaluate_audit_dimensions.call_args.args[0]
+            sd = evidence["SD"]
+            self.assertEqual(sd["score"], 5.0)
+            self.assertEqual(sd["checks_count"], 2)
+            self.assertEqual(sd["checks_satisfied"], 1)
+            self.assertEqual(sd["checks_skipped"], 1)
+            self.assertEqual([c["id"] for c in sd["checks"]],
+                             ["D-pass", "D-fail"])
+        finally:
+            tmp.cleanup()
 
 
 class S5DispositionTests(unittest.TestCase):

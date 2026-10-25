@@ -152,18 +152,42 @@ def _pass(cond, ok_ev, fail_ev):
     return (1.0, ok_ev) if cond else (0.0, fail_ev)
 
 
-def _mark(score, evidence):
-    """Table mark for one check.
+def _status(score, evidence):
+    """One status vocabulary for text and JSON.
 
     A fail-open SKIP scores 1.0 on purpose (D12 locally), so a score-only
     label printed "pass" for a check that measured nothing (#331). The
-    evidence already says SKIP; the table must say it too.
+    evidence already says SKIP; the table, the receipt row and every
+    dimension aggregate must say it too. A skip is excluded from the
+    measured-check denominator rather than counted as a satisfied check.
     """
     if str(evidence).startswith("SKIP"):
         return "skip"
+    if score is None:
+        return "FAIL"
     if score >= 1:
         return "pass"
     return "part" if score > 0 else "FAIL"
+
+
+def _mark(score, evidence):
+    """Table mark for one check (see ``_status``)."""
+    return _status(score, evidence)
+
+
+def _dimension_result(rows):
+    """Mean, measured rows and skipped rows for one dimension.
+
+    SKIP has no measurement to average: it contributes to neither the
+    numerator nor the denominator, and it is never counted as a satisfied
+    check. ``mean`` is ``None`` when every check in the dimension skipped,
+    which callers must report as not evaluated rather than as a pass.
+    """
+    measured = [r for r in rows if r.get("status") != "skip"]
+    skipped = [r for r in rows if r.get("status") == "skip"]
+    mean = (sum(r["score"] for r in measured) / len(measured)
+            if measured else None)
+    return mean, measured, skipped
 
 
 # ============== A — SECURITY ==============
@@ -1648,18 +1672,27 @@ def main():
                 score, ev = fn()
             except Exception as e:  # a broken check is a failed check
                 score, ev = 0.0, f"CHECK ERROR: {type(e).__name__}: {e}"
-            rows.append({"id": cid, "label": label, "score": round(score, 3),
-                         "evidence": ev})
+            status = _status(score, ev)
+            rows.append({"id": cid, "label": label,
+                         "score": None if status == "skip" else round(score, 3),
+                         "status": status, "evidence": ev})
         results[dim] = rows
 
     print()
     total_ok = True
     for dim, rows in results.items():
-        mean = sum(r["score"] for r in rows) / len(rows)
-        bar = "OK " if mean >= 9.5 / 10 else "LOW"
-        total_ok &= mean >= 9.5 / 10
-        print(f"[{bar}] {dim} — {DIM_NAMES[dim]}: {mean * 10:.2f}/10 "
-              f"({sum(r['score'] >= 1 for r in rows)}/{len(rows)} checks fully satisfied)")
+        mean, measured, skipped = _dimension_result(rows)
+        if mean is None:
+            print(f"[N/E] {dim} — {DIM_NAMES[dim]}: not evaluated "
+                  f"({len(measured)} measured, {len(skipped)} skipped)")
+            total_ok = False
+        else:
+            bar = "OK " if mean >= 9.5 / 10 else "LOW"
+            total_ok &= mean >= 9.5 / 10
+            skip_note = f"; {len(skipped)} skipped" if skipped else ""
+            print(f"[{bar}] {dim} — {DIM_NAMES[dim]}: {mean * 10:.2f}/10 "
+                  f"({sum(r['score'] >= 1 for r in measured)}/{len(measured)} "
+                  f"checks fully satisfied{skip_note})")
         for r in rows:
             mark = _mark(r["score"], r["evidence"])
             print(f"    {r['id']:>3} {mark:<4} {r['label']}")
@@ -1668,21 +1701,32 @@ def main():
         print()
 
     out = HERE / "round2_scores.json"
-    summary = {d: round(sum(r["score"] for r in rows) / len(rows) * 10, 2)
-               for d, rows in results.items()}
+    summary = {}
+    for dim, rows in results.items():
+        mean, _measured, _skipped = _dimension_result(rows)
+        summary[dim] = round(mean * 10, 2) if mean is not None else None
+    skipped_checks = {
+        dim: [r["id"] for r in rows if r["status"] == "skip"]
+        for dim, rows in results.items()
+    }
 
     # --- JEV 4-Dimension Authoritative Gate (95%+ on ALL 4 dimensions) ---
     from harness.config import load_settings
 
-    dimension_evidence = {
-        dim: {
-            "score": summary.get(dim, 0.0),
-            "checks_count": len(rows),
-            "checks_satisfied": sum(r["score"] >= 1 for r in rows),
-            "checks": rows,
+    dimension_evidence = {}
+    for dim, rows in results.items():
+        mean, measured, skipped = _dimension_result(rows)
+        if mean is None:
+            # Nothing in this dimension was measured. Omit it so the Jev gate
+            # reports not_evaluated instead of inventing a score from skips.
+            continue
+        dimension_evidence[dim] = {
+            "score": summary[dim],
+            "checks_count": len(measured),
+            "checks_satisfied": sum(r["score"] >= 1 for r in measured),
+            "checks_skipped": len(skipped),
+            "checks": measured,
         }
-        for dim, rows in results.items()
-    }
 
     settings = load_settings()
     jev_policy = _compose_audit_jev_policy(settings)
@@ -1723,11 +1767,17 @@ def main():
             saved_jev.update({d: jev_gate["scores"][d] for d in dims_evaluated if d in jev_gate["scores"]})
             saved_checks = prior.get("checks", {})
             saved_checks.update(results)
+            saved_skipped = prior.get("skipped_checks", {})
+            saved_skipped.update(skipped_checks)
             payload = {
                 "scores": saved_scores,
                 "jev_scores": saved_jev,
-                "jev_gate_pass": all(saved_jev.get(d, 0.0) >= 9.5 for d in ("A", "R", "SM", "SD")),
+                "jev_gate_pass": all(
+                    isinstance(saved_jev.get(d), (int, float))
+                    and saved_jev[d] >= 9.5
+                    for d in ("A", "R", "SM", "SD")),
                 "jev_eval": jev_gate,
+                "skipped_checks": saved_skipped,
                 "checks": saved_checks,
             }
         except Exception:
@@ -1736,6 +1786,7 @@ def main():
                 "jev_scores": jev_gate["scores"],
                 "jev_gate_pass": jev_gate["bar_95_pass"],
                 "jev_eval": jev_gate,
+                "skipped_checks": skipped_checks,
                 "checks": results,
             }
     else:
@@ -1744,6 +1795,7 @@ def main():
             "jev_scores": jev_gate["scores"],
             "jev_gate_pass": jev_gate["bar_95_pass"],
             "jev_eval": jev_gate,
+            "skipped_checks": skipped_checks,
             "checks": results,
         }
 
