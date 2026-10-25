@@ -2,5 +2,6 @@
   "name": "add",
   "file": "adds.py",
   "instruction": "Fix adds.add(a, b) so it returns a + b instead of a - b.",
-  "verify": "python check.py"
+  "verify": "python check.py",
+  "task_max_cost": 0.25
 }

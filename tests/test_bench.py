@@ -1,8 +1,11 @@
+import glob
 import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
+from harness import cli
 from harness.apply import ApplyEngine
 from harness.bench import load_manifest, run_bench, TaskSandbox
 from harness.spend import SpendGovernor
@@ -190,6 +193,77 @@ class BenchTests(unittest.TestCase):
         self.assertEqual(b["statuses"].get("ok"), 1)
         self.assertEqual(b["statuses"].get("verify_failed"), 1)
         self.assertEqual(b["pass_rate"], 0.5)
+
+
+class BenchBudgetTests(unittest.TestCase):
+    """The bench CLI can fund a task without editing its manifest, and the
+    bundled fixtures carry a budget that covers the engine's own three-attempt
+    worst case."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+
+    def _engine(self):
+        engine = mock.Mock()
+        engine.ledger.participation_report.return_value = {}
+        engine.apply_edit.return_value = {"status": "ok", "cost": 0.0}
+        return engine
+
+    def _task(self, name="a", task_max_cost=None):
+        make_task(self.dir.name, name, "x = 0\n")
+        path = os.path.join(self.dir.name, name, "task.json")
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if task_max_cost is not None:
+            data["task_max_cost"] = task_max_cost
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+        return load_manifest(path)[0]
+
+    def test_cli_default_fills_missing_task_budget(self):
+        engine = self._engine()
+        run_bench(engine, [self._task()], runner=lambda cmd: (0, ""),
+                  task_max_cost=0.25)
+        self.assertEqual(
+            engine.apply_edit.call_args.kwargs["task_max_cost"], 0.25)
+
+    def test_task_budget_wins_over_cli_default(self):
+        engine = self._engine()
+        run_bench(engine, [self._task(task_max_cost=0.4)],
+                  runner=lambda cmd: (0, ""), task_max_cost=0.25)
+        self.assertEqual(
+            engine.apply_edit.call_args.kwargs["task_max_cost"], 0.4)
+
+    def test_cli_forwards_task_max_cost(self):
+        captured = {}
+
+        def fake_run_bench(engine, tasks, **kwargs):
+            captured.update(kwargs)
+            return {"bench": {"statuses": {"ok": 1}}}
+
+        with mock.patch.object(cli, "load_manifest", return_value=[{"name": "t"}]), \
+             mock.patch.object(cli, "run_bench", side_effect=fake_run_bench), \
+             mock.patch.object(cli, "_session", return_value=mock.Mock()):
+            cli.main(["bench", "manifest.json", "--max-cost", "0.5",
+                      "--task-max-cost", "0.3"])
+        self.assertEqual(captured["task_max_cost"], 0.3)
+
+    def test_bundled_fixtures_declare_an_affordable_budget(self):
+        """A fixture without task_max_cost inherits bench's 0.05 fallback,
+        which a trust-stepped paid route cannot fund (worst case ~$0.168), so
+        every shipped fixture must carry its own ceiling."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        paths = sorted(glob.glob(os.path.join(root, "bench", "tasks", "*",
+                                              "task.json")))
+        self.assertEqual(len(paths), 9)
+        for path in paths:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            self.assertGreaterEqual(
+                data.get("task_max_cost", 0.0), 0.2,
+                f"{path} must pin a task_max_cost above the engine's "
+                f"three-attempt worst case")
 
 
 if __name__ == "__main__":

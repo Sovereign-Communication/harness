@@ -256,7 +256,7 @@
         "label": "full suite green hermetically",
         "score": 1.0,
         "status": "pass",
-        "evidence": "unittest: Ran 5094 tests in 292.259s\n\nOK (env clean; empty home)"
+        "evidence": "unittest: Ran 5098 tests in 293.604s\n\nOK (env clean; empty home)"
       },
       {
         "id": "R14",
@@ -407,7 +407,7 @@
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
         "status": "pass",
-        "evidence": "changed harness lines are suite-executed (changed-line coverage 6/6 = 100% (bar 95%) vs merge-base cb28ca87b5 (origin/main; traced battery at merge-base cb28ca87b5))"
+        "evidence": "changed harness lines are suite-executed (changed-line coverage 2/2 = 100% (bar 95%) vs merge-base 0bd253d474 (origin/main; traced battery at merge-base 0bd253d474))"
       }
     ]
   }

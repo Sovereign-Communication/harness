@@ -2,5 +2,6 @@
   "name": "reverse",
   "file": "reverse.py",
   "instruction": "Make reverse_str(s) return the reverse of s. It currently returns s unchanged.",
-  "verify": "python check.py"
+  "verify": "python check.py",
+  "task_max_cost": 0.25
 }

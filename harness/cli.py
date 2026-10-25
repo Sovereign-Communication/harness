@@ -759,7 +759,7 @@ def _cmd_bench(opts, settings):
             t.setdefault("require_consent", True)
         if opts.max_rounds:
             t.setdefault("max_rounds", opts.max_rounds)
-    report = run_bench(engine, tasks)
+    report = run_bench(engine, tasks, task_max_cost=opts.task_max_cost)
     _emit(report, opts.out)
     st = report["bench"]["statuses"]
     if st.get("ok", 0) < len(tasks):
