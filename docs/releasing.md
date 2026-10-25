@@ -208,7 +208,7 @@ published bytes were downloaded from PyPI and SHA-256 checked before install:
 No version bump, re-upload, audit/JEV baseline change or second paid
 attestation was involved. PyPI holds only `0.5.0`.
 
-Two non-blocking operator items remain; neither affects the published release:
+Three non-blocking operator items remain; none affects the published release:
 
 1. Branch protection on `main` is still **not enabled** (GitHub reports
    "Branch not protected"), so the reviewed-PR rule is convention rather than
@@ -217,3 +217,9 @@ Two non-blocking operator items remain; neither affects the published release:
    Without it, `.github/workflows/site.yml` validates the site and skips the
    deploy; the source page's counts are updated, but the hosted page changes
    only when that secret exists and the `site` workflow deploys.
+3. The published `0.5.0` metadata still embeds the pre-release README sentence
+   saying the first upload is pending. PyPI renders the project description
+   from the uploaded artifact, and released file metadata cannot be changed,
+   so the `0.5.0` page will keep that sentence; the repository README is
+   corrected on `main` for the next artifact. No version bump was made to
+   rewrite it.
