@@ -223,3 +223,39 @@ Three non-blocking operator items remain; none affects the published release:
    so the `0.5.0` page will keep that sentence; the repository README is
    corrected on `main` for the next artifact. No version bump was made to
    rewrite it.
+
+## Published — 0.5.1 (2026-10-25)
+
+Patch release for the project description only: the `0.5.0` description still
+claimed the package was unpublished. `0.5.1` carries the corrected README,
+with no code or behavior changes. As with `0.5.0`, the gate was checked at the
+tag commit, and the published artifacts were verified from outside PyPI.
+
+| Item | Receipt |
+|---|---|
+| Tag | annotated `v0.5.1` (tag object `b719875`) -> commit `f6ebf6b`, the merge of PR #393 |
+| `main` CI at the tag commit | run `40242051459` on `f6ebf6b`: **success**, 12/12 jobs |
+| Hermetic suite | **5,102 tests**, `OK` (48 skipped on Windows) |
+| Self-audit | A/R/SM/SD all **10.00/10**; Jev 95% gate **PASS**; D12 changed-line coverage **pass** |
+| Version parity | `pyproject.toml` `0.5.1` = `harness.__version__` `0.5.1` = tag `v0.5.1`, checked in the publish run before upload |
+| Publish run | run `40242559672`: **success**; "Publish to PyPI (trusted publishing, OIDC)" uploaded both files, not skipped |
+| Uploaded wheel | `sovereign_harness-0.5.1-py3-none-any.whl`, 1,010,485 bytes, `sha256:17ac5fd34c8bc35b0c06b2ee531bbfa4737848e72fc3afe0d0d29410d9a06676` |
+| Uploaded sdist | `sovereign_harness-0.5.1.tar.gz`, 1,958,794 bytes, `sha256:b80742ab6ef08da0824dd5dd3317b1f50decda8a3759341338bfcb72f0c7d496` |
+| PyPI JSON and simple index | latest `0.5.1`, releases `["0.5.0", "0.5.1"]`; the simple index lists both `0.5.1` files with the same hashes and a `/provenance` record |
+| Rendered description | `info.description` contains the `pip install sovereign-harness` install story and **not** "No matching distribution", "first upload", "unpublished", or "not yet published" |
+| GitHub release | `https://github.com/Sovereign-Communication/harness/releases/tag/v0.5.1` |
+| Credentials | OIDC upload with no stored PyPI token, no Actions secret and no GitHub environment |
+
+External install check (Windows, CPython 3.14). The exact published bytes were
+downloaded from PyPI and SHA-256 checked before each install; wheel and sdist
+were each installed into a fresh empty virtualenv:
+
+| Check | Result |
+|---|---|
+| Wheel install (`--no-deps`) | imports from the venv's `site-packages`, reports `harness 0.5.1`; `pip check` clean |
+| sdist install (`--no-deps`) | builds and imports from the venv's `site-packages`, reports `harness 0.5.1`; `pip check` clean |
+| Package data | `ui/index.html`, `ui/app.js`, `ui/app.css`, `ui/panes.js`, `ui/panes.css`, `data/experience.md`, `data/refine_propose_prompt.md`, `data/task_families.json` all present in both installs |
+| Console scripts | `harness`, `harness-mcp`, `harness-desktop`, `driver-core` each `--help` exit 0 in both installs |
+
+No code, audit/JEV baseline or paid attestation changed. PyPI now holds
+`0.5.0` and `0.5.1`; the older description remains immutable.
