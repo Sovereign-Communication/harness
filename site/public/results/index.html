@@ -6,7 +6,7 @@
   <title>Results — Harness issue program</title>
   <meta name="description" content="Measured Harness issue-program results: seven landed items with merge commits, current test totals and the open-issue ledger.">
   <meta property="og:title" content="Results — Harness issue program">
-  <meta property="og:description" content="Seven landed items, 5,098 tests and 53 open issues — receipts first, no invented metrics.">
+  <meta property="og:description" content="Seven landed items, 5,102 tests and 59 open issues — receipts first, no invented metrics.">
   <meta property="og:type" content="website">
   <link rel="canonical" href="https://harness.pages.dev/results/">
   <link rel="stylesheet" href="../assets/site.css">
@@ -30,7 +30,7 @@
     <h1>Results: issue program, batch 1</h1>
     <p class="lede">One reviewed slice at a time. An issue counts as complete only after its changes merge with green CI; a queued row is never presented as done.</p>
 
-    <p class="small muted">Receipt base: <code>main</code> <code>28bdaf0</code> at this page's cut &middot; merge-result check <a href="https://github.com/Sovereign-Communication/harness/actions/runs/40164769042">run 40164769042</a> &middot; 12/12 green &middot; 53 open issues.</p>
+    <p class="small muted">Receipt base for these counts: <code>main</code> <code>9facb42</code> (the <code>v0.5.0</code> tag) &middot; merge-result check <a href="https://github.com/Sovereign-Communication/harness/actions/runs/40231385591">run 40231385591</a> &middot; 12/12 green &middot; 59 live open issues (GitHub, 2026-10-25).</p>
 
     <h2>Landed items</h2>
     <table>
@@ -84,7 +84,7 @@
           <td><a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/queue.json">Open issues</a></td>
           <td>queued</td>
           <td>—</td>
-          <td>53 remaining: the 58-issue queue minus the five landed queue items; #339 and #331 were outside the queue</td>
+          <td>59 live open issues: 64 queue rows minus the five landed queue items; #339 and #331 landed outside the queue</td>
         </tr>
       </tbody>
     </table>
@@ -94,14 +94,14 @@
     <table>
       <thead><tr><th>Check</th><th>Result</th><th>Detail</th></tr></thead>
       <tbody>
-        <tr><td>Full hermetic suite</td><td>OK</td><td>5,098 tests run; 72 skipped</td></tr>
+        <tr><td>Full hermetic suite</td><td>OK</td><td>5,102 tests run; 38 skipped on Linux/macOS, 48 on Windows</td></tr>
         <tr><td>Audit A / R / SM / SD</td><td>10.00 / 10.00 / 10.00 / 10.00</td><td>All four dimensions at the ceiling</td></tr>
         <tr><td>D12 coverage</td><td>PASS</td><td>runtime merge-base; real-diff proof 1/1, negative control 0/1; no manual baseline</td></tr>
         <tr><td>JEV gate</td><td>PASS</td><td>Hard gates green; sentiment buckets pass</td></tr>
-        <tr><td>Ledger gate</td><td>PASS</td><td>58 of 58 entries valid</td></tr>
+        <tr><td>Queue ledger gate</td><td>PASS</td><td>64 of 64 rows valid; 5 complete, 59 queued</td></tr>
         <tr><td>Site gate</td><td>PASS</td><td>67 tests</td></tr>
         <tr><td>Ruff</td><td>clean</td><td><code>python -m ruff check harness tests</code></td></tr>
-        <tr><td>Merge-result CI</td><td>12/12</td><td><a href="https://github.com/Sovereign-Communication/harness/actions/runs/40164769042">run 40164769042</a> on <code>28bdaf0</code></td></tr>
+        <tr><td>Merge-result CI</td><td>12/12</td><td><a href="https://github.com/Sovereign-Communication/harness/actions/runs/40231385591">run 40231385591</a> on <code>9facb42</code></td></tr>
       </tbody>
     </table>
 
@@ -120,7 +120,7 @@
     <p>On a previous live task the apply seat produced a one-character fix for <strong>0.23&cent;</strong>. On the same task, the paid judge returned a post-response parse error plus a <strong>0.38&cent;</strong> protocol retry, so the run cost <strong>0.61&cent;</strong>. The number is unflattering, and it is published for that reason: the judge's retry cost more than the apply it reviewed.</p>
 
     <h2>What remains open</h2>
-    <p>The <a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/closing-report-2026-10-25.md">closing report</a> is the 54-open snapshot before #276; the current 53-issue inventory is on <a href="https://github.com/Sovereign-Communication/harness/issues/295">#295</a>, and the <a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/queue.json">execution queue</a> carries the same state as machine-readable JSON. With #276 and #331 landed, <strong>#277</strong>'s named prerequisites (#276, #331, #327, #330) are all complete, so #277 is unblocked. Two items are explicit holds rather than queue order: <strong>#333</strong> is the owner decision on an in-process registry versus a ledger-backed one, and <strong>#306</strong> is operator-gated on the Freebuff laptop key. The rest are blocked by named prerequisite issues or are ready and merely queued.</p>
+    <p>The <a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/closing-report-2026-10-25.md">closing report</a> is the 54-open snapshot before #276; the current 59-issue inventory is on <a href="https://github.com/Sovereign-Communication/harness/issues/295">#295</a>, and the <a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/queue.json">execution queue</a> carries the same state as machine-readable JSON. With #276 and #331 landed, <strong>#277</strong>'s named prerequisites (#276, #331, #327, #330) are all complete, so #277 is unblocked. Two items are explicit holds rather than queue order: <strong>#333</strong> is the owner decision on an in-process registry versus a ledger-backed one, and <strong>#306</strong> is operator-gated on the Freebuff laptop key. The rest are blocked by named prerequisite issues or are ready and merely queued.</p>
     <p class="small muted">This is a static results surface. Deployment is performed only by <code>.github/workflows/site.yml</code>, and only when the <code>CF_API_TOKEN</code> repository secret is configured. A merged page is not by itself a deployed page; the workflow run is the deployment record.</p>
   </main>
 

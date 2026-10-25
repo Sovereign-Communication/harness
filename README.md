@@ -103,12 +103,14 @@ that and its hard guarantees:
 python -m pip install sovereign-harness
 ```
 
-The first PyPI upload is still pending owner registration (see [issue
-#107](https://github.com/Sovereign-Communication/harness/issues/107)); until it
-lands, that command returns "No matching distribution found". Install the
-default build from the public GitHub repository instead:
+The `0.5.0` release is published on
+[PyPI](https://pypi.org/project/sovereign-harness/), so that command installs
+the current release. Use a dedicated virtual environment: the distribution is
+`sovereign-harness`, but the import name is `harness`, and an unrelated
+`harness` distribution owns the same import name (see the packaging facts
+below).
 
-Create a virtual environment and install the default build:
+To track `main` from the public GitHub repository instead, use one of these:
 
 ```powershell
 # Windows PowerShell

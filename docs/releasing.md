@@ -105,7 +105,7 @@ empty — a mismatch there is the most common cause of a 403 that looks
 otherwise correct. After registering, run a dry run first, then push a real
 tag.
 
-## Readiness snapshot - 0.5.0 (2026-10-23)
+## Pre-publish readiness — 0.5.0 (2026-10-23)
 
 Audited against the `0.5.0` tree. `https://pypi.org/pypi/sovereign-harness/json`
 returns **404**: no version has ever been published, so the first upload claims
@@ -150,7 +150,7 @@ interpreter, one artifact of each kind, three-way version parity,
 `twine check --strict`, clean-venv wheel smoke with `pip check`, and OIDC
 trusted publishing with no stored token.
 
-## Readiness re-check — 2026-10-25
+## Pre-publish re-check — 2026-10-25 (superseded)
 
 Checked against `origin/main` at `45412ff` (merged PR #388) and a local build of
 the current tree.
@@ -172,11 +172,48 @@ the current tree.
 | Clean-venv wheel | installs with no runtime dependencies, reports `0.5.0`, `harness`/`harness-mcp`/`driver-core --help` exit 0, `pip check` clean |
 | Paid attestation | default-attestation `plan --execute` green on the real CLI with the paid judge (`allow`), JEV `supported=0.97`, final gate `add-ok`, $0.004061; the verifier budget fix is recorded in `audits/self/dogfood/SWEEP_2026-10-25_SEAMS.md` |
 
-The only release blocker remains the owner-only trusted-publisher entry. A
-pending publisher cannot be read from the repository (PyPI exposes it only in
-the project's publishing settings), so it must be confirmed at pypi.org before
-the first tag. If it is absent, register it with the exact values in the table
-above; if it is present, `v0.5.0` is ready to tag after this tree is merged and
-`main` CI is green. Enabling protection on `main` (required PR review plus the
-CI status checks) is recommended before that tag, because the repository is
-public and no protection currently enforces it.
+The blocker named here was cleared before the tag: the trusted publisher was
+registered and the OIDC upload succeeded. The rows above are the pre-publish
+record; the released state is below.
+
+## Published — 0.5.0 (2026-10-25)
+
+The first `sovereign-harness` release is live. The gate was checked at the tag
+commit, and the published artifacts were verified from outside against PyPI.
+
+| Item | Receipt |
+|---|---|
+| Tag | annotated `v0.5.0` (tag object `4de58ff`) -> commit `9facb42`, the merge of PR #390 |
+| `main` CI at the tag commit | run `40231385591` on `9facb42`: **success**, 12/12 jobs |
+| Hermetic suite | **5,102 tests**, `OK` (38 skipped on Linux/macOS, 48 on Windows) |
+| Self-audit | A/R/SM/SD all **10.00/10**; Jev 95% gate **PASS**; D12 changed-line coverage **pass** |
+| Version parity | `pyproject.toml` `0.5.0` = `harness.__version__` `0.5.0` = tag `v0.5.0`, checked in the publish run before upload |
+| Publish run | run `40231986423`: **success**; "Publish to PyPI (trusted publishing, OIDC)" and its post step completed, not skipped |
+| Uploaded wheel | `sovereign_harness-0.5.0-py3-none-any.whl`, 1,010,485 bytes, `sha256:bfbcabf621506c943f28cf952e381b8e81a52149af576d159b7d6f1c4ede11a3` |
+| Uploaded sdist | `sovereign_harness-0.5.0.tar.gz`, 1,957,598 bytes, `sha256:a7c5310191fe9b5df426e5a837fa8b3cbf340f87e155f80097ef68a67ed42aca` |
+| PyPI project page and version list | `https://pypi.org/project/sovereign-harness/` returns 200 (a plain fetch gets the bot-challenge shell); `https://pypi.org/pypi/sovereign-harness/json` reports latest `0.5.0` and releases `["0.5.0"]`; the simple index lists both files with the same hashes and a `/provenance` record |
+| GitHub release | `https://github.com/Sovereign-Communication/harness/releases/tag/v0.5.0` |
+| Credentials | OIDC upload with no stored PyPI token, no Actions secret and no GitHub environment |
+
+External install check (Windows, CPython 3.14.6, empty virtualenvs). The exact
+published bytes were downloaded from PyPI and SHA-256 checked before install:
+
+| Check | Result |
+|---|---|
+| Wheel install (`--no-deps`) | imports from the venv's `site-packages`, reports `harness 0.5.0`; `pip check` clean |
+| sdist install (`--no-deps`) | builds and imports from the venv's `site-packages`, reports `harness 0.5.0`; `pip check` clean |
+| Package data | `ui/index.html`, `ui/app.js`, `ui/app.css`, `ui/panes.js`, `ui/panes.css`, `data/experience.md`, `data/refine_propose_prompt.md`, `data/task_families.json` all present in both installs |
+| Console scripts | `harness`, `harness-mcp`, `harness-desktop`, `driver-core` each `--help` exit 0 in both installs |
+
+No version bump, re-upload, audit/JEV baseline change or second paid
+attestation was involved. PyPI holds only `0.5.0`.
+
+Two non-blocking operator items remain; neither affects the published release:
+
+1. Branch protection on `main` is still **not enabled** (GitHub reports
+   "Branch not protected"), so the reviewed-PR rule is convention rather than
+   enforcement.
+2. The hosted Proof Bench deploy needs `CF_API_TOKEN` as a repository secret.
+   Without it, `.github/workflows/site.yml` validates the site and skips the
+   deploy; the source page's counts are updated, but the hosted page changes
+   only when that secret exists and the `site` workflow deploys.
