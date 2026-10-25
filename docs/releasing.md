@@ -279,7 +279,8 @@ gh api repos/Sovereign-Communication/harness/rulesets
 | Enforced for | `enforcement_level: "everyone"` |
 | Rulesets | `[]` — no repository ruleset; enforcement is classic branch protection |
 | Required status checks | 11 contexts, `strict: true` (the branch must be up to date) |
-| Required approving reviews | **none** — `required_pull_request_reviews` is `null` |
+| Pull request required | yes — the `required_pull_request_reviews` object is present |
+| Required approving reviews | **zero** — `required_approving_review_count: 0`; approval is not a merge gate |
 | Admin enforcement | `enforce_admins.enabled: true` |
 | Force pushes | disallowed (`allow_force_pushes.enabled: false`) |
 | Branch deletion | disallowed (`allow_deletions.enabled: false`) |
@@ -302,5 +303,5 @@ The 11 required contexts are the blocking jobs of `.github/workflows/ci.yml`:
 `handoff scope (advisory)` is the only CI check deliberately not required: it
 is an advisory scan, not a merge gate. All 11 required contexts are GitHub
 Actions checks (app id `15368`). The policy shape is therefore the requested
-conservative one: every blocking CI job must pass before merge, while an
-approving review is not required.
+conservative one: a pull request is required, every blocking CI job must pass
+before merge, and no approving review is required.
