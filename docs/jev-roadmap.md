@@ -68,7 +68,8 @@ in this slice.
 
 This preparation precedes old Wave0 measurement because the recorded offline
 fixture attempted ambient-key dispatch. #327/#278 then make invocation
-trustworthy; #276/#331 remain prerequisites for authoritative #277 evidence.
+trustworthy; #276/#331 are now complete, so #277's prerequisites are satisfied
+and #277 is the next chain item.
 
 ### Dependency and acceptance register
 
@@ -85,7 +86,7 @@ one merge occurs at a time. Every row inherits G0-G4 below.
 | [#327](https://github.com/Sovereign-Communication/harness/issues/327) | Gate runner | none | Repo-root resolution or explicit refusal; outside-CWD cannot pass having checked zero files. |
 | [#278](https://github.com/Sovereign-Communication/harness/issues/278) | Tool resolution | #327 | One interpreter/ruff resolver across apply/verify/dogfood/audit; python3-only works; missing tools refuse before billing. |
 | [#276](https://github.com/Sovereign-Communication/harness/issues/276) | Audit measurement | #278 | **complete** — PR #369 (`f54f8aa`); runtime merge-base D12 (real-diff 1/1, negative 0/1), S5 shared resolver + triage runbook; full suite 5,088, audit 10.00; main CI `40152417799` green. |
-| [#331](https://github.com/Sovereign-Communication/harness/issues/331) | Audit reporting | #276 | D12 SKIP remains SKIP in text/JSON and receives no passed-measurement credit. |
+| [#331](https://github.com/Sovereign-Communication/harness/issues/331) | Audit reporting | #276 | **complete** — PR #371 (`52f51b9`); table and receipt record `status=skip`/`score=null`, skips are excluded from dimension means and Jev evidence, all-skip is `not_evaluated`; 18 focused tests, 5,091 suite (72 skipped), audit 10.00, main CI `40155290208` 12/12 green. |
 | [#324](https://github.com/Sovereign-Communication/harness/issues/324) | Decision policy | none | Low advances_goal investigates, evidence clears or escalates actual risk; preserve destructive/ambiguity rules; max2 revisions. |
 | [#326](https://github.com/Sovereign-Communication/harness/issues/326) | Decision boundary | #324 | Exact0.20 lead satisfies the margin; below-margin control escalates. |
 | [#325](https://github.com/Sovereign-Communication/harness/issues/325) | Assessment procedure | #324 | Declare five rubric bands and investigation actor before automation; retain raw distributions; preserve absolute audit/phase hard bars. |
