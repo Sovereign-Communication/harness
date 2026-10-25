@@ -22,6 +22,7 @@ Cost: one traced battery run, roughly two to five minutes -- run this when
 you want a committed fast-path document, not per commit. The trace artifacts
 stay in-memory; nothing is written except the coverage JSON.
 """
+import inspect
 import io
 import json
 import subprocess
@@ -152,6 +153,27 @@ def main():
             continue
         if rel == "harness" or rel.startswith("harness" + chr(47)):
             executed.setdefault(rel, set()).add(ln)
+    # The package's own import line always executes. If it is absent, the
+    # trace measured an installed copy or a preloaded module rather than this
+    # checkout; fail with the origin instead of writing a misleading document.
+    import harness as traced_harness
+    source_lines, start = inspect.getsourcelines(traced_harness)
+    fallback_line = start + next(
+        i for i, line in enumerate(source_lines) if line.startswith("_FALLBACK_VERSION")
+    )
+    init_lines = executed.get("harness/__init__.py", set())
+    print(
+        f"traced harness origin: {Path(traced_harness.__file__).resolve()}",
+        file=sys.stderr,
+    )
+    if fallback_line not in init_lines:
+        print(
+            f"ERROR: harness/__init__.py:{fallback_line} was not executed; "
+            f"recorded lines: {sorted(init_lines)}",
+            file=sys.stderr,
+        )
+        return 1
+
     baseline = {}
     for mod in sorted(pkg.rglob("*.py")):
         rel = mod.relative_to(ROOT).as_posix()
