@@ -34,8 +34,27 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+
+
+def _pin_checkout(root):
+    """Trace this checkout, never an installed distribution of the same name.
+
+    An editable install puts a meta-path finder ahead of the normal path
+    finder. If a previous run already imported ``harness``, or the checkout
+    is on ``sys.path`` behind site-packages, the traced battery can measure
+    the installed copy and D12 sees no execution for source lines. Purge any
+    preloaded package and put the checkout first; the battery also asserts
+    the resolved origin before recording coverage.
+    """
+    root_text = str(Path(root).resolve())
+    while root_text in sys.path:
+        sys.path.remove(root_text)
+    sys.path.insert(0, root_text)
+    for name in [n for n in sys.modules if n == "harness" or n.startswith("harness.")]:
+        del sys.modules[name]
+
+
+_pin_checkout(ROOT)
 
 
 def main():
@@ -72,7 +91,13 @@ def main():
 
     def run_battery():
         import contextlib
+        import harness
         import harness.output
+        origin = Path(harness.__file__).resolve()
+        if Path(ROOT).resolve() not in origin.parents:
+            raise RuntimeError(
+                f"coverage traced {origin}, outside the checkout {Path(ROOT).resolve()}"
+            )
         orig_quiet = harness.output.QUIET
         harness.output.QUIET = True
         err_stream = io.StringIO()
