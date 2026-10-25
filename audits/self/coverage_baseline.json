@@ -1,5 +1,5 @@
 {
-  "_comment": "Lines executed by the full battery under stdlib trace; regenerate only via refresh_coverage_baseline.py and commit as a reviewable diff.",
+  "_comment": "Lines executed by the full battery under stdlib trace; a fast path only when this commit equals the runtime merge-base. D12 otherwise regenerates coverage for the audited tree; regenerate via refresh_coverage_baseline.py and commit only as a reviewable hint.",
   "commit": "8c4324af9a5f9ba18af4a9f442a0b58305d8a80c",
   "modules": {
     "harness/__init__.py": [

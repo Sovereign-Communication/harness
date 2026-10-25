@@ -3,23 +3,24 @@
 
 Runs the full test battery ONCE under stdlib trace (count mode,
 line events only) and records, for every harness module, the line
-numbers executed by the suite. D12 (sd_coverage_changed) compares
-changed harness lines against this baseline: changed lines that the
-traced suite never executed fail the audit. Like the corpus
-manifest, this file is generated only by this script and committed
-as a reviewable diff (see CONTRIBUTING.md, "Coverage baseline").
+numbers executed by the suite. D12 (sd_coverage_changed) uses this
+as a fast path only when its ``commit`` is the runtime merge-base;
+otherwise it regenerates a temporary document for the tree being
+audited. A committed file is a reviewable hint, not a required
+pre-merge artifact (see CONTRIBUTING.md, "Coverage baseline").
 
-  python audits/self/refresh_coverage_baseline.py [--ref REF]
+  python audits/self/refresh_coverage_baseline.py [--ref REF] [--out PATH]
 
-``--ref`` is the commit D12 will diff against; default ``HEAD``. A PR must
-pass the merge-base with ``main`` here (``--ref $(git merge-base HEAD
-origin/main)``): a PR-branch SHA is squashed away on merge and the next CI
-run then fails closed on an unreachable baseline.
+``--ref`` is the commit the coverage document describes; default ``HEAD``.
+D12 resolves the merge-base at audit time and regenerates coverage itself
+when the committed document does not name that base, so this script is no
+longer a manual pre-merge ritual. ``--out`` writes to a temporary path (the
+CI path uses it so the tracked file is not rewritten); without it the
+reviewable ``audits/self/coverage_baseline.json`` fast path is updated.
 
-Cost: one traced battery run, roughly two to four minutes -- run
-this when landing substantive code changes, not per audit.
-The trace artifacts stay in-memory; nothing is written except the
-baseline JSON.
+Cost: one traced battery run, roughly two to five minutes -- run this when
+you want a committed fast-path document, not per commit. The trace artifacts
+stay in-memory; nothing is written except the coverage JSON.
 """
 import io
 import json
@@ -131,6 +132,12 @@ def main():
         rel = mod.relative_to(ROOT).as_posix()
         baseline[rel] = sorted(executed.get(rel, []))
     out = HERE / "coverage_baseline.json"
+    if "--out" in sys.argv[1:]:
+        idx = sys.argv.index("--out")
+        if idx + 1 < len(sys.argv):
+            out = Path(sys.argv[idx + 1])
+            if not out.is_absolute():
+                out = ROOT / out
     old = out.read_bytes() if out.exists() else None
     ref = "HEAD"
     if "--ref" in sys.argv[1:]:
@@ -154,14 +161,15 @@ def main():
         f.write(data)
     nmods = len(baseline)
     nlines = sum(len(v) for v in baseline.values())
+    label = str(out.relative_to(ROOT)) if out.is_relative_to(ROOT) else str(out)
     if old is None:
-        print("created coverage_baseline.json:", nmods, "modules,",
+        print("coverage written:", label, nmods, "modules,",
               nlines, "executed lines,", round(dt, 1), "s traced")
     elif old == out.read_bytes():
-        print("baseline unchanged:", nmods, "modules,", nlines, "lines")
+        print("coverage unchanged:", label, nmods, "modules,", nlines, "lines")
     else:
-        print("baseline refreshed:", nmods, "modules,", nlines,
-              "lines -- commit the code change and baseline as one diff")
+        print("coverage refreshed:", label, nmods, "modules,", nlines,
+              "lines -- commit a fast-path document only if you intend it")
     return 0
 
 

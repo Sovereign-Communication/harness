@@ -997,12 +997,18 @@ def sm_lint():
     try:
         argv = list(ruff_argv(strict=True)) + ["check", "harness", "tests"]
     except HarnessError as exc:
-        return _pass(False, "ruff check harness tests: clean", str(exc))
+        # #276's explicit disposition: a missing ruff is an environment
+        # failure with a named fix, not an opaque "No module named ruff"
+        # red check on an unrelated PR. The shared resolver owns the search
+        # order (HARNESS_RUFF, PATH, then `<interpreter> -m ruff`).
+        return _pass(False, "ruff check harness tests: clean via the shared resolver",
+                     f"S5 ruff unresolved: {exc}")
     r = subprocess.run(argv, cwd=str(ROOT), capture_output=True, text=True,
                        timeout=120)
     ok = r.returncode == 0
-    return _pass(ok, "ruff check harness tests: clean",
-                 (r.stdout + r.stderr).strip()[-300:])
+    command = " ".join(argv)
+    return _pass(ok, f"ruff check harness tests: clean via shared resolver `{command}`",
+                 f"`{command}`:\n" + (r.stdout + r.stderr).strip()[-300:])
 
 
 def sm_test_mirror():
@@ -1270,10 +1276,10 @@ def sd_corpus_integrity():
 
 
 #: Is this process the CI audit? CI is where D12 has to be authoritative.
-#: Locally an unreachable baseline object can be legitimate (a shallow clone),
-#: so the same condition is reported loudly there instead of failing an
-#: interactive run -- but it is never silent, because a coverage gate that
-#: quietly stops checking is worse than one that is absent (DF-AUDIT-3).
+#: Locally an unreachable base can be legitimate (a shallow clone), so the same
+#: condition is reported loudly there instead of failing an interactive run --
+#: but it is never silent, because a coverage gate that quietly stops checking
+#: is worse than one that is absent (DF-AUDIT-3).
 _IN_CI = os.environ.get("CI", "").strip().lower() not in ("", "0", "false")
 
 
@@ -1285,19 +1291,16 @@ def _audible(msg):
 
 
 def d12_unreachable(ref, *, in_ci):
-    """Result for a baseline reference that cannot be diffed.
+    """Result for a merge-base that cannot be diffed.
 
     Pure decision, so the fail-closed rule is testable without staging a
     broken repository. A coverage gate that cannot compute a changed-line
     ratio has verified nothing, so it must not present itself as a pass:
-    in CI an absent object means the baseline is stale and the check is
-    inert, which fails closed. Locally the same condition returns a visible
-    SKIP.
+    in CI an unusable base means the measurement is inert, which fails
+    closed. Locally the same condition returns a visible SKIP.
     """
-    reason = (f"baseline commit {ref[:12]} is not reachable in this checkout, "
-              f"so D12 cannot compute a changed-line ratio (re-run "
-              f"refresh_coverage_baseline.py and commit the re-pointed "
-              f"baseline)")
+    reason = (f"merge-base {ref[:12]} cannot be diffed in this checkout, "
+              f"so D12 cannot compute a changed-line ratio")
     if in_ci:
         _audible(f"[FATAL] D12: {reason} -- failing closed")
         return 0.0, f"FAIL: {reason}"
@@ -1305,39 +1308,142 @@ def d12_unreachable(ref, *, in_ci):
     return 1.0, f"SKIP (fail-open): {reason}"
 
 
-def sd_coverage_changed():
-    """Changed harness lines must be executed by the traced suite:
-    since the coverage baseline's own commit, added lines in
-    harness/ that the traced battery never ran fail this check
-    below a 95% executed bar. The baseline is generated only by
-    refresh_coverage_baseline.py (a traced full battery run) and
-    committed with the code change it reflects. A missing or unusable
-    baseline is reported visibly -- never a silent pass -- and an
-    unreachable reference fails closed in CI."""
-    mf = HERE / "coverage_baseline.json"
-    if not mf.exists():
-        _audible("[warn] D12: coverage_baseline.json missing -- "
-                 "SKIP (fail-open); run refresh_coverage_baseline.py")
-        return 1.0, ("SKIP (fail-open): coverage_baseline.json missing -- "
-                     "run refresh_coverage_baseline.py")
-    doc = json.loads(mf.read_text(encoding="utf-8-sig"))
+def d12_no_base(reason, *, in_ci):
+    """No merge-base means no changed-line measurement (not a vacuous pass)."""
+    message = (f"D12 cannot resolve a merge-base ({reason}); changed-line "
+               f"coverage was not measured")
+    if in_ci:
+        _audible(f"[FATAL] D12: {message} -- failing closed")
+        return 0.0, f"FAIL: {message}"
+    _audible(f"[warn] D12: {message} -- SKIP (fail-open) locally")
+    return 1.0, f"SKIP (fail-open): {message}"
+
+
+def d12_coverage_unavailable(reason, *, in_ci):
+    """Current-tree coverage is required; absence is never a silent pass."""
+    message = (f"D12 cannot obtain current-tree coverage ({reason}); "
+               f"changed-line coverage was not measured")
+    if in_ci:
+        _audible(f"[FATAL] D12: {message} -- failing closed")
+        return 0.0, f"FAIL: {message}"
+    _audible(f"[warn] D12: {message} -- SKIP (fail-open) locally")
+    return 1.0, f"SKIP (fail-open): {message}"
+
+
+def _merge_base(ref):
+    """Common ancestor of ``ref`` and HEAD, or ('', why).
+
+    D12's reference has to be a commit that still exists after a squash
+    merge. A PR-branch SHA can be orphaned by that merge; the merge-base
+    with the event's base cannot.
+    """
+    try:
+        r = subprocess.run(
+            ["git", "merge-base", ref, "HEAD"], cwd=str(ROOT),
+            capture_output=True, text=True, encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return "", f"git merge-base could not run: {exc}"
+    out = (r.stdout or "").strip()
+    if r.returncode != 0 or not out:
+        why = (r.stderr or "").strip() or f"no common ancestor with {ref}"
+        return "", why
+    return out.splitlines()[-1].strip(), ""
+
+
+def d12_base_ref():
+    """Resolve the runtime merge-base; a committed baseline is not a base.
+
+    CI supplies the event's base SHA in ``HARNESS_D12_BASE`` (the base tip
+    for a PR, the previous main for a push). Local runs fall back to the
+    current checkout's ``origin/main``. The merge-base, not either tip, is
+    what a PR's changed lines are measured against.
+    """
+    explicit = os.environ.get("HARNESS_D12_BASE", "").strip()
+    if explicit and set(explicit) != {"0"}:
+        base, why = _merge_base(explicit)
+        if base:
+            return base, "HARNESS_D12_BASE"
+        return "", f"HARNESS_D12_BASE={explicit}: {why}"
+    errors = []
+    for ref in ("origin/main", "main"):
+        base, why = _merge_base(ref)
+        if base:
+            return base, ref
+        errors.append(f"{ref}: {why}")
+    return "", "; ".join(errors) or "origin/main and main are unavailable"
+
+
+def _coverage_doc(path):
+    """Read a coverage document and require the modules mapping."""
+    doc = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     # utf-8-sig: Windows editors (PowerShell Out-File, Notepad) emit a UTF-8
-    # BOM; the baseline was authored on Windows and must not fail D12 on the
-    # BOM instead of its coverage content (2026-09-21 CI failure).
-    ref = doc.get("commit", "")
-    if len(ref) != 40:
-        _audible("[warn] D12: baseline lacks a commit reference -- "
-                 "SKIP (fail-open)")
-        return 1.0, "SKIP (fail-open): baseline lacks a commit reference"
-    d = subprocess.run(
-        ["git", "diff", "--unified=0", ref, "--", "harness/"],
-        cwd=str(ROOT), capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if d.returncode != 0:
-        return d12_unreachable(ref, in_ci=_IN_CI)
+    # BOM; the coverage document was authored on Windows and must not fail
+    # D12 on the BOM instead of its coverage content (2026-09-21 CI failure).
+    modules = doc.get("modules")
+    if not isinstance(modules, dict):
+        raise ValueError("coverage document has no modules mapping")
+    return doc
+
+
+def d12_coverage_doc(base):
+    """Coverage executed by the battery for the tree being audited.
+
+    A stored baseline is only a fast path when it names this exact
+    merge-base. Otherwise the traced battery runs against the current tree
+    and writes a temporary document, so a snapshot that has moved cannot
+    invalidate a PR that was already covered when it opened.
+    """
+    explicit = os.environ.get("HARNESS_D12_BASELINE", "").strip()
+    if explicit:
+        try:
+            doc = _coverage_doc(explicit)
+        except Exception as exc:
+            return None, f"HARNESS_D12_BASELINE={explicit}: {exc}"
+        declared = str(doc.get("commit", ""))
+        if declared != base:
+            return None, (f"HARNESS_D12_BASELINE names {declared[:10] or '<none>'}, "
+                          f"not the resolved merge-base {base[:10]}")
+        return doc, f"HARNESS_D12_BASELINE={explicit}"
+
+    tracked = HERE / "coverage_baseline.json"
+    if tracked.exists():
+        try:
+            doc = _coverage_doc(tracked)
+            if doc.get("commit") == base:
+                return doc, "committed baseline at the resolved merge-base"
+        except Exception:
+            # A damaged fast-path file must not mask the real measurement.
+            pass
+
+    fd, out = tempfile.mkstemp(prefix="harness-d12-", suffix=".json")
+    os.close(fd)
+    env, _dropped = hermetic_suite_env()
+    try:
+        r = subprocess.run(
+            [sys.executable, str(HERE / "refresh_coverage_baseline.py"),
+             "--ref", base, "--out", out],
+            cwd=str(ROOT), capture_output=True, text=True, timeout=1200, env=env)
+        if r.returncode != 0:
+            tail = (r.stdout + r.stderr).strip()[-800:]
+            return None, f"traced battery exited {r.returncode}: {tail}"
+        doc = _coverage_doc(out)
+        return doc, f"traced battery at merge-base {base[:10]}"
+    except Exception as exc:
+        return None, f"traced battery failed: {type(exc).__name__}: {exc}"
+    finally:
+        shutil.rmtree(env.get("HOME", ""), ignore_errors=True)
+        try:
+            os.unlink(out)
+        except OSError:
+            pass
+
+
+def _parse_added_lines(diff_text):
+    """Parse ``git diff --unified=0`` into {path: {new line numbers}}."""
     added = {}
     rel = None
     new_ln = 0
-    for ln in (d.stdout or "").splitlines():
+    for ln in (diff_text or "").splitlines():
         if ln.startswith("+++ b/"):
             rel = ln[6:]
         elif ln.startswith("@@") and ln.count("@@") >= 2:
@@ -1350,35 +1456,48 @@ def sd_coverage_changed():
             new_ln += 1
         elif rel is not None and ln.startswith(" "):
             new_ln += 1
-    base = doc.get("modules", {})
+    return added
+
+
+def _statement_lines(source):
+    """Line numbers that emit a trace event; docstrings do not."""
+    tree = ast.parse(source)
+    stmts = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.stmt):
+            continue
+        if (isinstance(node, ast.Expr)
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)):
+            continue  # docstrings never emit trace events
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            # body[0] of a def/class whose first statement is a docstring
+            # does NOT emit a trace event (a docstring is a compile-time
+            # constant); counting it would fail every new def-with-docstring.
+            if not (node.body and isinstance(node.body[0], ast.Expr)
+                    and isinstance(node.body[0].value, ast.Constant)
+                    and isinstance(node.body[0].value.value, str)):
+                stmts.add(node.body[0].lineno)
+        else:
+            stmts.add(node.lineno)
+    return stmts
+
+
+def _coverage_ratio(root, added, modules):
+    """Count executable added lines and how many the battery executed."""
     checked = executed = 0
     gaps = {}
     for rel in sorted(added):
         try:
-            tree = ast.parse((ROOT / rel).read_text(encoding="utf-8"))
+            source = (Path(root) / rel).read_text(encoding="utf-8")
+            stmts = _statement_lines(source)
         except Exception:
+            # A changed harness file that cannot be parsed is a real gap, not
+            # a reason to quietly measure nothing.
+            checked += len(added[rel])
+            gaps[rel] = sorted(added[rel])
             continue
-        stmts = set()
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.stmt):
-                continue
-            if (isinstance(node, ast.Expr)
-                    and isinstance(node.value, ast.Constant)
-                    and isinstance(node.value.value, str)):
-                continue  # docstrings never emit trace events
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
-                                 ast.ClassDef)):
-                # body[0] of a def/class whose first statement is a
-                # docstring does NOT emit a trace event (a docstring is a
-                # compile-time constant); counting it would fail every
-                # newly added def-with-docstring forever.
-                if not (node.body and isinstance(node.body[0], ast.Expr)
-                        and isinstance(node.body[0].value, ast.Constant)
-                        and isinstance(node.body[0].value.value, str)):
-                    stmts.add(node.body[0].lineno)
-            else:
-                stmts.add(node.lineno)
-        done = set(base.get(rel, []))
+        done = set(modules.get(rel, []))
         for ln in sorted(added[rel]):
             if ln not in stmts:
                 continue
@@ -1387,13 +1506,44 @@ def sd_coverage_changed():
                 executed += 1
             else:
                 gaps.setdefault(rel, []).append(ln)
+    return checked, executed, gaps
+
+
+def sd_coverage_changed():
+    """Changed harness lines must be executed by the traced suite.
+
+    The diff is taken against the runtime merge-base, and the executed-line
+    set comes from current-tree coverage regenerated when the committed
+    baseline does not name that base. A PR therefore does not lose D12
+    standing when main moves, and no one re-points a stored snapshot by
+    hand. The 95% bar is unchanged; missing measurement fails closed in CI.
+    """
+    base, base_source = d12_base_ref()
+    if not base:
+        return d12_no_base(base_source, in_ci=_IN_CI)
+    d = subprocess.run(
+        ["git", "diff", "--unified=0", base, "--", "harness/"],
+        cwd=str(ROOT), capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if d.returncode != 0:
+        return d12_unreachable(base, in_ci=_IN_CI)
+    added = _parse_added_lines(d.stdout)
+    # A docs-only (or audit-only) change has no harness lines to measure.
+    # Return before regenerating coverage: the traced battery is the slow
+    # part, and there is nothing for it to say about an empty diff.
+    checked, _executed, _gaps = _coverage_ratio(ROOT, added, {})
     if not checked:
-        return 1.0, ("no executable harness changes since the coverage "
-                     "baseline " + ref[:10])
+        detail = (f"no executable harness changes vs merge-base {base[:10]} "
+                  f"({base_source})")
+        return _pass(True, detail, detail)
+    doc, coverage_source = d12_coverage_doc(base)
+    if doc is None:
+        return d12_coverage_unavailable(coverage_source, in_ci=_IN_CI)
+    checked, executed, gaps = _coverage_ratio(ROOT, added, doc.get("modules", {}))
     ratio = executed / checked
     ok = ratio >= 0.95
     detail = (f"changed-line coverage {executed}/{checked} = "
-              f"{ratio:.0%} (bar 95%) vs baseline {ref[:10]}")
+              f"{ratio:.0%} (bar 95%) vs merge-base {base[:10]} "
+              f"({base_source}; {coverage_source})")
     if gaps:
         items = "; ".join(
             r.split("harness/")[-1] + ":"

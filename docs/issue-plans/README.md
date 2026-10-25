@@ -32,6 +32,8 @@ The canon's #347 contract was implemented and verified directly:
 - [`347.md`](347.md) — acceptance matrix, changes and test receipts.
 - [`327.md`](327.md) — gate/route root resolution, changes and test receipts.
 - [`278.md`](278.md) — tool resolution, preflight and real-process receipts.
+- [`276.md`](276.md) — runtime merge-base D12 measurement, real-diff proof
+  and the S5 disposition.
 - [`closing-report-2026-10-25.md`](closing-report-2026-10-25.md) — landed
   receipts and the per-issue blocker/unblocker accounting for the 54 open
   issues.
