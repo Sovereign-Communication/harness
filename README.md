@@ -103,7 +103,7 @@ that and its hard guarantees:
 python -m pip install sovereign-harness
 ```
 
-The `0.5.0` release is published on
+Harness is published on
 [PyPI](https://pypi.org/project/sovereign-harness/), so that command installs
 the current release. Use a dedicated virtual environment: the distribution is
 `sovereign-harness`, but the import name is `harness`, and an unrelated

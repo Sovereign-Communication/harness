@@ -11,6 +11,17 @@ break APIs between minor versions).
 
 Nothing yet.
 
+## [0.5.1] — 2026-10-25
+
+### Fixed
+
+- **The PyPI project description no longer says the package is unpublished.**
+  The 0.5.0 sdist captured the pre-release README, which claimed the first
+  PyPI upload was pending and that `pip install sovereign-harness` returned
+  "No matching distribution found." PyPI renders a project's description from
+  the uploaded artifact, so this patch carries the corrected README. No code
+  or behavior changes.
+
 ## [0.5.0] — 2026-10-25
 
 ### Verified
