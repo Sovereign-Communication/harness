@@ -350,6 +350,40 @@ class DogfoodVerifySeamContractTests(unittest.TestCase):
             session_seam.assert_called_once()
             self.assertEqual(session_seam.call_args.args[1], 0.5)
 
+    def test_run_dogfood_defaults_max_lines_for_non_cli_faces(self):
+        """HTTP/MCP dogfood calls do not pass max_lines; the service must
+        hand the engine its documented 500-line default rather than None
+        (which crashed at `_line_count(...) > max_lines`)."""
+        from harness.claims import Claim
+        from harness.config import load_settings
+        from harness.service import run_dogfood
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "target.py")
+            with open(target, "w", encoding="utf-8") as f:
+                f.write("x = 1\n")
+            claim = Claim(claim_id="c1", kind="defect", text="x is 1",
+                          source_refs=[1])
+            verdict = {
+                "convergence": {"tally": {"claims": {"c1": {
+                    "converged": True, "verdict": "real"}}}},
+                "panel_failures": [],
+            }
+            engine = mock.Mock()
+            engine.apply_batch.return_value = {"status": "ok", "cost": 0.0}
+            with mock.patch("harness.service.apply_session",
+                            return_value=engine), \
+                 mock.patch.object(cli, "_run_claims_verify",
+                                   return_value=verdict):
+                run_dogfood(
+                    load_settings(overrides={"use_free": True}),
+                    file=target, instruction="fix", claims=[claim],
+                    source_text="x = 1\n",
+                    run_verify_fn=cli._run_claims_verify)
+
+            options = engine.apply_batch.call_args.kwargs["options"]
+            self.assertEqual(options.max_lines, 500)
+
 
 if __name__ == "__main__":
     unittest.main()

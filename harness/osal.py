@@ -120,6 +120,13 @@ def run(argv, cwd=None, timeout=None, input_text=None, env=None):
         kwargs["timeout"] = timeout
     if input_text is not None:
         kwargs["input"] = input_text
+    else:
+        # A gate must never inherit the caller's stdin. When Harness runs as
+        # an MCP stdio server that handle IS the JSON-RPC channel, so a gate
+        # that reads stdin can consume protocol bytes or block forever.
+        # ``run_tree`` already documents and enforces this; ``run`` is the
+        # path every ordinary verify gate takes.
+        kwargs["stdin"] = subprocess.DEVNULL
     if env is not None:
         kwargs["env"] = env
     try:

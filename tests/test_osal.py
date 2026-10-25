@@ -10,6 +10,7 @@ platform rather than pretending otherwise.
 """
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -56,6 +57,36 @@ class OsalRunTest(TempTree):
         chained = osal.run([sys.executable, "-c",
                             "import sys; print(sys.argv[1])", "a && rm -rf /"])
         self.assertIn("a && rm -rf /", chained.stdout)
+
+    def test_gate_never_inherits_the_callers_stdin(self):
+        """MCP's stdin is its JSON-RPC channel. A gate that reads stdin used
+        to inherit that live pipe and block until the 300s gate timeout (an
+        MCP apply_edit with a trivial gate hung exactly this way). It must
+        see EOF, not the protocol stream."""
+        out = self.path("stdin-rc.txt")
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        script = (
+            "import sys\n"
+            "from harness.osal import run\n"
+            "r = run([sys.executable, '-c', 'import sys; sys.stdin.read()'],\n"
+            "        timeout=5)\n"
+            f"open({out!r}, 'w').write(str(r.returncode))\n"
+        )
+        env = dict(os.environ)
+        env["PYTHONPATH"] = root + os.pathsep + env.get("PYTHONPATH", "")
+        proc = subprocess.Popen(
+            [sys.executable, "-c", script], stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=root)
+        try:
+            proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            self.fail("gate inherited the caller's live stdin and blocked")
+        finally:
+            proc.stdin.close()
+        with open(out, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "0", proc.stderr.read())
 
     def test_missing_executable_is_127(self):
         result = osal.run(["harness-definitely-not-a-real-binary-xyz"])

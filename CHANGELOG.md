@@ -13,6 +13,21 @@ Nothing yet.
 
 ## [0.5.0] — 2026-10-23
 
+### Fixed
+
+- **MCP gates no longer inherit the JSON-RPC stdin pipe.** `osal.run` passed
+  `stdin=None`, so every verify gate inherited the MCP server's stdin — the
+  stdio protocol channel — and blocked until the 300 s gate timeout. Gates now
+  get `subprocess.DEVNULL` when no `input_text` is supplied (the isolation
+  `run_tree` already documents); explicit input still uses the pipe.
+- **HTTP plan runs reach the composer again.** `run_plan_task` called
+  `compose_plan` with a positional goal and an unknown `settings` kwarg, so every
+  HTTP plan failed with a `TypeError`. It now passes `opts_goal`, the session
+  ledger and the options the keyword-only composer accepts.
+- **HTTP/MCP dogfood use the documented 500-line default.** Non-CLI callers do
+  not pass `max_lines`; the service forwarded `None` and the engine compared it
+  with a line count. `run_dogfood` now defaults to `MAX_FILE_LINES`.
+
 ### Added
 
 - **The assistant can propose and use a governed script (`SCR-3`).** SCR-2 made
