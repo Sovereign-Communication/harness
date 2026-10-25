@@ -11,7 +11,16 @@ break APIs between minor versions).
 
 Nothing yet.
 
-## [0.5.0] — 2026-10-23
+## [0.5.0] — 2026-10-25
+
+### Verified
+
+- **Paid default-attestation path, end to end.** A real one-node
+  `plan --execute` on the paid lane landed a semantic edit with the independent
+  verifier's `allow` (`openai/gpt-5.6-sol`), JEV `supported=0.97`, final gate
+  `add-ok`, a 13-row chain-verified ledger, and **$0.004061** total cost. The
+  same path at a $0.08 ceiling first exposed the verifier's 4096-token reserve;
+  the fix below and its re-run are the release receipt.
 
 ### Fixed
 
