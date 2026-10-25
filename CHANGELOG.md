@@ -15,6 +15,12 @@ Nothing yet.
 
 ### Fixed
 
+- **CLI `plan --execute` now gates every node.** `_plan_compose` did not pass
+  the tree root to the composer, so the CLI planned `local_gate: null` for every
+  node; on a fresh ledger the write-time trust gate refused the first write as
+  ungated and a two-node plan completed 0/2. The CLI now roots the plan at its
+  CWD, matching the HTTP and MCP faces, and each node gets the gate derived from
+  its own target.
 - **MCP gates no longer inherit the JSON-RPC stdin pipe.** `osal.run` passed
   `stdin=None`, so every verify gate inherited the MCP server's stdin — the
   stdio protocol channel — and blocked until the 300 s gate timeout. Gates now

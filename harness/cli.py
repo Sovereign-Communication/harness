@@ -1218,6 +1218,12 @@ def _plan_compose(settings, opts, gov, transport, api_key, *,
         plan_consensus=plan_consensus,
         execute=execute,
         allow_escalation=bool(getattr(opts, "allow_escalation", getattr(settings, "allow_escalation", False))),
+        # The CLI edits its CWD, so the plan must derive each node's gate
+        # against that tree. Without a root the gate rule has nothing to
+        # relativize a target against, every node planned gateless, and a
+        # fresh-ledger `plan --execute` was refused at the write-time trust
+        # gate before any node could run (HTTP/MCP already pass their root).
+        root=os.getcwd(),
         jev_policy=jev_policy,
         # The same pinned output budget the nodes will run with, so the
         # chunk policy measures each pass against the real one.
