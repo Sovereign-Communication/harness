@@ -3,8 +3,8 @@
   "source": "docs/jev-roadmap.md#issue295-implementation-plan + GitHub open issues at generation",
   "generated": "2026-10-25",
   "batch": 1,
-  "notes": "Derived execution view; the canon register remains authoritative. 58 issues were generated. Four queue items landed with merge receipts (#330 0737e62, #347 4d9fea4, #327 8c4324a, #278 4155b68); #339 76a95f6 landed as campaign evidence outside this queue. State: main 4155b687, 12/12 merge-result CI green, 54 open issues. Closing accounting: docs/issue-plans/closing-report-2026-10-25.md.",
-  "open_issue_count": 54,
+  "notes": "Derived execution view; the canon register remains authoritative. 58 issues were generated. Five queue items landed with merge receipts (#330 0737e62, #347 4d9fea4, #327 8c4324a, #278 4155b68, #276 f54f8aa); #339 76a95f6 landed as campaign evidence outside this queue. State: main f54f8aa, 12/12 merge-result CI green, 53 open issues. Post-#276 receipt: docs/issue-plans/276.md; next chain item #331.",
+  "open_issue_count": 53,
   "issues": [
     {
       "issue": 347,
@@ -78,7 +78,7 @@
         278
       ],
       "acceptance": "Merge-base D12 >=95%, no manual baseline gaming; moving main does not stale measurement; explicit S5 disposition.",
-      "status": "queued"
+      "status": "complete"
     },
     {
       "issue": 277,

@@ -6,16 +6,17 @@ authoritative order, dependencies and acceptance exits remain
 register plus the live GitHub open-issue set.
 
 **Snapshot 2026-10-25:** the queue was generated at 58 open GitHub issues,
-all mapped to a canon row. Five campaign items have landed with receipts:
+all mapped to a canon row. Six campaign items have landed with receipts:
 **#339** (efficiency evidence, `76a95f6`, outside the 58-issue queue),
 **#330** (dogfood `cancel_check`, PR #364, `0737e62`), **#347** (config/Jev
 override precedence, PR #365, `4d9fea4`), **#327** (checkout-root gate and
-route resolution, PR #366, `8c4324a`), and **#278** (one external-tool
-resolver and preflight, PR #367, `4155b68`). `main` is `4155b687` with
-12/12 merge-result CI green and **54 open issues**; their status and blockers
-are in [`queue.json`](queue.json) and the
-[closing report](closing-report-2026-10-25.md). No issue is marked complete
-until its changes are merged with green CI.
+route resolution, PR #366, `8c4324a`), **#278** (one external-tool resolver
+and preflight, PR #367, `4155b68`), and **#276** (runtime merge-base D12 and
+the S5 disposition, PR #369, `f54f8aa`). `main` is `f54f8aa` with 12/12
+merge-result CI green and **53 open issues**; their status and blockers are in
+[`queue.json`](queue.json). The [closing report](closing-report-2026-10-25.md)
+is the 54-open snapshot before #276; the current inventory is on #295. No issue
+is marked complete until its changes are merged with green CI.
 
 ## Harness planner note
 

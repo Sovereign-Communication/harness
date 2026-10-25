@@ -84,7 +84,7 @@ one merge occurs at a time. Every row inherits G0-G4 below.
 | [#347](https://github.com/Sovereign-Communication/harness/issues/347) | Config | none | Explicit disabling/clearing precedence, zero ambient dispatch, existing evaluator disabling preserved. |
 | [#327](https://github.com/Sovereign-Communication/harness/issues/327) | Gate runner | none | Repo-root resolution or explicit refusal; outside-CWD cannot pass having checked zero files. |
 | [#278](https://github.com/Sovereign-Communication/harness/issues/278) | Tool resolution | #327 | One interpreter/ruff resolver across apply/verify/dogfood/audit; python3-only works; missing tools refuse before billing. |
-| [#276](https://github.com/Sovereign-Communication/harness/issues/276) | Audit measurement | #278 | Merge-base D12 >=95%, no manual baseline gaming; moving main does not stale measurement; explicit S5 disposition. |
+| [#276](https://github.com/Sovereign-Communication/harness/issues/276) | Audit measurement | #278 | **complete** — PR #369 (`f54f8aa`); runtime merge-base D12 (real-diff 1/1, negative 0/1), S5 shared resolver + triage runbook; full suite 5,088, audit 10.00; main CI `40152417799` green. |
 | [#331](https://github.com/Sovereign-Communication/harness/issues/331) | Audit reporting | #276 | D12 SKIP remains SKIP in text/JSON and receives no passed-measurement credit. |
 | [#324](https://github.com/Sovereign-Communication/harness/issues/324) | Decision policy | none | Low advances_goal investigates, evidence clears or escalates actual risk; preserve destructive/ambiguity rules; max2 revisions. |
 | [#326](https://github.com/Sovereign-Communication/harness/issues/326) | Decision boundary | #324 | Exact0.20 lead satisfies the margin; below-margin control escalates. |
@@ -374,7 +374,15 @@ planning; the reviewed block above is unchanged (hash still `a7282ad0`).
 (#348, superseded by #350 after its stacked base was deleted on merge) and
 fixed by the re-point PR #349 (`f3cac6c`), which refreshed the baseline from a
 `main`-reachable head. Both are merged; `main`'s `audit` is green on `c11c995`.
-The durable fix remains #276.
+
+**Durable fix landed 2026-10-25 (#276, PR #369, `f54f8aa`).** D12 resolves the
+CI event's merge-base at audit time and regenerates current-tree coverage when
+the committed fast-path document does not name that base; the 95% bar is
+unchanged. Real-diff proof: `1/1 = 100%` with a `0/1 = 0%` negative control.
+S5 now names the shared ruff resolver and a missing tool is one environment
+failure; the triage runbook records that signature and the local-only
+dogfood/hourglass disposition. Full suite 5,088, audit 10.00, post-merge main
+CI `40152417799` green.
 
 That PR was green on every check except `audit`, which failed closed at D12 with
 `baseline commit 661d476474e2 is not reachable in this checkout`. The cause was
