@@ -124,6 +124,11 @@ def main():
         finally:
             harness.output.QUIET = orig_quiet
 
+    print(
+        "pre-trace harness loaded: "
+        f"{'harness' in sys.modules} ({sys.modules['harness'].__file__ if 'harness' in sys.modules else '-'})",
+        file=sys.stderr,
+    )
     print("tracing full battery (2-4 min)...", flush=True)
     tests_dir = str(ROOT / "tests")
     tr = trace.Trace(count=1, trace=0,
@@ -160,7 +165,7 @@ def main():
     source_lines, start = inspect.getsourcelines(traced_harness)
     fallback_line = start + next(
         i for i, line in enumerate(source_lines) if line.startswith("_FALLBACK_VERSION")
-    )
+    ) + 1
     init_lines = executed.get("harness/__init__.py", set())
     print(
         f"traced harness origin: {Path(traced_harness.__file__).resolve()}",
@@ -170,6 +175,11 @@ def main():
         print(
             f"ERROR: harness/__init__.py:{fallback_line} was not executed; "
             f"recorded lines: {sorted(init_lines)}",
+            file=sys.stderr,
+        )
+        print(
+            "recorded harness files: "
+            f"{[(rel, len(lines)) for rel, lines in executed.items() if rel.startswith('harness/')][:20]}",
             file=sys.stderr,
         )
         return 1
