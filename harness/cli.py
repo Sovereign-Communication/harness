@@ -465,7 +465,7 @@ def _cmd_apply(opts, settings):
     if not opts.file and not continuation:
         raise HarnessError("apply requires --file (or --continue-from <state.json>)")
 
-    engine = _session(settings)
+    engine = _session(settings, getattr(opts, "max_cost", None))
     # Multi-file batch (#12): repeated --file flags run one governed session
     # per file through the same engine/router/gate, sharing the task budget.
     files = opts.file if isinstance(opts.file, list) else ([opts.file] if opts.file else [])
@@ -487,7 +487,7 @@ def _cmd_continue(opts, settings):
     # persisted result object for CLI callers.
     continuation = validate_continuation(
         _read_json(opts.state, "--state continuation"))
-    engine = _session(settings)
+    engine = _session(settings, getattr(opts, "max_cost", None))
     result = engine.apply_batch(
         [None], task_id=opts.task_id,
         options=_batch_options(opts, continuation))

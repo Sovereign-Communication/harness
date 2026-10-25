@@ -147,6 +147,47 @@ class CliCeilingWiringTests(unittest.TestCase):
         self.assertIsNone(captured["override"])
 
 
+class ApplySessionCeilingCliTests(unittest.TestCase):
+    """apply/continue accept --max-cost and hand it to the session seam.
+
+    Before this, `apply --max-cost` was rejected by argparse while the only
+    documented way to cap a local run was the env var (dogfood had the flag,
+    apply did not) -- the same lockstep bug class the shared flag helper
+    exists to prevent."""
+
+    def _run(self, argv):
+        captured = {}
+
+        def fake_session(settings, max_cost_override=None):
+            captured["override"] = max_cost_override
+            engine = mock.Mock()
+            engine.apply_batch.return_value = {"status": "ok", "cost": 0.0}
+            return engine
+
+        with mock.patch.object(cli, "_session", side_effect=fake_session):
+            cli.main(argv)
+        return captured.get("override")
+
+    def test_apply_forwards_max_cost(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "t.py")
+            with open(target, "w", encoding="utf-8") as f:
+                f.write("x = 1\n")
+            override = self._run(["apply", "--file", target,
+                                  "--instruction", "x", "--verify", "true",
+                                  "--max-cost", "0.004"])
+        self.assertEqual(override, 0.004)
+
+    def test_apply_without_flag_passes_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "t.py")
+            with open(target, "w", encoding="utf-8") as f:
+                f.write("x = 1\n")
+            override = self._run(["apply", "--file", target,
+                                  "--instruction", "x", "--verify", "true"])
+        self.assertIsNone(override)
+
+
 class FromLedgerWiringTests(unittest.TestCase):
     """dogfood --from-ledger: curation is ledger-only (no key), the curated
     manifest persists via --claims-out, and the seeded chain reaches apply."""
@@ -274,6 +315,40 @@ class DogfoodVerifySeamContractTests(unittest.TestCase):
             self.assertEqual([p["phase"] for p in report["phases"]],
                              ["ground", "verify", "apply"])
             self.assertEqual(report["status"], "ok")
+
+    def test_run_dogfood_passes_max_cost_to_apply_session(self):
+        """The run ceiling covers the apply phase too. Before the fix the
+        apply session was assembled without the CLI's --max-cost, so a run
+        capped at $0.50 stopped at the configured $0.02 at apply."""
+        from harness.claims import Claim
+        from harness.config import load_settings
+        from harness.service import run_dogfood
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "target.py")
+            with open(target, "w", encoding="utf-8") as f:
+                f.write("x = 1\n")
+            claim = Claim(claim_id="c1", kind="defect", text="x is 1",
+                          source_refs=[1])
+            verdict = {
+                "convergence": {"tally": {"claims": {"c1": {
+                    "converged": True, "verdict": "real"}}}},
+                "panel_failures": [],
+            }
+            engine = mock.Mock()
+            engine.apply_batch.return_value = {"status": "ok", "cost": 0.0}
+            with mock.patch("harness.service.apply_session",
+                            return_value=engine) as session_seam, \
+                 mock.patch.object(cli, "_run_claims_verify",
+                                   return_value=verdict):
+                run_dogfood(
+                    load_settings(overrides={"use_free": True}),
+                    file=target, instruction="fix", claims=[claim],
+                    source_text="x = 1\n", max_cost=0.5,
+                    run_verify_fn=cli._run_claims_verify)
+
+            session_seam.assert_called_once()
+            self.assertEqual(session_seam.call_args.args[1], 0.5)
 
 
 if __name__ == "__main__":

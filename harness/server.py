@@ -713,8 +713,8 @@ def run_dogfood_task(task_id, args, cancel_check):
         max_cost=args.get("max_cost"),
         max_rounds=args.get("max_rounds") or 3,
         cancel_check=cancel_check,
-        apply_session_fn=lambda current_settings: apply_session(
-            current_settings, allowed_roots=[str(root)]))
+        apply_session_fn=lambda current_settings, max_cost_override=None: apply_session(
+            current_settings, max_cost_override, allowed_roots=[str(root)]))
 
 
 def run_plan_task(task_id, args, cancel_check):
