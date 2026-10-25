@@ -18,9 +18,12 @@ full-surface jev/dogfood sweep (PR #373, `ce3efa0`) then fixed two
 ceiling-forwarding defects in `apply` and dogfood's apply phase; its
 exit-code inventory is
 [`audits/self/dogfood/SWEEP_2026-10-25.md`](../../audits/self/dogfood/SWEEP_2026-10-25.md).
-`main` is `ce3efa0` with 12/12 merge-result CI green, a 5,094-test hermetic
-suite and **53 open issues**; their status and blockers are in
-[`queue.json`](queue.json).
+The sweep's budget gap then closed in PR #375 (`28bdaf0`): the nine bundled
+bench fixtures pin their own `task_max_cost`, bench accepts
+`--task-max-cost`, and README documents both the funded bench invocation and
+the deliberate apply refusal with its unblock flags. `main` is `28bdaf0` with
+12/12 merge-result CI green, a 5,098-test hermetic suite and **53 open
+issues**; their status and blockers are in [`queue.json`](queue.json).
 The [closing report](closing-report-2026-10-25.md) is the 54-open snapshot
 before #276; the current inventory is on #295. No issue is marked complete
 until its changes are merged with green CI.
