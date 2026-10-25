@@ -8,7 +8,7 @@ import json
 import os
 import unittest
 
-from harness.attest import (DIFF_ATTESTATION_VERSION,
+from harness.attest import (ATTEST_MAX_TOKENS, DIFF_ATTESTATION_VERSION,
                             canonical_attestation_payload,
                             compute_diff_sha256, parse_attestation,
                             require_attestation)
@@ -189,7 +189,7 @@ class AuthorizeDiffTests(unittest.TestCase):
     """The LLM second-verifier lane: every unusable answer refuses the
     write; only a parsed allow returns, bound to the exact bytes."""
 
-    def _run(self, posts, ledger=None):
+    def _run(self, posts, ledger=None, max_tokens=None):
         from harness.attest import authorize_diff
 
         fake = FakeTransport(models=[m("verifier/v1")], posts=list(posts))
@@ -197,7 +197,8 @@ class AuthorizeDiffTests(unittest.TestCase):
         record = authorize_diff(
             fake, "k", gov, ledger, task_id="t", model="verifier/v1",
             file_path="x.py", instruction="make it better",
-            current_content="old\n", new_content="new\n", round_no=2)
+            current_content="old\n", new_content="new\n", round_no=2,
+            max_tokens=max_tokens)
         return fake, gov, record
 
     def test_allow_returns_record_bound_to_exact_bytes(self):
@@ -219,6 +220,25 @@ class AuthorizeDiffTests(unittest.TestCase):
         self.assertEqual(ledger.events[0][0], "diff_attestation")
         self.assertEqual(ledger.events[0][1]["diff_sha256"],
                          compute_diff_sha256("new\n"))
+        # The verifier's own billable cost is attributed to its row, so the
+        # ledger's spend is not silent about the default-on gate.
+        self.assertEqual(ledger.events[0][1]["cost"], 0.000001)
+
+    def test_verifier_output_budget_is_bounded(self):
+        # A verdict is a tiny JSON object. The verifier must not reserve the
+        # apply model's whole-file output budget for it: doing so made the
+        # default-on gate demand more headroom than the edit it guards and
+        # refuse a funded write after the apply call had already been paid.
+        fake, _gov_, _record = self._run(
+            [comp(json.dumps({"verdict": "allow", "reason": "fine"}))],
+            max_tokens=8192)
+        self.assertEqual(fake.payloads()[0]["max_tokens"], ATTEST_MAX_TOKENS)
+
+        # A caller that pins a smaller output budget keeps it.
+        fake, _gov_, _record = self._run(
+            [comp(json.dumps({"verdict": "allow", "reason": "fine"}))],
+            max_tokens=256)
+        self.assertEqual(fake.payloads()[0]["max_tokens"], 256)
 
     def test_deny_raises_with_reason(self):
         with self.assertRaises(HarnessError) as ctx:

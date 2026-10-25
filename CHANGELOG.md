@@ -15,6 +15,19 @@ Nothing yet.
 
 ### Fixed
 
+- **Default-on diff attestation no longer reserves a whole-file output budget
+  for its verdict (#388 follow-up).** The independent verifier was called with
+  the apply request's `max_tokens`, which planned nodes leave at the 4096-token
+  whole-file default; on a frontier judge that priced the verdict at $0.085755,
+  more than an entire $0.08 plan run. A live `plan --execute` therefore paid for
+  the apply call and the JEV gate, then refused the write at the verifier
+  preflight. The verifier's own output budget is now bounded at
+  `ATTEST_MAX_TOKENS = 1024` (a smaller caller pin is still honored), and its
+  reported cost is recorded on the `diff_attestation` ledger row. The gate still
+  sees the exact resulting bytes and still fails closed on deny, unparseable
+  output, or transport failure. Re-run on the same fixture at the same $0.08
+  ceiling: 1/1, verifier `allow`, JEV `supported=0.97`, final gate `add-ok`,
+  $0.004061 total.
 - **CLI `plan --execute` now gates every node.** `_plan_compose` did not pass
   the tree root to the composer, so the CLI planned `local_gate: null` for every
   node; on a fresh ledger the write-time trust gate refused the first write as

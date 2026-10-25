@@ -149,3 +149,34 @@ The publish workflow was reviewed line by line and matches this document: one
 interpreter, one artifact of each kind, three-way version parity,
 `twine check --strict`, clean-venv wheel smoke with `pip check`, and OIDC
 trusted publishing with no stored token.
+
+## Readiness re-check — 2026-10-25
+
+Checked against `origin/main` at `45412ff` (merged PR #388) and a local build of
+the current tree.
+
+| Item | State |
+|---|---|
+| Package | `sovereign-harness`, version `0.5.0` in `pyproject.toml` and `harness.__version__` |
+| PyPI | `https://pypi.org/pypi/sovereign-harness/json` still returns **404**; no project and no published versions |
+| Git tags | `v0.4.1` is the newest local **and** remote tag; no `v0.5.0` |
+| GitHub releases | newest is `v0.4.1` (2026-09-22); no `v0.5.0` release |
+| `main` CI | run `40178792082` on `45412ff` completed **success**, all 12 jobs green (hermetic matrix, audit, package, installed package) |
+| Publish workflow | active; rehearsal run `36466908639` on `b2c87e52` (2026-09-28) completed **success** with every build/verify step green and the upload step `skipped` |
+| Repository credentials | no Actions secrets, no Actions variables, no GitHub environments; the only elevated publish capability is `id-token: write` |
+| Branch protection | **not enabled** on `main` (GitHub returns "Branch not protected"); the reviewed-PR rule is currently convention, not enforcement |
+| Build | `python -m build` produced `sovereign_harness-0.5.0.tar.gz` (1.9 MB) and `sovereign_harness-0.5.0-py3-none-any.whl` (988 KB, `py3-none-any`) |
+| Metadata | `python -m twine check --strict dist/*` **PASSED** on both artifacts |
+| Wheel | Metadata 2.4, `License-Expression: MIT`, `Requires-Python: >=3.9`, no runtime `Requires-Dist`, four extras, all five `harness/ui/*` and three `harness/data/*` files present |
+| sdist | 450 entries; no `__pycache__`/`.pyc`; operator-lane docs (`docs/jev-roadmap.md`, `docs/claude-context.md`, `docs/jev-dogfood.md`) excluded |
+| Clean-venv wheel | installs with no runtime dependencies, reports `0.5.0`, `harness`/`harness-mcp`/`driver-core --help` exit 0, `pip check` clean |
+| Paid attestation | default-attestation `plan --execute` green on the real CLI with the paid judge (`allow`), JEV `supported=0.97`, final gate `add-ok`, $0.004061; the verifier budget fix is recorded in `audits/self/dogfood/SWEEP_2026-10-25_SEAMS.md` |
+
+The only release blocker remains the owner-only trusted-publisher entry. A
+pending publisher cannot be read from the repository (PyPI exposes it only in
+the project's publishing settings), so it must be confirmed at pypi.org before
+the first tag. If it is absent, register it with the exact values in the table
+above; if it is present, `v0.5.0` is ready to tag after this tree is merged and
+`main` CI is green. Enabling protection on `main` (required PR review plus the
+CI status checks) is recommended before that tag, because the repository is
+public and no protection currently enforces it.
