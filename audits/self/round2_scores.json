@@ -38,7 +38,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.99,
+        "confidence": 0.96,
         "evaluated": true
       },
       "SD": {
@@ -47,7 +47,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.9,
+        "confidence": 0.91,
         "evaluated": true
       }
     },
@@ -224,7 +224,7 @@
         "id": "R13",
         "label": "full suite green hermetically",
         "score": 1.0,
-        "evidence": "unittest: Ran 5080 tests in 292.949s\n\nOK (env clean; empty home)"
+        "evidence": "unittest: Ran 5088 tests in 295.225s\n\nOK (env clean; empty home)"
       },
       {
         "id": "R14",
@@ -262,7 +262,7 @@
         "id": "S5",
         "label": "ruff clean",
         "score": 1.0,
-        "evidence": "ruff check harness tests: clean"
+        "evidence": "ruff check harness tests: clean via shared resolver `C:\\Python314\\python.exe -m ruff check harness tests`"
       },
       {
         "id": "S6",
@@ -324,7 +324,7 @@
         "id": "D7",
         "label": "docs reference only real modules",
         "score": 1.0,
-        "evidence": "all module references across 31 docs resolve to real files"
+        "evidence": "all module references across 32 docs resolve to real files"
       },
       {
         "id": "D8",
@@ -354,7 +354,7 @@
         "id": "D12",
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
-        "evidence": "changed harness lines are suite-executed (changed-line coverage 79/81 = 98% (bar 95%) vs baseline 8c4324af9a; untested: tools.py:39,129)"
+        "evidence": "no executable harness changes vs merge-base c3aacc0227 (origin/main)"
       }
     ]
   }

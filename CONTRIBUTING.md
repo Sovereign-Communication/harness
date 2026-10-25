@@ -355,19 +355,22 @@ git after every local run); _runs/ is untracked scratch.
 
 ## Coverage baseline
 
-The battery's reach is measured, not just counted. D12 compares harness
-lines changed since the coverage baseline's commit against
-audits/self/coverage_baseline.json (the line numbers the full battery
-executed under stdlib trace): changed executable lines that the traced
-suite never ran fail the audit below a 95% bar. Regenerate the baseline
-with the traced battery run and commit it with the code change it
-reflects:
+The battery's reach is measured, not just counted. D12 resolves the runtime
+merge-base (`HARNESS_D12_BASE` in CI, otherwise `origin/main`) and compares
+added executable `harness/` lines against current-tree coverage. A committed
+`audits/self/coverage_baseline.json` is only a fast path when its `commit` is
+exactly that merge-base; otherwise D12 runs the traced battery and uses a
+temporary document. A baseline re-point is never a manual pre-merge step.
 
-  python audits/self/refresh_coverage_baseline.py
+Missing measurement fails closed in CI and is a visible SKIP locally. The 95%
+bar is unchanged; do not lower it or hand-edit a coverage document. If you want
+to prepare a fast-path document explicitly:
 
-A traced run costs roughly a minute; do it when landing substantive
-harness changes, not per commit. Missing data is a visible SKIP, never
-a silent pass.
+  python audits/self/refresh_coverage_baseline.py \
+    --ref "$(git merge-base HEAD origin/main)" --out /tmp/coverage.json
+
+See [docs/audit-triage.md](docs/audit-triage.md) for the S5 and local-suite
+dispositions.
 
 ## Version bump
 

@@ -81,6 +81,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      # D12 measures changed lines against this event base's merge-base, not
+      # a stored baseline SHA. pull_request exposes the base tip; push exposes
+      # the previous main. An empty value falls back to origin/main locally.
+      HARNESS_D12_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
     steps:
       - uses: actions/checkout@v4
         with:
