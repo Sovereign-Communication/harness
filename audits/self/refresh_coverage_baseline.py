@@ -92,6 +92,22 @@ def main():
 
     def run_battery():
         import contextlib
+        import importlib.util
+        # Python 3.11's package importer does not emit trace events for the
+        # package __init__ it executes. Run the same source loader under the
+        # trace so import-time lines are measurable, then let normal imports
+        # resolve the submodules through the package path.
+        for name in [n for n in sys.modules if n == "harness" or n.startswith("harness.")]:
+            del sys.modules[name]
+        init = Path(root) / "harness" / "__init__.py"
+        spec = importlib.util.spec_from_file_location(
+            "harness", init, submodule_search_locations=[str(init.parent)]
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"cannot load package source: {init}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["harness"] = module
+        spec.loader.exec_module(module)
         import harness
         import harness.output
         origin = Path(harness.__file__).resolve()
@@ -124,11 +140,6 @@ def main():
         finally:
             harness.output.QUIET = orig_quiet
 
-    print(
-        "pre-trace harness loaded: "
-        f"{'harness' in sys.modules} ({sys.modules['harness'].__file__ if 'harness' in sys.modules else '-'})",
-        file=sys.stderr,
-    )
     print("tracing full battery (2-4 min)...", flush=True)
     tests_dir = str(ROOT / "tests")
     tr = trace.Trace(count=1, trace=0,
@@ -177,17 +188,6 @@ def main():
             f"recorded lines: {sorted(init_lines)}",
             file=sys.stderr,
         )
-        print(
-            "recorded harness files: "
-            f"{[(rel, len(lines)) for rel, lines in executed.items() if rel.startswith('harness/')][:20]}",
-            file=sys.stderr,
-        )
-        raw_init = sorted({
-            str(filename) for (filename, _line) in tr.results().counts
-            if str(filename).endswith("__init__.py")
-        })
-        print(f"raw __init__ keys: {raw_init[:10]}", file=sys.stderr)
-        print(f"sys.prefix={sys.prefix} tests_dir={tests_dir}", file=sys.stderr)
         return 1
 
     baseline = {}
