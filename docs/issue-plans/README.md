@@ -13,9 +13,14 @@ override precedence, PR #365, `4d9fea4`), **#327** (checkout-root gate and
 route resolution, PR #366, `8c4324a`), **#278** (one external-tool resolver
 and preflight, PR #367, `4155b68`), **#276** (runtime merge-base D12 and
 the S5 disposition, PR #369, `f54f8aa`), and **#331** (D12 SKIP has no
-passed-measurement credit, PR #371, `52f51b9`, outside the queue). `main` is
-`52f51b9` with 12/12 merge-result CI green, a 5,091-test hermetic suite and
-**53 open issues**; their status and blockers are in [`queue.json`](queue.json).
+passed-measurement credit, PR #371, `52f51b9`, outside the queue). The
+full-surface jev/dogfood sweep (PR #373, `ce3efa0`) then fixed two
+ceiling-forwarding defects in `apply` and dogfood's apply phase; its
+exit-code inventory is
+[`audits/self/dogfood/SWEEP_2026-10-25.md`](../../audits/self/dogfood/SWEEP_2026-10-25.md).
+`main` is `ce3efa0` with 12/12 merge-result CI green, a 5,094-test hermetic
+suite and **53 open issues**; their status and blockers are in
+[`queue.json`](queue.json).
 The [closing report](closing-report-2026-10-25.md) is the 54-open snapshot
 before #276; the current inventory is on #295. No issue is marked complete
 until its changes are merged with green CI.
