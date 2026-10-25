@@ -79,14 +79,17 @@ class OsalRunTest(TempTree):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=root)
         try:
             proc.wait(timeout=20)
+            stderr = proc.stderr.read()
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
             self.fail("gate inherited the caller's live stdin and blocked")
         finally:
             proc.stdin.close()
+            proc.stdout.close()
+            proc.stderr.close()
         with open(out, encoding="utf-8") as f:
-            self.assertEqual(f.read(), "0", proc.stderr.read())
+            self.assertEqual(f.read(), "0", stderr)
 
     def test_missing_executable_is_127(self):
         result = osal.run(["harness-definitely-not-a-real-binary-xyz"])
