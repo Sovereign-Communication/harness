@@ -208,11 +208,13 @@ published bytes were downloaded from PyPI and SHA-256 checked before install:
 No version bump, re-upload, audit/JEV baseline change or second paid
 attestation was involved. PyPI holds only `0.5.0`.
 
-Three non-blocking operator items remain; none affects the published release:
+Three non-blocking operator items remained at the 0.5.0 release; none affected
+the published release:
 
-1. Branch protection on `main` is still **not enabled** (GitHub reports
-   "Branch not protected"), so the reviewed-PR rule is convention rather than
-   enforcement.
+1. Branch protection on `main` was **not enabled** at 0.5.0 (GitHub reported
+   "Branch not protected"), so the reviewed-PR rule was convention rather than
+   enforcement. **Superseded 2026-10-25:** enabled; see *Main branch
+   protection* below.
 2. The hosted Proof Bench deploy needs `CF_API_TOKEN` as a repository secret.
    Without it, `.github/workflows/site.yml` validates the site and skips the
    deploy; the source page's counts are updated, but the hosted page changes
@@ -259,3 +261,46 @@ were each installed into a fresh empty virtualenv:
 
 No code, audit/JEV baseline or paid attestation changed. PyPI now holds
 `0.5.0` and `0.5.1`; the older description remains immutable.
+
+## Main branch protection — 2026-10-25
+
+`main` branch protection was enabled on 2026-10-25, after the 0.5.1 release.
+The facts below were read back from the API, not inferred:
+
+```text
+gh api repos/Sovereign-Communication/harness/branches/main/protection
+gh api repos/Sovereign-Communication/harness/branches/main
+gh api repos/Sovereign-Communication/harness/rulesets
+```
+
+| Setting | API result |
+|---|---|
+| Branch protected | `branches/main` reports `"protected": true`; `protection.enabled` is `true` |
+| Enforced for | `enforcement_level: "everyone"` |
+| Rulesets | `[]` — no repository ruleset; enforcement is classic branch protection |
+| Required status checks | 11 contexts, `strict: true` (the branch must be up to date) |
+| Required approving reviews | **none** — `required_pull_request_reviews` is `null` |
+| Admin enforcement | `enforce_admins.enabled: true` |
+| Force pushes | disallowed (`allow_force_pushes.enabled: false`) |
+| Branch deletion | disallowed (`allow_deletions.enabled: false`) |
+| Conversation resolution | not required (`required_conversation_resolution.enabled: false`) |
+
+The 11 required contexts are the blocking jobs of `.github/workflows/ci.yml`:
+
+- `Checkout hygiene`
+- `audit`
+- `hermetic suite (macos-latest, py3.11)`
+- `hermetic suite (ubuntu-22.04, py3.9)`
+- `hermetic suite (ubuntu-latest, py3.11)`
+- `hermetic suite (ubuntu-latest, py3.13)`
+- `hermetic suite (windows-latest, py3.11)`
+- `installed package (macos-latest)`
+- `installed package (ubuntu-latest)`
+- `installed package (windows-latest)`
+- `package`
+
+`handoff scope (advisory)` is the only CI check deliberately not required: it
+is an advisory scan, not a merge gate. All 11 required contexts are GitHub
+Actions checks (app id `15368`). The policy shape is therefore the requested
+conservative one: every blocking CI job must pass before merge, while an
+approving review is not required.
