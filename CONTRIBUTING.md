@@ -93,6 +93,11 @@ cli.py / mcp.py          interfaces (arg parsing, JSON-RPC; boundary
     gate_runner.py       gates as DATA (argv templates, {python} =
                          sys.executable) + the ONE shell-free run_gate +
                          the Windows-aware split_command
+    tools.py             the ONE external-tool resolver every gate uses
+                         (`harness/tools.py`): HARNESS_PYTHON then
+                         sys.executable/python/python3/py; HARNESS_RUFF then
+                         PATH ruff, then `python -m ruff` (audit S5 and the
+                         documented-gate registry included)
     filesafety.py        atomic write, out-of-tree backups, verify-gate
                          policy -- every disk/gate mutation policy (mechanics
                          delegated to osal.py)

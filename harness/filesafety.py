@@ -38,10 +38,13 @@ def default_run_verify(command, timeout=VERIFY_TIMEOUT, cwd=None):
 
 def validate_verify_command(command, require_executable=True):
     """Preflight a --verify gate WITHOUT executing it: the command must
-    tokenize and (when require_executable) its interpreter/tool must be
-    findable. Honesty, not a guarantee -- a gate that exists can still fail
-    at runtime. Engine callers pass require_executable=False so hermetic
-    library stubs stay usable; dogfood/CLI keep the PATH check."""
+    tokenize, known tools are resolved through :mod:`harness.tools`, and
+    (when require_executable) its final executable must be findable. Honesty,
+    not a guarantee -- a gate that exists can still fail at runtime. Engine
+    callers pass require_executable=False so hermetic library stubs stay
+    usable; a bare ``python`` is still resolved (and a missing interpreter or
+    explicit HARNESS_PYTHON override still refuses before any model call).
+    Dogfood/CLI keep the full PATH check."""
     return validate_gate(command, require_executable=require_executable)
 
 

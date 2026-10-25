@@ -5,9 +5,9 @@ on every operating system, with the same exit code and the same stdout shape.
 This file is that bar, expressed as tests. The expensive part of the claim --
 macOS and Linux -- is answered by the CI matrix; what this file guarantees
 everywhere is that the gate definitions are platform-independent data
-(``{python}`` resolved from ``sys.executable``), that they tokenize the same
-way regardless of which separator the reader's platform prefers, and that the
-one runner never hands a string to a shell.
+(``{python}``/``{ruff}`` resolved by ``harness.tools``), that they tokenize
+the same way regardless of which separator the reader's platform prefers, and
+that the one runner never hands a string to a shell.
 
 The ``unittest`` gate is deliberately never executed from inside the suite:
 it *is* this suite. Recursion is not evidence, so that gate is verified by
@@ -50,12 +50,17 @@ class GateRegistryTest(unittest.TestCase):
             self.assertNotIn("|", argv)
             self.assertNotIn(";", argv)
 
-    def test_python_is_resolved_from_sys_executable_on_every_platform(self):
+    def test_python_and_ruff_are_resolved_by_the_tool_layer(self):
         """The whole portability trick: no hardcoded .venv/Scripts path."""
+        from harness import tools
         for name in GATE_ORDER:
-            self.assertEqual(gate_argv(name, phase="PLAT-cmd-data")[0],
-                             sys.executable,
-                             f"gate {name} must start at the running interpreter")
+            argv = gate_argv(name, phase="PLAT-cmd-data")
+            if name == "ruff":
+                self.assertEqual(argv[0], tools.ruff_argv()[0],
+                                 "the ruff gate must use the tool resolver")
+            else:
+                self.assertEqual(argv[0], sys.executable,
+                                 f"gate {name} must start at the running interpreter")
             # The *template* is the portability claim: an interpreter path
             # (or any platform-shaped literal) baked in here is what made
             # each doc correct on exactly one OS.
@@ -63,7 +68,7 @@ class GateRegistryTest(unittest.TestCase):
             self.assertNotIn(".venv", template)
             self.assertNotIn("Scripts", template)
             self.assertNotIn("bin/python", template)
-            self.assertIn("{python}", template)
+            self.assertIn("{ruff}" if name == "ruff" else "{python}", template)
 
     def test_phase_is_a_parameter_not_a_hardcoded_id(self):
         argv = gate_argv("jev-phase", phase="HV-5")

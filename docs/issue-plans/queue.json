@@ -3,7 +3,7 @@
   "source": "docs/jev-roadmap.md#issue295-implementation-plan + GitHub open issues at generation",
   "generated": "2026-10-24",
   "batch": 1,
-  "notes": "Derived execution view; the canon register remains authoritative. #347 landed in PR #365; #327 is implemented pending CI. No issue is complete until merged with green CI.",
+  "notes": "Derived execution view; the canon register remains authoritative. #347 landed in PR #365 and #327 in PR #366; #278 is implemented pending merge-result CI. No issue is complete until merged with green CI.",
   "open_issue_count": 58,
   "issues": [
     {
@@ -101,7 +101,7 @@
         327
       ],
       "acceptance": "One interpreter/ruff resolver across apply/verify/dogfood/audit; python3-only works; missing tools refuse before billing.",
-      "status": "queued"
+      "status": "implemented-pending-ci"
     },
     {
       "issue": 279,
@@ -440,7 +440,7 @@
       "owner": "Gate runner",
       "prerequisites": [],
       "acceptance": "Repo-root resolution or explicit refusal; outside-CWD cannot pass having checked zero files.",
-      "status": "implemented-pending-ci"
+      "status": "complete"
     },
     {
       "issue": 328,

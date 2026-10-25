@@ -929,6 +929,13 @@ python -m harness.cli gates             # this platform's exact commands
 python -m harness.cli gates --run ruff  # ...or just run one
 ```
 
+External tools used by gates resolve through one owner
+(`harness/tools.py`). `HARNESS_PYTHON` overrides the interpreter; unset, it
+is `sys.executable`, then `python`, `python3` and `py` on `PATH`.
+`HARNESS_RUFF` overrides ruff; unset, a `ruff` on `PATH` is used, then the
+interpreter's installed ruff module. An explicit override that cannot be
+found fails the preflight loudly instead of silently falling back.
+
 Line endings are a platform fact, not a repository fact: everything in the
 working tree is LF (`.gitattributes`), so a Windows clone cannot launder CRLF
 into the evidence files the parity hashes cover.
