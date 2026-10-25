@@ -21,9 +21,15 @@ exit-code inventory is
 The sweep's budget gap then closed in PR #375 (`28bdaf0`): the nine bundled
 bench fixtures pin their own `task_max_cost`, bench accepts
 `--task-max-cost`, and README documents both the funded bench invocation and
-the deliberate apply refusal with its unblock flags. `main` is `28bdaf0` with
-12/12 merge-result CI green, a 5,098-test hermetic suite and **53 open
-issues**; their status and blockers are in [`queue.json`](queue.json).
+the deliberate apply refusal with its unblock flags. The seam sweep that
+followed drove the HTTP server API and the MCP stdio tool face for real and
+fixed three defects: MCP verify gates inherited the JSON-RPC stdin pipe and
+hung to the 300 s timeout, every HTTP plan failed before the composer, and
+HTTP/MCP dogfood crashed on a `None` line limit. Its evidence is
+[`audits/self/dogfood/SWEEP_2026-10-25_SEAMS.md`](../../audits/self/dogfood/SWEEP_2026-10-25_SEAMS.md).
+`main` is `92f188a` with 12/12 merge-result CI green, a 5,100-test hermetic
+suite and **53 open issues**; their status and blockers are in
+[`queue.json`](queue.json).
 The [closing report](closing-report-2026-10-25.md) is the 54-open snapshot
 before #276; the current inventory is on #295. No issue is marked complete
 until its changes are merged with green CI.

@@ -85,8 +85,14 @@ class TestPlanTaskRunner(unittest.TestCase):
         self.assertEqual(res["status"], "ok")
         self.assertEqual(res["goal"], "Build dashboard")
         mock_compose.assert_called_once()
-        self.assertEqual(mock_compose.call_args.kwargs["candidate_files"],
-                         ["sample.py"])
+        called = mock_compose.call_args.kwargs
+        self.assertEqual(called["candidate_files"], ["sample.py"])
+        # The composer is keyword-only and names the goal `opts_goal`; the
+        # HTTP face used to pass a positional goal plus an unknown `settings`
+        # kwarg, so every real plan failed with a TypeError.
+        self.assertEqual(called["opts_goal"], "Build dashboard")
+        self.assertNotIn("settings", called)
+        self.assertIsNotNone(called["ledger"])
         mock_gov.assert_called_once()
 
     @mock.patch("harness.server.run_meta", return_value={"source": "test"})

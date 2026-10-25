@@ -769,20 +769,30 @@ def run_plan_task(task_id, args, cancel_check):
         max_output_tokens=token_budget_output,
     )
 
-    jev_policy = policy_for(settings, transport=transport, governor=gov)
+    # The composer owns its ledger/award/allowance inputs; the HTTP face
+    # passed a positional goal and a settings kwarg that the keyword-only
+    # signature with ``opts_goal`` never accepted, so every HTTP plan failed
+    # with a TypeError before planning. Mirror the CLI/MCP call shape.
+    ledger = engine.ledger if execute else ledger_for(settings)
+    jev_policy = policy_for(settings, transport=transport, governor=gov,
+                            ledger=ledger)
 
     plan_result = compose_plan(
-        goal,
-        settings=settings,
         transport=transport,
         api_key=api_key,
         governor=gov,
-        task_id=task_id,
+        ledger=ledger,
+        opts_goal=goal,
         candidate_files=candidate_files,
         frontier_model=frontier_model,
+        use_free=settings.use_free,
         decompose_llm=decompose_llm,
         confirm=confirm,
         plan_consensus=plan_consensus,
+        execute=execute,
+        allow_escalation=bool(args.get("allow_escalation",
+                                       settings.allow_escalation)),
+        max_tokens=args.get("max_tokens"),
         jev_policy=jev_policy,
         root=str(root),
         cancel_check=cancel_check,

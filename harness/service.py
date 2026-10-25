@@ -25,6 +25,7 @@ from .claims import build_claims_prompt, load_claims_manifest, load_definitions_
 from .session import apply_session, governor_for, ledger_for, run_meta
 from .filesafety import validate_target_file, validate_verify_command
 from .batch import BatchOptions
+from .prompts import MAX_FILE_LINES
 
 # BOM-tolerant reader: Windows tooling (PowerShell ``>`` redirects) emits
 # BOM'd text; ONE reader for every interface (the utf-8-sig rule).
@@ -313,7 +314,7 @@ def run_dogfood(settings=None, *,
                 require_diff_authorization=None,
                 max_rotations=3,
                 backend="harness",
-                max_lines=None,
+                max_lines=MAX_FILE_LINES,
                 on_phase=None,
                 cancel_check=None,
                 run_verify_fn=None,
