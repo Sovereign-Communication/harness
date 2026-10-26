@@ -1988,11 +1988,24 @@ def _cmd_fireworks_verify(opts, settings):
         raise SystemExit(2)
 
 
+def _cmd_doctor(opts, settings):
+    """Read-only preflight with one-line remediation for each problem."""
+    from . import doctor
+
+    report = doctor.run_doctor(
+        settings, gui_port=opts.gui_port,
+        config_error=bool(getattr(opts, "doctor_config_error", False)))
+    doctor.print_report(report, json_output=opts.json)
+    if report["exit_code"]:
+        raise SystemExit(report["exit_code"])
+
+
 # Command -> handler. `required=True` subparsers make an unknown command
 # unreachable here, so the table has no default arm; every handler takes
 # (opts, settings), so a signature drift fails loudly at dispatch instead of
 # silently mis-binding arguments.
 _DISPATCH = {
+    "doctor": _cmd_doctor,
     "ask": _cmd_ask,
     "script": _cmd_script,
     "site-check": _cmd_site_check,
@@ -2080,12 +2093,27 @@ def main(argv=None):
         not getattr(opts, "no_color", False)
         and not os.environ.get("NO_COLOR"))
     try:
-        if (opts.command == "jev-vision-assessment"
+        doctor_config_error = False
+        if opts.command == "doctor":
+            try:
+                settings = load_settings()
+            except (HarnessError, OSError, ValueError):
+                # The doctor must be able to explain a missing provider key
+                # even when ordinary startup refuses the configured provider.
+                doctor_config_error = True
+                try:
+                    settings = load_settings(overrides={"use_fireworks": False})
+                except (HarnessError, OSError, ValueError):
+                    from .doctor import _minimal_settings
+                    settings = _minimal_settings()
+        elif (opts.command == "jev-vision-assessment"
                 and getattr(opts, "preflight_only", False)):
             settings = load_vision_preflight_settings(
                 max_cost_override=getattr(opts, "max_cost", None))
         else:
             settings = load_settings()
+        if opts.command == "doctor":
+            opts.doctor_config_error = doctor_config_error
         if getattr(opts, "trial_model", None):
             settings.trial_model = opts.trial_model
         _DISPATCH[opts.command](opts, settings)

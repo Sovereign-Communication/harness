@@ -112,6 +112,13 @@ def build_parser():
     sub.add_parser("desktop", help="Native desktop window over the same web UI "
                                    "(pywebview; browser fallback)")
 
+    pdoctor = sub.add_parser(
+        "doctor", help="Preflight Python, credentials, local services and ledger")
+    pdoctor.add_argument("--json", action="store_true",
+                         help="print the structured preflight report")
+    pdoctor.add_argument("--gui-port", type=int, default=8765,
+                         help="loopback GUI port to inspect (default: 8765)")
+
     psite_check = sub.add_parser(
         "site-check",
         help="Run one Jev-routed, bounded HTTPS availability check")

@@ -547,16 +547,17 @@ def _warn_insecure_keyfile(path):
                f"{oct(mode)}); restrict it with chmod 600.")
 
 
-def resolve_api_key():
-    """Resolve the OpenRouter key: env file first, then the environment.
+def resolve_api_key_with_source():
+    """Resolve the OpenRouter key and return safe source metadata.
 
     Key identity is enforced by SpendGovernor.verify_key (exact match of
     the live /key label, never echoed into errors). An earlier revision
     tried to pre-check the label here by splitting the key string itself,
     which can never yield a label -- that dead guard is gone rather than
-    left to reject every real key the day someone passes it a label.
+    left to reject every real key the day someone passes it a label. The
+    source contains only a file path or environment-variable name; callers
+    must never serialize or log the key itself.
     """
-    key = None
     for p in (
         os.path.join(os.path.expanduser("~/.config/scmorc"), "openrouter_fusion.env"),
         os.path.join(os.path.expanduser("~/.config/scmorc"), "openrouter.env"),
@@ -565,14 +566,18 @@ def resolve_api_key():
         k = _read_key_file(p)
         if k:
             _warn_insecure_keyfile(p)
-            key = k
-            break
-    if key is None:
-        key = os.environ.get("OPENROUTER_API_KEY")
-        if key:
-            eprint("[warn] using OPENROUTER_API_KEY from the process environment; "
-                   "prefer a 0600 key file for interactive use.")
-    return key
+            return k, {"kind": "file", "path": p}
+    key = os.environ.get("OPENROUTER_API_KEY")
+    if key:
+        eprint("[warn] using OPENROUTER_API_KEY from the process environment; "
+               "prefer a 0600 key file for interactive use.")
+        return key, {"kind": "environment", "name": "OPENROUTER_API_KEY"}
+    return None, None
+
+
+def resolve_api_key():
+    """Resolve the OpenRouter key using the one shared source policy."""
+    return resolve_api_key_with_source()[0]
 
 
 def resolve_jev_key():

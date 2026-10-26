@@ -50,7 +50,8 @@ class HarnessConfigPathTests(unittest.TestCase):
 
             script = r"""
 import os
-from harness.config import CONFIG_DIR, load_settings, resolve_api_key, resolve_jev_key
+from harness.config import (CONFIG_DIR, load_settings, resolve_api_key,
+                            resolve_api_key_with_source, resolve_jev_key)
 from harness.history import get_default_history_dir
 from harness.media_client import CONFIG_PATH as MEDIA_CONFIG_PATH
 from harness.perception_client import _config_path as driver_config_path
@@ -63,6 +64,9 @@ def same(path, expected):
 assert same(CONFIG_DIR, root)
 assert load_settings().use_free is False
 assert resolve_api_key() == "fixture-openrouter-key"
+key, source = resolve_api_key_with_source()
+assert key == "fixture-openrouter-key"
+assert source == {"kind": "file", "path": os.path.join(root, "openrouter.env")}
 assert resolve_jev_key() == "fixture-jev-key"
 assert same(get_default_history_dir(), os.path.join(root, "chat_history"))
 assert same(MEDIA_CONFIG_PATH, os.path.join(root, "media.json"))
