@@ -3,8 +3,8 @@
   "source": "docs/jev-roadmap.md#issue295-implementation-plan + GitHub open issues at generation",
   "generated": "2026-10-26",
   "batch": 1,
-  "notes": "Derived execution view; the canon register remains authoritative. The live inventory had 58 open issues before #287 final disposition; six tracking issues (#377-#382, opened 2026-10-25) are appended, for 64 queue rows. Seven queue rows are complete: #330 0737e62, #347 4d9fea4, #327 8c4324a, #278 4155b68, #276 f54f8aa, #333 919d2ac, and #287 receipt merge 82f9381; #339 76a95f6 and #331 52f51b9 landed outside this queue. Before final receipt PR #402, main is at 82f9381; main CI run 40291446055 passed all 13 jobs and main site run 40291446088 passed build-and-test. After PR #402 closes #287, 57 issues remain open; the queue has 7 complete and 57 open rows. #306 remains an open row with the v1 queued status, but is operator-blocked: its one-shot Fireworks probe returned HTTP 200 without the required reply, and its marker/receipt prohibit another call; the named unblocker is an operator decision on a non-repeating remedy or another already-existing valid receipt. See the gated status comment on issue #306. Receipts: docs/issue-plans/276.md, docs/issue-plans/287.md, docs/issue-plans/331.md, docs/issue-plans/333.md. The #306 receipt is linked from its issue comment until its plan/receipt PR lands. #277 remains reserved for the final cross-surface verification round under the current burndown directive.",
-  "open_issue_count": 57,
+  "notes": "Derived execution view; the canon register remains authoritative. The live inventory had 58 open issues before #287 final disposition; six tracking issues (#377-#382, opened 2026-10-25) are appended, for 64 queue rows. Seven queue rows are complete: #330 0737e62, #347 4d9fea4, #327 8c4324a, #278 4155b68, #276 f54f8aa, #333 919d2ac, and #287 receipt merge 82f9381; #339 76a95f6 and #331 52f51b9 landed outside this queue. Before final receipt PR #402, main is at 82f9381; main CI run 40291446055 passed all 13 jobs and main site run 40291446088 passed build-and-test. After PR #402 closed #287, 57 issues remained open; the queue then had 7 complete and 57 queued rows. #306 remains an open row with the v1 queued status, but is operator-blocked: its one-shot Fireworks probe returned HTTP 200 without the required reply, and its marker/receipt prohibit another call; the named unblocker is an operator decision on a non-repeating remedy or another already-existing valid receipt. See the gated status comment on issue #306. Receipts: docs/issue-plans/276.md, docs/issue-plans/287.md, docs/issue-plans/331.md, docs/issue-plans/333.md. The #306 receipt is linked from its issue comment until its plan/receipt PR lands. #277 remains reserved for the final cross-surface verification round under the current burndown directive. PR #403 then merged #279 as 707c01726d077844a69041b8a6ef3699029ac93b; PR-head CI 40313371689 and post-merge main CI 40314362212 both passed 13/13 checks, including D12 and all five hermetic suites. The queue now has 8 complete and 56 queued rows; GitHub reports 56 open issues. Receipt: docs/issue-plans/279.md.",
+  "open_issue_count": 56,
   "issues": [
     {
       "issue": 347,
@@ -112,7 +112,7 @@
         347
       ],
       "acceptance": "Tool/key-presence/DNS/driver/GUI states with remediation, no secrets; distinguish local from separately budgeted live checks.",
-      "status": "queued"
+      "status": "complete"
     },
     {
       "issue": 280,
