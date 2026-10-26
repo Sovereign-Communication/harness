@@ -7,8 +7,8 @@ register plus the live GitHub open-issue set.
 
 **Snapshot 2026-10-25:** the queue was generated at 58 open GitHub issues,
 all mapped to a canon row. Six later tracking issues (#377-#382, opened
-2026-10-25) were appended after generation, so the queue now holds 64 rows and
-all **55** live open issues are represented. Nine queue items have landed with
+2026-10-25) were appended after generation, so the queue now holds 65 rows and
+all **56** live open issues are represented. Nine queue items have landed with
 receipts: **#330** (dogfood `cancel_check`, PR #364, `0737e62`), **#347**
 (config/Jev override precedence, PR #365, `4d9fea4`), **#327** (checkout-root
 gate and route resolution, PR #366, `8c4324a`), **#278** (one external-tool
@@ -42,6 +42,12 @@ corrected install story. Main branch protection was enabled after the release:
 The [closing report](closing-report-2026-10-25.md) is the 54-open snapshot
 before #276; the current inventory is on #295. No issue is marked complete
 until its changes are merged with green CI.
+
+**2026-10-26 tracker update:** PR #406 merged the #282 bookkeeping at
+`84e646e`; the source results page is current at 56 open issues. The visibility
+issue [#407](https://github.com/Sovereign-Communication/harness/issues/407) is
+now in the queue. Its implementation is stopped pending a decision on whether
+revocation is future-only or must retract past aggregate contributions.
 
 ### Closing verification - #277 (reserved for last)
 
@@ -95,12 +101,12 @@ The canon's #347 contract was implemented and verified directly:
 - [`276.md`](276.md) — runtime merge-base D12 measurement, real-diff proof
   and the S5 disposition.
 - [`331.md`](331.md) — D12 SKIP status/accounting, text and JSON receipts, and
-- [`282.md`](282.md) — Playwright UI journeys, persistent owner recovery, and the gated merge/disposition receipt.
-  the merge record.
+- [`282.md`](282.md) — Playwright UI journeys, persistent owner recovery, the gated merge/disposition receipt, and the merge record.
+- [`407.md`](407.md) — visibility-site filing and the revocation/aggregate-only ambiguity; implementation not started.
 - [`closing-report-2026-10-25.md`](closing-report-2026-10-25.md) — landed
   receipts and the per-issue blocker/unblocker accounting for the 54 open
   issues.
-- [`queue.json`](queue.json) — all 64 queue rows with owner,
+- [`queue.json`](queue.json) — all 65 queue rows with owner,
   prerequisites, acceptance and batch status.
 
 ## Batch rules

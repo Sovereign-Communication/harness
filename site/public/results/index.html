@@ -6,7 +6,7 @@
   <title>Results — Harness issue program</title>
   <meta name="description" content="Measured Harness issue-program results: eleven landed items with merge commits, current test totals and the open-issue ledger.">
   <meta property="og:title" content="Results — Harness issue program">
-  <meta property="og:description" content="Eleven landed items, 5,159 tests and 55 open issues — receipts first, no invented metrics.">
+  <meta property="og:description" content="Eleven landed items, 5,159 tests and 56 open issues — receipts first, no invented metrics.">
   <meta property="og:type" content="website">
   <link rel="canonical" href="https://harness.pages.dev/results/">
   <link rel="stylesheet" href="../assets/site.css">
@@ -30,7 +30,7 @@
     <h1>Results: issue program, batch 1</h1>
     <p class="lede">One reviewed slice at a time. An issue counts as complete only after its changes merge with green CI; a queued row is never presented as done.</p>
 
-    <p class="small muted">Main baseline after PR #405: merge commit <code>ef21e23</code> (2026-10-26) &middot; <a href="https://github.com/Sovereign-Communication/harness/actions/runs/40351113572">main CI 40351113572</a> passed all 14 jobs; PR-head CI <a href="https://github.com/Sovereign-Communication/harness/actions/runs/40347408727">40347408727</a> passed all 14 checks. Issue #282 closed by merge; 55 live open issues remain (GitHub, 2026-10-26).</p>
+    <p class="small muted">Main baseline after PR #406: merge commit <code>84e646e</code> (2026-10-26) &middot; <a href="https://github.com/Sovereign-Communication/harness/actions/runs/40363250338">main CI 40363250338</a> passed all 14 jobs; PR-head CI run <a href="https://github.com/Sovereign-Communication/harness/actions/runs/40359477573">40359477573</a> passed all 14 jobs, and its site build passed in <a href="https://github.com/Sovereign-Communication/harness/actions/runs/40359478025">40359478025</a>. #282 closed by merge; #407 is filed; 56 live open issues remain. Site workflow 40363250314 passed but skipped deployment because <code>CF_API_TOKEN</code> is absent, so the public URL is not verified as updated.</p>
 
     <h2>Landed items</h2>
     <table>
@@ -108,7 +108,7 @@
           <td><a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/queue.json">Open issues</a></td>
           <td>queued</td>
           <td>—</td>
-          <td>55 live open issues: 64 queue rows minus nine complete queue items; #339 and #331 landed outside the queue</td>
+          <td>56 live open issues: 65 queue rows minus nine complete queue items; #339 and #331 landed outside the queue</td>
         </tr>
       </tbody>
     </table>
@@ -120,12 +120,12 @@
       <tbody>
         <tr><td>Full hermetic suite</td><td>OK</td><td>Local audit R13: 5,159 tests, `OK (env clean; empty home)`; final PR-head and post-merge CI hermetic suites passed</td></tr>
         <tr><td>Audit A / R / SM / SD</td><td>10.00 / 10.00 / 10.00 / 10.00</td><td>Committed audit receipt remains pinned; PR and post-merge main audit jobs passed</td></tr>
-        <tr><td>D12 coverage</td><td>PASS in CI</td><td>PR #405 and post-merge main CI run 40351113572 passed audit/D12 jobs; local Windows audit recorded D12 as SKIP (fail-open), documented in the #282 receipt</td></tr>
-        <tr><td>JEV gate</td><td>PROCEED</td><td>Native Jev 1.14.0 merge gate: advances_goal 0.92, disposition lead 0.62, destructive risk 0.07; the disposition-comment gate also proceeded; no actual risk found.</td></tr>
-        <tr><td>Queue ledger gate</td><td>PASS</td><td>64 of 64 rows valid; 9 complete, 55 queued rows; #306 remains open with its operator blocker documented</td></tr>
+        <tr><td>D12 coverage</td><td>PASS in CI</td><td>PR #405 and post-merge main CI runs 40351113572 and 40363250338 passed audit/D12 jobs; local Windows audit recorded D12 as SKIP (fail-open), documented in the #282 receipt</td></tr>
+        <tr><td>JEV gate</td><td>PROCEED</td><td>Native Jev 1.14.0 merge gate for PR #406: advances_goal 0.96, disposition lead 0.83, destructive risk 0.05; no actual risk found.</td></tr>
+        <tr><td>Queue ledger gate</td><td>PASS</td><td>65 of 65 rows valid; 9 complete, 56 queued rows; #306 remains operator-blocked and #407 awaits a revocation-semantics decision</td></tr>
         <tr><td>Site gate</td><td>PASS</td><td>68 tests</td></tr>
         <tr><td>Ruff</td><td>clean</td><td><code>python -m ruff check harness tests</code></td></tr>
-        <tr><td>Merge-result CI</td><td>14/14 jobs</td><td><a href="https://github.com/Sovereign-Communication/harness/actions/runs/40351113572">run 40351113572</a> on <code>ef21e23</code></td></tr>
+        <tr><td>Merge-result CI</td><td>14/14 jobs</td><td><a href="https://github.com/Sovereign-Communication/harness/actions/runs/40363250338">run 40363250338</a> on <code>84e646e</code></td></tr>
       </tbody>
     </table>
 
@@ -148,7 +148,7 @@
     <p>On a previous live task the apply seat produced a one-character fix for <strong>0.23&cent;</strong>. On the same task, the paid judge returned a post-response parse error plus a <strong>0.38&cent;</strong> protocol retry, so the run cost <strong>0.61&cent;</strong>. The number is unflattering, and it is published for that reason: the judge's retry cost more than the apply it reviewed.</p>
 
     <h2>What remains open</h2>
-    <p>The <a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/closing-report-2026-10-25.md">closing report</a> is the 54-open snapshot before #276; the current 55-issue inventory is on <a href="https://github.com/Sovereign-Communication/harness/issues/295">#295</a>, and the <a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/queue.json">execution queue</a> carries the same state as machine-readable JSON. With #276, #287, #331, #333, #279, and #282 landed, <strong>#277</strong>'s named prerequisites (#276, #331, #327, #330) are complete and #277 remains reserved for the final cross-surface verification round. <strong>#306</strong>'s one-shot receipt is documented in its <a href="https://github.com/Sovereign-Communication/harness/issues/306#issuecomment-6410804371">issue comment</a>: the confirmed model returned HTTP 200 without the required reply, so its marker prevents rerunning; the operator-owned unblocker is a non-repeating remedy or another existing valid receipt. The rest are blocked by named prerequisite issues or are ready and queued.</p>
+    <p>The <a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/closing-report-2026-10-25.md">closing report</a> is the 54-open snapshot before #276; the current 56-issue inventory is on <a href="https://github.com/Sovereign-Communication/harness/issues/295">#295</a>, and the <a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/queue.json">execution queue</a> carries the same state as machine-readable JSON. With #276, #287, #331, #333, #279, and #282 landed, <strong>#277</strong>'s named prerequisites (#276, #331, #327, #330) are complete and #277 remains reserved for the final cross-surface verification round. <strong>#306</strong>'s one-shot receipt is documented in its <a href="https://github.com/Sovereign-Communication/harness/issues/306#issuecomment-6410804371">issue comment</a>: the confirmed model returned HTTP 200 without the required reply, so its marker prevents rerunning; the operator-owned unblocker is a non-repeating remedy or another existing valid receipt. The newly filed <a href="https://github.com/Sovereign-Communication/harness/issues/407">#407 visibility-site issue</a> is queued but implementation is stopped until revocation semantics are resolved. No public deployment is claimed. The rest are blocked by named prerequisite issues or are ready and queued.</p>
     <p class="small muted">This is a static results surface. Deployment is performed only by <code>.github/workflows/site.yml</code>, and only when the <code>CF_API_TOKEN</code> repository secret is configured. A merged page is not by itself a deployed page; the workflow run is the deployment record.</p>
   </main>
 
