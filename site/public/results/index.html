@@ -30,7 +30,7 @@
     <h1>Results: issue program, batch 1</h1>
     <p class="lede">One reviewed slice at a time. An issue counts as complete only after its changes merge with green CI; a queued row is never presented as done.</p>
 
-    <p class="small muted">Last verified main baseline before this receipt-only #306 blocker update: merge commit <code>90e24aa</code> after PR #408 (2026-10-26) &middot; <a href="https://github.com/Sovereign-Communication/harness/actions/runs/40366472186">main CI 40366472186</a> passed all 14 jobs; PR-head CI <a href="https://github.com/Sovereign-Communication/harness/actions/runs/40365562053">40365562053</a> passed 15/15 checks and site build <a href="https://github.com/Sovereign-Communication/harness/actions/runs/40365562160">40365562160</a> passed. The main site workflow <a href="https://github.com/Sovereign-Communication/harness/actions/runs/40366472161">40366472161</a> passed build/tests but skipped deployment because <code>CF_API_TOKEN</code> is absent; no public update is claimed. #282 closed by merge; #407 is filed; 56 live open issues remain.</p>
+    <p class="small muted">Main baseline after PR #409: merge commit <code>baf6fe1</code> (2026-10-26) &middot; <a href="https://github.com/Sovereign-Communication/harness/actions/runs/40380776860">main CI 40380776860</a> passed all 14 jobs; PR-head CI <a href="https://github.com/Sovereign-Communication/harness/actions/runs/40379030379">40379030379</a> passed all 14 jobs. The main site workflow <a href="https://github.com/Sovereign-Communication/harness/actions/runs/40380776750">40380776750</a> passed build/tests but skipped deployment because <code>CF_API_TOKEN</code> is absent; no public update is claimed. #306 remains open and blocked; #282 closed by merge; #407 is filed; 56 live open issues remain.</p>
 
     <h2>Landed items</h2>
     <table>
@@ -121,11 +121,11 @@
         <tr><td>Full hermetic suite</td><td>OK</td><td>Local audit R13: 5,159 tests, `OK (env clean; empty home)`; final PR-head and post-merge CI hermetic suites passed</td></tr>
         <tr><td>Audit A / R / SM / SD</td><td>10.00 / 10.00 / 10.00 / 10.00</td><td>Committed audit receipt remains pinned; PR and post-merge main audit jobs passed</td></tr>
         <tr><td>D12 coverage</td><td>PASS in CI</td><td>PR #405 and post-merge main CI runs 40351113572 and 40363250338 passed audit/D12 jobs; local Windows audit recorded D12 as SKIP (fail-open), documented in the #282 receipt</td></tr>
-        <tr><td>JEV gate</td><td>PROCEED</td><td>Native Jev 1.14.0 merge gate for PR #406: advances_goal 0.96, disposition lead 0.83, destructive risk 0.05; no actual risk found.</td></tr>
+        <tr><td>JEV gate</td><td>PROCEED</td><td>Native Jev 1.14.0 merge gate for PR #409: advances_goal 0.95, disposition lead 0.89, no fallback or destructive escalation signal; merge commit <code>baf6fe1</code>.</td></tr>
         <tr><td>Queue ledger gate</td><td>PASS</td><td>65 of 65 rows valid; 9 complete, 55 queued and 1 blocked; #306 has a named one-shot blocker and #407 awaits a revocation-semantics decision</td></tr>
         <tr><td>Site gate</td><td>PASS</td><td>68 tests</td></tr>
         <tr><td>Ruff</td><td>clean</td><td><code>python -m ruff check harness tests</code></td></tr>
-        <tr><td>Merge-result CI</td><td>14/14 jobs</td><td><a href="https://github.com/Sovereign-Communication/harness/actions/runs/40366472186">run 40366472186</a> on <code>90e24aa</code></td></tr>
+        <tr><td>Merge-result CI</td><td>14/14 jobs</td><td><a href="https://github.com/Sovereign-Communication/harness/actions/runs/40380776860">run 40380776860</a> on <code>baf6fe1</code></td></tr>
       </tbody>
     </table>
 
