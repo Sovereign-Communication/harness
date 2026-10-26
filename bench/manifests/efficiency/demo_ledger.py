@@ -73,6 +73,10 @@ def build_demo_ledger(path, tasks=8):
             i % len(_TASKS)]
         task_id = f"bench/demo-{name}-{i:03d}"
         entry_model = next(m for m in models.values() if m["tier"] == entry_tier)
+        # Task-bound events require a durable offer. The demo exercises the
+        # same ledger-backed task lifecycle as production writers.
+        ledger.ensure_offered_task_id(
+            task_id, model=entry_model["id"], source="demo_generator")
         seq = [(entry_model, base_cost, passed)]
         if escalate_to and not passed:
             esc_model = models[escalate_to]
