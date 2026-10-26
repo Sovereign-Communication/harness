@@ -49,7 +49,7 @@ async function api(path, opts = {}) {
   let body = null;
   try { body = await res.json(); } catch (_e) { /* no body */ }
   if (res.status === 401) {
-    const errReason = (body && body.error) ? body.error : "missing or wrong X-Harness-Auth token";
+    const errReason = (body && body.error) ? body.error : "This browser is not connected to Harness.";
     if (typeof window !== "undefined" && typeof window.HARNESS_PROMPT_AUTH === "function") {
       const entered = await window.HARNESS_PROMPT_AUTH(errReason);
       if (entered) {

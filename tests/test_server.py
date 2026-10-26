@@ -82,10 +82,24 @@ class ServeMainTests(unittest.TestCase):
         fake_server.serve_forever.side_effect = KeyboardInterrupt
         stderr = io.StringIO()
         with (mock.patch.object(ui_server, "make_server", return_value=fake_server),
+              mock.patch.object(ui_server, "load_or_create_ui_token",
+                                return_value="owner-token"),
+              mock.patch.object(ui_server, "write_ui_handoff",
+                                return_value="gui-open.url"),
               mock.patch("sys.stderr", stderr)):
             ui_server.main(["--auth-token", "test-token"])
         self.assertIn("harness serve --open", stderr.getvalue())
+        self.assertIn("gui-open.url", stderr.getvalue())
         fake_server.serve_forever.assert_called_once()
+
+    def test_unwritable_owner_state_refuses_to_start(self):
+        with mock.patch.object(
+                ui_server, "load_or_create_ui_token",
+                side_effect=OSError("private state unavailable")):
+            with self.assertRaises(SystemExit) as exc:
+                ui_server.main([])
+        self.assertEqual(exc.exception.code, 1)
+
 
 class SecurityGuardTests(ServerHarness):
     def test_loopback_host_required(self):
@@ -124,7 +138,195 @@ class TokenAuthTests(ServerHarness):
         try:
             status, data = _request(conn, "GET", "/api/status")
             self.assertEqual(status, 401)
-            self.assertIn("X-Harness-Auth", data["error"])
+            self.assertIn("not connected", data["error"])
+        finally:
+            conn.close()
+
+
+class PairingAuthTests(ServerHarness):
+    token = "session-token"
+
+    def setUp(self):
+        self.httpd = make_server("127.0.0.1", 0, auth_token=self.token,
+                                 owner_token="persistent-owner-token")
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever,
+                                       daemon=True)
+        self.thread.start()
+        self.addCleanup(self._teardown)
+
+    def _redeem(self, code, *, origin=None, host=None):
+        conn = self._conn()
+        try:
+            actual_host = host or f"127.0.0.1:{self.port}"
+            actual_origin = origin or f"http://127.0.0.1:{self.port}"
+            return _request(
+                conn, "POST", "/api/auth/pair/redeem",
+                body={"code": code},
+                headers={"Host": actual_host, "Origin": actual_origin},
+            )
+        finally:
+            conn.close()
+
+    def test_pair_code_requires_authenticated_creation_and_is_single_use(self):
+        conn = self._conn()
+        try:
+            status, _ = _request(conn, "POST", "/api/auth/pair/create", body={})
+            self.assertEqual(status, 401)
+            status, result = _request(
+                conn, "POST", "/api/auth/pair/create", body={},
+                headers={"X-Harness-Auth": self.token},
+            )
+            self.assertEqual(status, 200)
+            self.assertRegex(result["code"], r"^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{10}$")
+            self.assertEqual(result["expires_in"], 300)
+            self.assertNotIn("token", result)
+        finally:
+            conn.close()
+
+        status, paired = self._redeem(result["code"])
+        self.assertEqual(status, 200)
+        self.assertEqual(paired["token"], "persistent-owner-token")
+        status, _ = self._redeem(result["code"])
+        self.assertEqual(status, 401)
+
+        conn = self._conn()
+        try:
+            status, _ = _request(
+                conn, "GET", "/api/status",
+                headers={"X-Harness-Auth": paired["token"]},
+            )
+            self.assertEqual(status, 200)
+        finally:
+            conn.close()
+
+    def test_pair_create_fails_closed_without_persistent_owner(self):
+        self.httpd.ui.owner_token = None
+        conn = self._conn()
+        try:
+            status, body = _request(
+                conn, "POST", "/api/auth/pair/create", body={},
+                headers={"X-Harness-Auth": self.token},
+            )
+        finally:
+            conn.close()
+        self.assertEqual(status, 503)
+        self.assertIn("persistent owner", body["error"])
+
+    def test_pair_redemption_expires_old_rate_limit_attempts(self):
+        self.httpd.ui._pair_attempts.append(time.time() - 61)
+        code, _ = self.httpd.ui.create_pairing_code()
+        state, token = self.httpd.ui.redeem_pairing_code(code)
+        self.assertEqual((state, token), ("ok", "persistent-owner-token"))
+        self.assertEqual(len(self.httpd.ui._pair_attempts), 1)
+
+    def test_pair_redemption_rejects_bad_content_type_json_and_missing_code(self):
+        origin = f"http://127.0.0.1:{self.port}"
+        host = f"127.0.0.1:{self.port}"
+
+        def raw_post(content_type, payload):
+            conn = self._conn()
+            try:
+                headers = {"Host": host, "Origin": origin,
+                           "Content-Type": content_type}
+                conn.request("POST", "/api/auth/pair/redeem",
+                             body=payload, headers=headers)
+                response = conn.getresponse()
+                response.read()
+                return response.status
+            finally:
+                conn.close()
+
+        self.assertEqual(raw_post("text/plain", b"{}"), 415)
+        self.assertEqual(raw_post("application/json", b"{"), 400)
+        self.assertEqual(raw_post("application/json", b"{}"), 400)
+
+    def test_pair_redemption_requires_content_length(self):
+        origin = f"http://127.0.0.1:{self.port}"
+        request = (
+            f"POST /api/auth/pair/redeem HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{self.port}\r\n"
+            f"Origin: {origin}\r\n"
+            "Content-Type: application/json\r\n"
+            "Connection: close\r\n\r\n"
+        ).encode("ascii")
+        with socket.create_connection(("127.0.0.1", self.port), timeout=5) as sock:
+            sock.sendall(request)
+            response = sock.makefile("rb").read()
+        self.assertIn(b"400", response.split(b"\r\n", 1)[0])
+
+    def test_persistent_owner_remains_valid_with_a_session_override(self):
+        conn = self._conn()
+        try:
+            status, _ = _request(
+                conn, "GET", "/api/status",
+                headers={"X-Harness-Auth": "persistent-owner-token"},
+            )
+            self.assertEqual(status, 200)
+            status, _ = _request(
+                conn, "GET", "/api/status",
+                headers={"X-Harness-Auth": "session-token"},
+            )
+            self.assertEqual(status, 200)
+            status, _ = _request(conn, "GET", "/api/status")
+            self.assertEqual(status, 401)
+        finally:
+            conn.close()
+
+    def test_expired_pairing_code_cannot_be_redeemed(self):
+        conn = self._conn()
+        try:
+            _, result = _request(
+                conn, "POST", "/api/auth/pair/create", body={},
+                headers={"X-Harness-Auth": self.token},
+            )
+        finally:
+            conn.close()
+        self.httpd.ui._pair_code_expires_at = time.time() - 1
+        status, _ = self._redeem(result["code"])
+        self.assertEqual(status, 401)
+
+    def test_pair_redemption_requires_exact_loopback_origin(self):
+        conn = self._conn()
+        try:
+            _, result = _request(
+                conn, "POST", "/api/auth/pair/create", body={},
+                headers={"X-Harness-Auth": self.token},
+            )
+        finally:
+            conn.close()
+        status, _ = self._redeem(
+            result["code"], origin=f"http://localhost:{self.port}")
+        self.assertEqual(status, 403)
+        status, _ = self._redeem(
+            result["code"], host="attacker.example.com",
+            origin="http://attacker.example.com")
+        self.assertEqual(status, 403)
+
+    def test_pair_redemption_caps_attempts_and_request_size(self):
+        conn = self._conn()
+        try:
+            _, result = _request(
+                conn, "POST", "/api/auth/pair/create", body={},
+                headers={"X-Harness-Auth": self.token},
+            )
+        finally:
+            conn.close()
+        for _ in range(self.httpd.ui.PAIR_ATTEMPTS_PER_MINUTE):
+            status, _ = self._redeem("wrong-code")
+            self.assertEqual(status, 401)
+        status, _ = self._redeem(result["code"])
+        self.assertEqual(status, 429)
+
+        conn = self._conn()
+        try:
+            status, _ = _request(
+                conn, "POST", "/api/auth/pair/redeem",
+                body={"code": "x" * 5000},
+                headers={"Host": f"127.0.0.1:{self.port}",
+                         "Origin": f"http://127.0.0.1:{self.port}"},
+            )
+            self.assertEqual(status, 413)
         finally:
             conn.close()
 
@@ -1243,6 +1445,28 @@ class DesktopFallbackTests(unittest.TestCase):
         self.assertEqual(mode, "browser")
         self.assertEqual(opened, ["http://127.0.0.1:1/#tok"])
 
+    def test_default_desktop_path_opens_after_recovery_is_saved(self):
+        import harness.ui as ui_mod
+
+        httpd = mock.Mock()
+        httpd.server_address = ("127.0.0.1", 4242)
+        server_thread = mock.Mock()
+        with mock.patch.object(ui_mod, "make_server", return_value=httpd), \
+                mock.patch.object(ui_mod, "load_or_create_ui_token",
+                                  return_value="owner"), \
+                mock.patch.object(ui_mod, "write_ui_handoff",
+                                  return_value="gui-open.url") as save_handoff, \
+                mock.patch.object(ui_mod.threading, "Thread",
+                                  return_value=server_thread), \
+                mock.patch.object(ui_mod, "_open_window",
+                                  return_value="webview") as open_window:
+            ui_mod.main([])
+
+        save_handoff.assert_called_once_with(
+            url="http://127.0.0.1:4242/", token="owner")
+        server_thread.start.assert_called_once()
+        open_window.assert_called_once_with("http://127.0.0.1:4242/", "owner")
+
 
 class DesktopTokenTests(unittest.TestCase):
     """``harness desktop`` token provenance: an explicit token is used as
@@ -1277,8 +1501,14 @@ class DesktopTokenTests(unittest.TestCase):
         mk, httpd, opener = self._main([])
         token = mk.call_args.kwargs["auth_token"]
         self.assertGreaterEqual(len(token), 32)
+        self.assertEqual(mk.call_args.kwargs["owner_token"], token)
         with open(self.token_file, encoding="utf-8") as f:
             self.assertEqual(f.read(), token)
+        shortcut = Path(self.cfg) / "gui-open.url"
+        self.assertIn("#" + token, shortcut.read_text(encoding="utf-8"))
+        handoff = (Path(self.cfg) / "gui-auth-handoff.txt").read_text(encoding="utf-8")
+        self.assertNotIn(token, handoff)
+        self.assertIn("do not share it", handoff)
         httpd.serve_forever.assert_called_once()
         opener.assert_called_once_with("http://127.0.0.1:4242/#" + token)
 
@@ -1297,20 +1527,48 @@ class DesktopTokenTests(unittest.TestCase):
         with open(self.token_file, encoding="utf-8") as f:
             self.assertEqual(f.read(), token)
 
-    def test_unreadable_or_unwritable_state_still_yields_a_token(self):
-        # The config dir is a regular file: it can be neither read from nor
-        # created, and neither failure may stop the desktop from starting.
+    def test_unwritable_owner_state_refuses_to_start_without_recovery(self):
+        # Without a persistent owner credential, pairing could leave the
+        # operator locked out after the browser profile is cleared.
         blocker = os.path.join(self.cfg, "blocker")
         with open(blocker, "w", encoding="utf-8") as f:
             f.write("x")
         with mock.patch("harness.config.CONFIG_DIR", blocker):
-            mk, _, _ = self._main([])
-        self.assertTrue(mk.call_args.kwargs["auth_token"])
+            with self.assertRaises(SystemExit) as exc:
+                self._main([])
+        self.assertEqual(exc.exception.code, 1)
 
-    def test_unreadable_token_file_is_regenerated(self):
+    def test_invalid_owner_path_refuses_to_start_without_recovery(self):
         os.mkdir(self.token_file)  # exists, but is a directory: read fails
-        mk, _, _ = self._main([])
-        self.assertTrue(mk.call_args.kwargs["auth_token"])
+        with self.assertRaises(SystemExit) as exc:
+            self._main([])
+        self.assertEqual(exc.exception.code, 1)
+
+    def test_failed_handoff_save_closes_server_and_refuses_to_start(self):
+        import harness.ui as ui_mod
+
+        httpd = mock.Mock()
+        httpd.server_address = ("127.0.0.1", 4242)
+        with mock.patch.object(ui_mod, "make_server", return_value=httpd), \
+                mock.patch.object(ui_mod, "load_or_create_ui_token",
+                                  return_value="owner"), \
+                mock.patch.object(ui_mod, "write_ui_handoff",
+                                  side_effect=OSError("private file unavailable")), \
+                mock.patch("sys.stderr", io.StringIO()):
+            with self.assertRaises(SystemExit) as exc:
+                ui_mod.main(["--browser"])
+        self.assertEqual(exc.exception.code, 1)
+        httpd.ui.uninstall_event_sink.assert_called_once()
+        httpd.server_close.assert_called_once()
+        httpd.serve_forever.assert_not_called()
+
+    def test_posix_private_write_surfaces_permission_hardening_failure(self):
+        with mock.patch.object(self.ui_auth.osal, "IS_POSIX", True), \
+                mock.patch.object(self.ui_auth.os, "chmod",
+                                  side_effect=OSError("permission update failed")):
+            with self.assertRaises(OSError):
+                self.ui_auth._atomic_private_write(
+                    os.path.join(self.cfg, "handoff"), "private")
 
     def test_an_existing_token_file_is_replaced_not_written_in_place(self):
         with open(self.token_file, "w", encoding="utf-8") as f:
@@ -1385,10 +1643,13 @@ class DesktopTokenTests(unittest.TestCase):
         self.assertEqual(mk.call_args.kwargs["auth_token"], "persisted-token")
         self.assertEqual(os.stat(self.token_file).st_mode & 0o777, 0o600)
 
-    def test_explicit_token_writes_nothing(self):
+    def test_explicit_session_token_keeps_persistent_owner_recovery(self):
         mk, _, _ = self._main(["--auth-token", "chosen"])
         self.assertEqual(mk.call_args.kwargs["auth_token"], "chosen")
-        self.assertFalse(os.path.exists(self.token_file))
+        with open(self.token_file, encoding="utf-8") as f:
+            owner_token = f.read()
+        self.assertNotEqual(owner_token, "chosen")
+        self.assertEqual(mk.call_args.kwargs["owner_token"], owner_token)
 
     def test_environment_token_is_used_as_given(self):
         mk, _, _ = self._main([], HARNESS_UI_AUTH_TOKEN="from-env")
@@ -1427,14 +1688,16 @@ class DesktopTokenTests(unittest.TestCase):
 
 class UiAuthClientTests(unittest.TestCase):
 
-    def test_auth_dialog_explains_desktop_and_serve_token_sources(self):
-        html = Path("harness/ui/index.html").read_text(encoding="utf-8")
-        self.assertIn("harness desktop", html)
-        self.assertIn("authenticates the window it opens automatically", html)
-        self.assertIn("HARNESS_UI_AUTH_TOKEN", html)
-        self.assertIn("--auth-token &lt;token&gt; --open", html)
+    def test_auth_dialog_uses_pairing_and_hides_bearer_token_entry(self):
+        html = Path("harness/ui/index.html").read_text(encoding="utf-8").lower()
+        self.assertIn("one-time pairing code", html)
+        self.assertIn("create pairing code", html)
+        self.assertIn("server token stays private", html)
+        self.assertNotIn("auth-token-input", html)
+        self.assertNotIn("enter x-harness-auth token", html)
+        self.assertNotIn("harNESS_UI_AUTH_TOKEN".lower(), html)
 
-    def test_auth_dialog_keeps_bad_token_open_and_accepts_valid_token(self):
+    def test_pairing_connects_and_persists_without_showing_the_token(self):
         import shutil
         import subprocess
 
@@ -1450,15 +1713,24 @@ const vm = require("node:vm");
 const elements = new Map();
 for (const [id, value] of Object.entries({
   "auth-modal": { hidden: true },
-  "auth-error-msg": { textContent: "" },
-  "auth-token-input": { value: "", focus() {} },
-  "auth-feedback": { hidden: true, textContent: "" },
-  "btn-save-token": { disabled: false },
+  "auth-title": { textContent: "" },
+  "auth-desc": { textContent: "" },
+  "auth-connect-help": { hidden: false },
+  "auth-connect-panel": { hidden: false },
+  "auth-pair-panel": { hidden: true },
+  "auth-pair-input": { value: "", focus() {} },
+  "auth-feedback": { hidden: true, textContent: "", style: {} },
+  "btn-connect-pair": { disabled: false },
   "btn-cancel-token": {},
+  "btn-auth-toggle": { title: "" },
+  "auth-text": { textContent: "" },
+  "auth-icon": { textContent: "" },
+  "auth-pair-code": { textContent: "" },
+  "btn-copy-pair": { hidden: true },
+  "btn-create-pair": { disabled: false },
 })) elements.set(id, value);
 const storage = new Map();
 const calls = [];
-let resolveSlowCheck;
 const context = vm.createContext({
   window: {},
   document: { getElementById(id) { return elements.get(id) || null; } },
@@ -1467,49 +1739,40 @@ const context = vm.createContext({
     setItem(key, value) { storage.set(key, String(value)); },
     removeItem(key) { storage.delete(key); },
   },
-  fetch: async (url, opts) => {
-    calls.push({ url, headers: opts.headers });
-    if (opts.headers["X-Harness-Auth"] === "slow-token") {
-      return new Promise(resolve => { resolveSlowCheck = resolve; });
-    }
-    const status = opts.headers["X-Harness-Auth"] === "valid-token" ? 200 : 401;
-    return { status, ok: status === 200 };
+  fetch: async (url, options) => {
+    calls.push({ url, options });
+    return { status: 200, ok: true, json: async () => ({ token: "persistent-owner-token" }) };
   },
 });
 vm.runInContext(process.env.HARNESS_AUTH_CLIENT +
   "\nfunction pollRoute() {} function pollSpend() {} function refreshSessionList() {}",
   context);
-const modal = elements.get("auth-modal");
-const input = elements.get("auth-token-input");
-const feedback = elements.get("auth-feedback");
-const save = elements.get("btn-save-token");
-const cancel = elements.get("btn-cancel-token");
-const abandonedPrompt = context.window.HARNESS_PROMPT_AUTH("missing or wrong X-Harness-Auth token");
-input.value = "slow-token";
-const staleValidation = save.onclick();
-assert.equal(save.disabled, true);
-cancel.onclick();
-assert.equal(await abandonedPrompt, null);
-const prompt = context.window.HARNESS_PROMPT_AUTH("missing or wrong X-Harness-Auth token");
-assert.equal(save.disabled, false);
-resolveSlowCheck({ status: 401, ok: false });
-await staleValidation;
-assert.equal(modal.hidden, false);
-assert.equal(feedback.textContent, "");
-input.value = "wrong-token";
-await save.onclick();
-assert.equal(modal.hidden, false);
-assert.match(feedback.textContent, /not accepted/);
-assert.equal(storage.has("harness_ui_auth_token"), false);
-input.value = "valid-token";
-await save.onclick();
-assert.equal(await prompt, "valid-token");
-assert.equal(modal.hidden, true);
-assert.equal(storage.get("harness_ui_auth_token"), "valid-token");
-assert.deepEqual(calls.map(call => call.url),
-  ["/api/status", "/api/status", "/api/status"]);
-assert.deepEqual(calls.map(call => call.headers["X-Harness-Auth"]),
-  ["slow-token", "wrong-token", "valid-token"]);
+const prompt = context.window.HARNESS_PROMPT_AUTH("This browser is not connected to Harness");
+assert.equal(elements.get("auth-modal").hidden, false);
+assert.equal(elements.get("auth-connect-panel").hidden, false);
+elements.get("auth-pair-input").value = "ABCDE-FG234";
+await elements.get("btn-connect-pair").onclick();
+assert.equal(await prompt, "persistent-owner-token");
+assert.equal(storage.get("harness_ui_auth_token"), "persistent-owner-token");
+assert.equal(elements.get("auth-modal").hidden, true);
+assert.equal(calls[0].url, "/api/auth/pair/redeem");
+assert.equal(calls[0].options.headers["X-Harness-Auth"], undefined);
+assert.equal(JSON.parse(calls[0].options.body).code, "ABCDEFG234");
+assert.equal(elements.get("auth-pair-code").textContent.includes("persistent-owner-token"), false);
+
+const reloaded = vm.createContext({
+  window: {},
+  document: { getElementById(id) { return elements.get(id) || null; } },
+  location: { hash: "", pathname: "/", search: "" },
+  history: { state: null, replaceState() {} },
+  localStorage: {
+    getItem(key) { return storage.get(key) ?? null; },
+    setItem(key, value) { storage.set(key, String(value)); },
+    removeItem(key) { storage.delete(key); },
+  },
+});
+vm.runInContext(process.env.HARNESS_AUTH_CLIENT, reloaded);
+assert.equal(reloaded.window.HARNESS_GET_TOKEN(), "persistent-owner-token");
 })().catch(error => { console.error(error); process.exitCode = 1; });
 '''
         env = dict(os.environ, HARNESS_AUTH_CLIENT=client)
@@ -1517,7 +1780,7 @@ assert.deepEqual(calls.map(call => call.headers["X-Harness-Auth"]),
                                 text=True, env=env, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_manual_auth_keeps_token_in_memory_when_browser_storage_is_blocked(self):
+    def test_pairing_remains_usable_when_browser_storage_is_blocked(self):
         import shutil
         import subprocess
 
@@ -1533,13 +1796,19 @@ const vm = require("node:vm");
 const elements = new Map();
 for (const [id, value] of Object.entries({
   "auth-modal": { hidden: true },
-  "auth-error-msg": { textContent: "" },
-  "auth-token-input": { value: "", focus() {} },
-  "auth-feedback": { hidden: true, textContent: "" },
-  "btn-save-token": { disabled: false },
+  "auth-title": { textContent: "" },
+  "auth-desc": { textContent: "" },
+  "auth-connect-help": { hidden: false },
+  "auth-connect-panel": { hidden: false },
+  "auth-pair-panel": { hidden: true },
+  "auth-pair-input": { value: "", focus() {} },
+  "auth-feedback": { hidden: true, textContent: "", style: {} },
+  "btn-connect-pair": { disabled: false },
   "btn-cancel-token": {},
+  "btn-auth-toggle": { title: "" },
+  "auth-text": { textContent: "" },
+  "auth-icon": { textContent: "" },
 })) elements.set(id, value);
-const calls = [];
 const context = vm.createContext({
   window: {},
   document: { getElementById(id) { return elements.get(id) || null; } },
@@ -1548,28 +1817,26 @@ const context = vm.createContext({
     setItem() { throw new Error("storage disabled"); },
     removeItem() { throw new Error("storage disabled"); },
   },
-  fetch: async (url, opts) => {
-    calls.push({ url, headers: opts.headers });
-    return { status: 200, ok: true, statusText: "OK", json: async () => ({ status: "ok" }) };
-  },
+  fetch: async () => ({
+    status: 200, ok: true,
+    json: async () => ({ token: "memory-only-owner-token" }),
+  }),
 });
 vm.runInContext(process.env.HARNESS_AUTH_CLIENT +
   "\nfunction pollRoute() {} function pollSpend() {} function refreshSessionList() {}",
   context);
-const prompt = context.window.HARNESS_PROMPT_AUTH("missing or wrong X-Harness-Auth token");
-elements.get("auth-token-input").value = "valid-token";
-await elements.get("btn-save-token").onclick();
-assert.equal(await prompt, "valid-token");
-await vm.runInContext("api('/api/status')", context);
-assert.deepEqual(calls.map(call => call.headers["X-Harness-Auth"]),
-  ["valid-token", "valid-token"]);
+const prompt = context.window.HARNESS_PROMPT_AUTH("not connected");
+elements.get("auth-pair-input").value = "ABCDE-FG234";
+await elements.get("btn-connect-pair").onclick();
+assert.equal(await prompt, "memory-only-owner-token");
+assert.equal(context.window.HARNESS_GET_TOKEN(), "memory-only-owner-token");
+assert.equal(elements.get("auth-text").textContent, "Tab only");
 })().catch(error => { console.error(error); process.exitCode = 1; });
 '''
         env = dict(os.environ, HARNESS_AUTH_CLIENT=client)
         result = subprocess.run([node, "-e", script], capture_output=True,
                                 text=True, env=env, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)
-
 
 class ChatEndpointTests(ServerHarness):
     def test_chat_post_and_history(self):

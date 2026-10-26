@@ -117,6 +117,46 @@ class D12MergeBaseTests(unittest.TestCase):
             import shutil
             shutil.rmtree(root, ignore_errors=True)
 
+    def test_frontend_ratio_uses_browser_lines_and_excludes_markup(self):
+        root = Path(tempfile.mkdtemp(prefix="d12-frontend-ratio-"))
+        try:
+            added = {
+                "harness/ui/app.js": {2, 3},
+                "harness/ui/panes.css": {5},
+                "harness/ui/index.html": {10},
+            }
+            executed = {
+                "harness/ui/app.js": [2],
+                "harness/ui/panes.css": [5],
+            }
+            executable = {
+                "harness/ui/app.js": [2, 3],
+                "harness/ui/panes.css": [5],
+            }
+            checked, covered, gaps = self.audit._coverage_ratio(
+                root, added, executed, executable)
+            self.assertEqual((checked, covered), (3, 2))
+            self.assertEqual(gaps, {"harness/ui/app.js": [3]})
+        finally:
+            import shutil
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_frontend_coverage_sidecar_merges_with_python_trace(self):
+        with tempfile.TemporaryDirectory(prefix="d12-ui-sidecar-") as tmp:
+            path = Path(tmp) / "ui-coverage.json"
+            path.write_text(json.dumps({
+                "schema": 1,
+                "executable_lines": {"harness/ui/app.js": [12, 13]},
+                "modules": {"harness/ui/app.js": [12]},
+            }), encoding="utf-8")
+            original = {"commit": "base", "modules": {"harness/server.py": [4]}}
+            with mock.patch.dict(os.environ, {"HARNESS_D12_UI_COVERAGE": str(path)}):
+                merged, source = self.audit._merge_ui_coverage(original, "trace")
+            self.assertEqual(merged["modules"]["harness/server.py"], [4])
+            self.assertEqual(merged["modules"]["harness/ui/app.js"], [12])
+            self.assertEqual(merged["executable_lines"]["harness/ui/app.js"], [12, 13])
+            self.assertIn("Playwright UI coverage", source)
+
     def test_base_is_the_merge_base_of_the_event_ref(self):
         repo = _TempRepo()
         try:

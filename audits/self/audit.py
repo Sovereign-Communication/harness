@@ -1409,6 +1409,40 @@ def _coverage_doc(path):
     return doc
 
 
+def _merge_ui_coverage(doc, source):
+    """Merge real Playwright line evidence into the traced Python coverage."""
+    path = os.environ.get("HARNESS_D12_UI_COVERAGE", "").strip()
+    if not path:
+        return doc, source
+    try:
+        ui_doc = _coverage_doc(path)
+        executable = ui_doc.get("executable_lines")
+        ui_modules = ui_doc.get("modules")
+        if ui_doc.get("schema") != 1:
+            raise ValueError("unsupported UI coverage schema")
+        if not isinstance(executable, dict) or not isinstance(ui_modules, dict):
+            raise ValueError("UI coverage document needs executable_lines and modules maps")
+        merged = dict(doc)
+        modules = dict(doc["modules"])
+        for rel, lines in ui_modules.items():
+            if not isinstance(rel, str) or not isinstance(lines, list):
+                raise ValueError("UI coverage modules must map paths to line lists")
+            modules[rel] = sorted(set(modules.get(rel, [])) | {
+                n for n in lines if isinstance(n, int) and not isinstance(n, bool) and n > 0
+            })
+        for rel, lines in executable.items():
+            if not isinstance(rel, str) or not isinstance(lines, list):
+                raise ValueError("UI executable lines must map paths to line lists")
+            if any(not isinstance(n, int) or isinstance(n, bool) or n < 1
+                   for n in lines):
+                raise ValueError(f"UI executable lines for {rel} are invalid")
+        merged["modules"] = modules
+        merged["executable_lines"] = executable
+        return merged, f"{source}; Playwright UI coverage at {path}"
+    except Exception as exc:
+        return None, f"{source}; UI coverage unavailable: {type(exc).__name__}: {exc}"
+
+
 def d12_coverage_doc(base):
     """Coverage executed by the battery for the tree being audited.
 
@@ -1427,14 +1461,15 @@ def d12_coverage_doc(base):
         if declared != base:
             return None, (f"HARNESS_D12_BASELINE names {declared[:10] or '<none>'}, "
                           f"not the resolved merge-base {base[:10]}")
-        return doc, f"HARNESS_D12_BASELINE={explicit}"
+        return _merge_ui_coverage(doc, f"HARNESS_D12_BASELINE={explicit}")
 
     tracked = HERE / "coverage_baseline.json"
     if tracked.exists():
         try:
             doc = _coverage_doc(tracked)
             if doc.get("commit") == base:
-                return doc, "committed baseline at the resolved merge-base"
+                return _merge_ui_coverage(
+                    doc, "committed baseline at the resolved merge-base")
         except Exception:
             # A damaged fast-path file must not mask the real measurement.
             pass
@@ -1451,7 +1486,7 @@ def d12_coverage_doc(base):
             tail = (r.stdout + r.stderr).strip()[-800:]
             return None, f"traced battery exited {r.returncode}: {tail}"
         doc = _coverage_doc(out)
-        return doc, f"traced battery at merge-base {base[:10]}"
+        return _merge_ui_coverage(doc, f"traced battery at merge-base {base[:10]}")
     except Exception as exc:
         return None, f"traced battery failed: {type(exc).__name__}: {exc}"
     finally:
@@ -1507,20 +1542,36 @@ def _statement_lines(source):
     return stmts
 
 
-def _coverage_ratio(root, added, modules):
-    """Count executable added lines and how many the battery executed."""
+def _coverage_ratio(root, added, modules, frontend_executable=None):
+    """Count executable added lines and how many the suite executed.
+
+    Python statements come from the traced unittest battery. JavaScript and
+    CSS statement/rule lines come from the real Playwright browser run. HTML
+    markup is parsed by the served-page journey, but is not executable source.
+    """
     checked = executed = 0
     gaps = {}
+    frontend_executable = frontend_executable or {}
     for rel in sorted(added):
-        try:
-            source = (Path(root) / rel).read_text(encoding="utf-8")
-            stmts = _statement_lines(source)
-        except Exception:
-            # A changed harness file that cannot be parsed is a real gap, not
-            # a reason to quietly measure nothing.
-            checked += len(added[rel])
-            gaps[rel] = sorted(added[rel])
+        suffix = Path(rel).suffix.lower()
+        if suffix in (".html", ".htm"):
             continue
+        if suffix in (".js", ".css"):
+            if rel not in frontend_executable:
+                checked += len(added[rel])
+                gaps[rel] = sorted(added[rel])
+                continue
+            stmts = set(frontend_executable[rel])
+        else:
+            try:
+                source = (Path(root) / rel).read_text(encoding="utf-8")
+                stmts = _statement_lines(source)
+            except Exception:
+                # A changed Python/unknown source file that cannot be parsed
+                # is a real gap, not a reason to quietly measure nothing.
+                checked += len(added[rel])
+                gaps[rel] = sorted(added[rel])
+                continue
         done = set(modules.get(rel, []))
         for ln in sorted(added[rel]):
             if ln not in stmts:
@@ -1562,7 +1613,8 @@ def sd_coverage_changed():
     doc, coverage_source = d12_coverage_doc(base)
     if doc is None:
         return d12_coverage_unavailable(coverage_source, in_ci=_IN_CI)
-    checked, executed, gaps = _coverage_ratio(ROOT, added, doc.get("modules", {}))
+    checked, executed, gaps = _coverage_ratio(
+        ROOT, added, doc.get("modules", {}), doc.get("executable_lines", {}))
     ratio = executed / checked
     ok = ratio >= 0.95
     detail = (f"changed-line coverage {executed}/{checked} = "

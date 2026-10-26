@@ -19,7 +19,7 @@ import threading
 
 from . import osal
 from .server import make_server
-from .ui_auth import load_or_create_ui_token
+from .ui_auth import load_or_create_ui_token, write_ui_handoff
 
 
 def _open_window(url, token):
@@ -43,20 +43,35 @@ def main(argv=None):
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8766)
     ap.add_argument("--auth-token", default=None,
-                    help="UI auth token (default: generated per session)")
+                    help="extra session token; persistent owner recovery stays valid")
     ap.add_argument("--browser", action="store_true",
                     help="skip the pywebview window and open the browser")
     opts = ap.parse_args(argv)
     if opts.host not in ("127.0.0.1", "localhost", "::1"):
         print("[FATAL] loopback bind only", file=sys.stderr)
         sys.exit(1)
-    token = opts.auth_token or os.environ.get("HARNESS_UI_AUTH_TOKEN")
-    if not token:
-        token = load_or_create_ui_token()
-    httpd = make_server(opts.host, opts.port, auth_token=token)
+    try:
+        owner_token = load_or_create_ui_token()
+    except OSError as exc:
+        print("[FATAL] Cannot persist the Harness owner credential; refusing "
+              f"to start so recovery remains possible: {exc}", file=sys.stderr)
+        sys.exit(1)
+    token = opts.auth_token or os.environ.get("HARNESS_UI_AUTH_TOKEN") or owner_token
+    httpd = make_server(opts.host, opts.port, auth_token=token,
+                        owner_token=owner_token)
     host, port = httpd.server_address[:2]
     url = f"http://{host}:{port}/"
+    try:
+        shortcut = write_ui_handoff(url=url, token=owner_token)
+    except OSError as exc:
+        httpd.ui.uninstall_event_sink()
+        httpd.server_close()
+        print("[FATAL] Cannot save the user recovery shortcut; refusing to "
+              f"start without it: {exc}", file=sys.stderr)
+        sys.exit(1)
     print(f"[OK] harness desktop at {url} (token-protected)", file=sys.stderr)
+    print(f"[OK] user recovery shortcut saved at {shortcut}",
+          file=sys.stderr)
 
     # The server must be serving before the window opens.
     t = threading.Thread(target=httpd.serve_forever,
@@ -64,9 +79,9 @@ def main(argv=None):
     t.start()
     mode = "browser" if opts.browser else None
     if mode is None:
-        mode = _open_window(url, token)
+        mode = _open_window(url, owner_token)
     else:
-        osal.open_url(url + "#" + token)
+        osal.open_url(url + "#" + owner_token)
     if mode == "browser":
         # No pywebview: keep the server in the foreground so the process
         # has a lifecycle (Ctrl-C stops it).
