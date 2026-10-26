@@ -13,6 +13,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Change scope
+    runs-on: ubuntu-latest
+    outputs:
+      run_hermetic: ${{ steps.filter.outputs.run_hermetic }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          run_hermetic=true
+          if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]] && \
+             [[ -n "$BASE_SHA" && ! "$BASE_SHA" =~ ^0+$ ]] && \
+             git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            changed_files="$(git diff --name-only "$BASE_SHA" "$GITHUB_SHA" || true)"
+            if [[ -n "$changed_files" ]]; then
+              run_hermetic=false
+              while IFS= read -r file; do
+                case "$file" in
+                  docs/*|site/*|*.md) ;;
+                  *) run_hermetic=true; break ;;
+                esac
+              done <<< "$changed_files"
+            fi
+          fi
+          echo "run_hermetic=$run_hermetic" >> "$GITHUB_OUTPUT"
+          echo "Hermetic matrix required: $run_hermetic" >> "$GITHUB_STEP_SUMMARY"
+
   # PLAT-parity-tests: line-ending hygiene is a property of the CHECKOUT, so
   # it is checked on a fresh one, before anything else runs. A .gitattributes
   # rule that makes files look modified is invisible to the rest of CI and
@@ -45,6 +76,12 @@ jobs:
   # code paths (8.3 short names, case-insensitive roots, the UI bind).
   test:
     name: hermetic suite (${{ matrix.os }}, py${{ matrix.python-version }})
+    needs: changes
+    # Keep the required workflow alive for docs-only PRs: skip just this job,
+    # never the whole workflow. If path detection fails, run the matrix.
+    if: >-
+      always() && (needs.changes.result != 'success' ||
+        needs.changes.outputs.run_hermetic != 'false')
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
