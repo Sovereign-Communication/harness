@@ -75,6 +75,10 @@ class ProvisionCliTaskLedgerTests(unittest.TestCase):
     def _plan_file(self, directory):
         from harness import provision as pv
 
+        # The provisioning path grammar intentionally rejects Windows 8.3
+        # aliases. GitHub's Windows runner exposes its temp directory as
+        # RUNNER~1, so pass the canonical path to the real CLI invocation.
+        directory = os.path.realpath(directory)
         root = os.path.join(directory, "approved")
         os.makedirs(root)
         target = os.path.join(root, "created-by-approved-step")
@@ -94,6 +98,7 @@ class ProvisionCliTaskLedgerTests(unittest.TestCase):
         from harness import provision as pv
         from harness.lifecycle import LifecycleCoordinator
 
+        directory = os.path.realpath(directory)
         probe = pv.HostProbe(
             os_name="Windows", arch="x86_64", python_version="3.14",
             python_executable=os.sys.executable, gpu_present=False, gpus=(),
