@@ -78,10 +78,13 @@ browser path only), the installed MCP runtime identity still needs a real
 client check, and no live model/Jev semantic approvals have been demonstrated.
 
 The **#333** ledger-backed task-ID decision landed in PR #398 (`919d2ac`).
-**#306** remains operator-gated: the one-shot Fireworks probe returned HTTP 200
-without the required reply, and its marker prohibits another call; the named
-unblocker is an operator decision on a non-repeating remedy or another
-already-existing valid receipt. Neither is a #277 prerequisite.
+**#306** is explicitly blocked: the key is installed and the harness resolves
+it (presence-only checks); the one-shot Fireworks probe returned HTTP 200
+without the required reply, and its marker prohibits another call. Its local
+receipt is now recorded in [`306.md`](306.md) and
+`audits/self/dogfood/FIREWORKS_VERIFY_RECEIPT.json`. The named unblocker is an
+operator decision on a non-repeating remedy or another already-existing valid
+receipt. Neither is a #277 prerequisite.
 
 ## Harness planner note
 
@@ -102,12 +105,13 @@ The canon's #347 contract was implemented and verified directly:
   and the S5 disposition.
 - [`331.md`](331.md) — D12 SKIP status/accounting, text and JSON receipts, and
 - [`282.md`](282.md) — Playwright UI journeys, persistent owner recovery, the gated merge/disposition receipt, and the merge record.
+- [`306.md`](306.md) — presence-only key check, the existing one-shot receipt, failed EV-8 gate and named unblocker; no key material.
 - [`407.md`](407.md) — visibility-site filing and the revocation/aggregate-only ambiguity; implementation not started.
 - [`closing-report-2026-10-25.md`](closing-report-2026-10-25.md) — landed
   receipts and the per-issue blocker/unblocker accounting for the 54 open
   issues.
 - [`queue.json`](queue.json) — all 65 queue rows with owner,
-  prerequisites, acceptance and batch status.
+  prerequisites, acceptance, batch status and explicit blocker state.
 
 ## Batch rules
 

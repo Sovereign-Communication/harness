@@ -1,0 +1,10 @@
+{
+  "status": 200,
+  "contains_ok": false,
+  "prompt_tokens": 23,
+  "completion_tokens": 8,
+  "estimated_cost": 2.75e-06,
+  "cost_estimated": true,
+  "model": "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b",
+  "offer_model": "Nemotron Lightning 3.5 30B A3B"
+}
