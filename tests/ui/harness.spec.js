@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const net = require("node:net");
+const { startCoverage, finishCoverage, writeCoverage } = require("./coverage");
 
 const repoRoot = path.resolve(__dirname, "../..");
 const fixturePath = path.join(__dirname, "serve_fixture.py");
@@ -44,6 +45,7 @@ async function waitForServer() {
 
 async function signInOwner(page) {
   await page.goto(baseUrl + "#" + ownerToken);
+  await startCoverage(page);
   await expect(page.locator("#auth-text")).toHaveText("Connected");
   await expect(page.locator("#auth-modal")).toBeHidden();
   expect(new URL(page.url()).hash).toBe("");
@@ -84,7 +86,13 @@ test.beforeAll(async () => {
     .toContain("#" + ownerToken);
 });
 
+test.afterEach(async () => {
+  await finishCoverage();
+});
+
 test.afterAll(async () => {
+  await finishCoverage();
+  writeCoverage();
   if (serverProcess && serverProcess.exitCode === null) {
     serverProcess.kill();
     await new Promise((resolve) => serverProcess.once("exit", resolve));
@@ -103,6 +111,7 @@ test("01 launch, load, and one-time browser pairing", async ({ page }) => {
   const requestUrls = [];
   page.on("request", (request) => requestUrls.push(request.url()));
   await page.goto(baseUrl);
+  await startCoverage(page);
   await expect(page.locator("#auth-modal")).toBeVisible();
   await expect(page.getByText("One-time pairing code", { exact: true })).toBeVisible();
   await expect(page.locator("#auth-connect-help")).toContainText("gui-open.url");
@@ -146,7 +155,6 @@ test("01 launch, load, and one-time browser pairing", async ({ page }) => {
   expect(runtime.origin).toBe(baseUrl.slice(0, -1));
   expect(runtime.electron).toBe(false);
   expect(runtime.webview).toBe(false);
-  await ownerPage.close();
 });
 
 test("02 primary chat request uses the served UI and real CLI route", async ({ page }) => {
@@ -189,6 +197,14 @@ test("04 settings and provider status expose posture without credentials", async
   await expect(output).toContainText('"mcp_auth_token": null');
   await expect(output).not.toContainText(ownerToken);
   await expect(output).not.toContainText(sessionToken);
+
+  // Clearing browser storage exercises the real 401 recovery path through
+  // the served settings control and the server's auth middleware.
+  await page.evaluate(() => window.HARNESS_SET_TOKEN(null));
+  await settingsRow.getByRole("button", { name: "Fetch" }).click();
+  await expect(page.locator("#auth-modal")).toBeVisible();
+  await page.locator("#btn-cancel-token").click();
+  await expect(page.locator("#auth-modal")).toBeHidden();
 });
 
 test("05 terminal result is rendered after the real chat dispatch completes", async ({ page }) => {
