@@ -672,29 +672,56 @@ class McpProtocolTests(unittest.TestCase):
         self.assertNotIn(100, reply_ids)
 
     def test_offer_and_defer_tools(self):
-        feed = (
-            '{"jsonrpc":"2.0","id":11,"method":"tools/call",'
-            '"params":{"name":"offer_work","arguments":{"task":"Rewrite the parser"}}}\n'
-            '{"jsonrpc":"2.0","id":12,"method":"tools/call",'
-            '"params":{"name":"defer_work","arguments":{"task_id":"t9","reason":"changed my mind"}}}\n'
-            '{"jsonrpc":"2.0","id":13,"method":"tools/call",'
-            '"params":{"name":"participation_report","arguments":{}}}\n')
         transport, server = make_server(
             posts=[consent("defer", "I would rather not")])
-        lines = _serve(server, feed)
-        # Lanes run concurrently, so frames correlate by id, never by
-        # position (JSON-RPC permits any response order).
-        by_id = {line["id"]: line for line in lines}
-        offer = by_id[11]["result"]
+        offer_feed = (
+            '{"jsonrpc":"2.0","id":11,"method":"tools/call",'
+            '"params":{"name":"offer_work","arguments":{"task":"Rewrite the parser"}}}\n')
+        offer_lines = _serve(server, offer_feed)
+        offer = offer_lines[0]["result"]
         self.assertEqual(offer["structuredContent"]["decision"], "defer")
-        defer = by_id[12]["result"]["structuredContent"]
+        offered = [entry for entry in server.ledger.entries()
+                   if entry.get("event") == "offer"]
+        self.assertEqual(len(offered), 1)
+        task_id = offered[0]["task_id"]
+        self.assertTrue(task_id)
+
+        defer_feed = json.dumps({
+            "jsonrpc": "2.0", "id": 12, "method": "tools/call",
+            "params": {"name": "defer_work", "arguments": {
+                "task_id": task_id, "reason": "changed my mind"}},
+        }) + "\n"
+        defer_lines = _serve(server, defer_feed)
+        defer = defer_lines[0]["result"]["structuredContent"]
         self.assertEqual(defer["status"], "deferred")
-        # serve_forever drains every lane before returning, so a report
-        # taken afterwards sees all three tools' evidence deterministically
-        # (an in-feed report would race the spendy lane by design).
-        report = server._invoke("participation_report", {})
+        report_feed = (
+            '{"jsonrpc":"2.0","id":13,"method":"tools/call",'
+            '"params":{"name":"participation_report","arguments":{}}}\n')
+        report_lines = _serve(server, report_feed)
+        report = report_lines[0]["result"]["structuredContent"]
         self.assertEqual(report["offers"], 1)
         self.assertEqual(report["defers"], 1)
+
+    def test_unknown_task_ids_are_rejected_by_every_mcp_task_writer(self):
+        _, server = make_server()
+        task_tools = [tool["name"] for tool in TOOL_SCHEMAS
+                      if "task_id" in tool.get("inputSchema", {})
+                      .get("properties", {}) and tool["name"] != "offer_work"]
+        before = list(server.ledger.entries())
+        feed = "".join(json.dumps({
+            "jsonrpc": "2.0", "id": index, "method": "tools/call",
+            "params": {"name": name, "arguments": {
+                "task_id": "never-offered"}},
+        }) + "\n" for index, name in enumerate(task_tools, start=1))
+        replies = _serve(server, feed)
+        self.assertEqual({reply["id"] for reply in replies},
+                         set(range(1, len(task_tools) + 1)))
+        for reply in replies:
+            with self.subTest(request_id=reply["id"]):
+                result = reply["result"]
+                self.assertTrue(result["isError"])
+                self.assertIn("unknown task_id", result["content"][0]["text"])
+        self.assertEqual(server.ledger.entries(), before)
 
     def test_invalid_jsonrpc_envelope_is_rejected_and_server_continues(self):
         feed = ('{"jsonrpc":"1.0","id":19,"method":"ping"}\n'
@@ -1675,6 +1702,14 @@ class ContinueWorkToolTests(unittest.TestCase):
     engine.apply_batch(continuation=...) path `harness continue` and the
     UI's Continue pane use, write-gated exactly like apply_edit."""
 
+    @staticmethod
+    def _register_continuation(server, continuation):
+        task_id = "continued-task"
+        server.ledger.append("offer", task_id=task_id, model=JUDGE,
+                             required=True)
+        continuation["task_id"] = task_id
+        return continuation
+
     def test_continue_work_refuses_without_allow_write(self):
         target = os.path.join(_TMP.name, "cw_gate.py")
         with open(target, "w", encoding="utf-8") as f:
@@ -1682,6 +1717,7 @@ class ContinueWorkToolTests(unittest.TestCase):
         _, server = make_server(allow_write=False)
         continuation = {"file_path": target, "verify_only": False,
                         "verification_required": False}
+        self._register_continuation(server, continuation)
         with self.assertRaisesRegex(Exception, "allow_write"):
             server._invoke("continue_work", {"continuation": continuation})
 
@@ -1696,6 +1732,7 @@ class ContinueWorkToolTests(unittest.TestCase):
             posts=[comp(consent_json("accept")), comp(CHANGED)], allow_write=False)
         continuation = {"file_path": target, "verify_only": True,
                         "remaining_scope": "add zero"}
+        self._register_continuation(server, continuation)
         result = server._invoke("continue_work", {"continuation": continuation})
 
         self.assertEqual(result["status"], "preview")
@@ -1717,6 +1754,7 @@ class ContinueWorkToolTests(unittest.TestCase):
                         "verification_required": True,
                         "verify_cmd": verify_cmd, "verify_gate_id": gate_id(verify_cmd),
                         "remaining_scope": "add zero"}
+        self._register_continuation(server, continuation)
         result = server._invoke("continue_work", {
             "continuation": continuation, "allow_write": True, "allow_verify": True,
         })
@@ -1746,6 +1784,7 @@ class ContinueWorkToolTests(unittest.TestCase):
                         "verification_required": True,
                         "verify_cmd": verify_cmd, "verify_gate_id": gate_id(verify_cmd),
                         "remaining_scope": "add zero"}
+        self._register_continuation(server, continuation)
         result = server._invoke("continue_work", {
             "continuation": continuation, "verify_cmd": verify_cmd,
             "allow_write": True, "allow_verify": True,
@@ -1774,6 +1813,7 @@ class ContinueWorkToolTests(unittest.TestCase):
                         "verification_required": True,
                         "verify_cmd": embedded_cmd, "verify_gate_id": gate_id(embedded_cmd),
                         "remaining_scope": "add zero"}
+        self._register_continuation(server, continuation)
         with self.assertRaisesRegex(Exception, "does not match its authoritative verification gate"):
             server._invoke("continue_work", {
                 "continuation": continuation, "verify_cmd": override_cmd,
@@ -1790,6 +1830,7 @@ class ContinueWorkToolTests(unittest.TestCase):
         continuation = {"file_path": target, "verify_only": False,
                         "verification_required": False,
                         "remaining_scope": "add zero"}
+        self._register_continuation(server, continuation)
         with self.assertRaisesRegex(Exception, "exceeds 10000 chars"):
             server._invoke("continue_work", {
                 "continuation": continuation,
@@ -1801,6 +1842,19 @@ class ContinueWorkToolTests(unittest.TestCase):
         _, server = make_server(allow_write=True)
         with self.assertRaisesRegex(Exception, "continue_work requires 'continuation'"):
             server._invoke("continue_work", {})
+
+    def test_continue_work_requires_an_offered_task_id(self):
+        _, server = make_server(allow_write=True)
+        before = server.ledger.entries()
+        continuation = {"file_path": os.path.join(_TMP.name, "resume.py"),
+                        "verify_only": True}
+
+        with self.assertRaisesRegex(
+                HarnessError,
+                "continue_work requires a task_id from an existing offer"):
+            server._invoke("continue_work", {"continuation": continuation})
+
+        self.assertEqual(server.ledger.entries(), before)
 
     def test_continue_work_refuses_verify_cmd_without_allow_verify(self):
         """A verify_cmd is present (from the continuation's own gate) but
@@ -1817,6 +1871,7 @@ class ContinueWorkToolTests(unittest.TestCase):
                         "verification_required": True,
                         "verify_cmd": verify_cmd, "verify_gate_id": gate_id(verify_cmd),
                         "remaining_scope": "add zero"}
+        self._register_continuation(server, continuation)
         with self.assertRaisesRegex(Exception, "allow_verify"):
             server._invoke("continue_work", {
                 "continuation": continuation, "allow_write": True,
@@ -1838,6 +1893,7 @@ class ContinueWorkToolTests(unittest.TestCase):
         continuation = {"file_path": target, "verify_only": False,
                         "verification_required": False,
                         "remaining_scope": "add zero"}
+        self._register_continuation(server, continuation)
         with self.assertRaisesRegex(Exception, "requires at least one configured allowed root"):
             server._invoke("continue_work", {
                 "continuation": continuation, "allow_write": True,
@@ -1852,6 +1908,7 @@ class ContinueWorkToolTests(unittest.TestCase):
             continuation = {"file_path": target, "verify_only": False,
                             "verification_required": False,
                             "remaining_scope": "add zero"}
+            self._register_continuation(server, continuation)
             with self.assertRaisesRegex(Exception, "outside every configured allowed root"):
                 server._invoke("continue_work", {
                     "continuation": continuation, "allow_write": True,
@@ -1867,6 +1924,7 @@ class ContinueWorkToolTests(unittest.TestCase):
             posts=[comp(consent_json("accept")), comp("HARNESS_READY: confident\n" + CHANGED)])
         continuation = {"file_path": target, "verify_only": True,
                         "remaining_scope": "add zero"}
+        self._register_continuation(server, continuation)
         result = server._invoke("continue_work", {
             "continuation": continuation, "instruction": "add zero explicitly",
         })

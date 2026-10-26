@@ -312,6 +312,7 @@ class EvaluateDecisionPolicyTests(unittest.TestCase):
 
     def test_unkeyed_gate_fails_closed_with_zero_cost(self):
         ledger = self._ledger()
+        ledger.ensure_offered_task_id("t1", source="test_setup")
         policy = policy_for(self._unkeyed_settings(), ledger=ledger)
         verdict, structural = policy.evaluate_decision(
             "merge the PR", "land the fix", "green CI, reviewed", task_id="t1")
@@ -319,7 +320,7 @@ class EvaluateDecisionPolicyTests(unittest.TestCase):
         self.assertTrue(structural["is_fallback"])
         self.assertEqual(structural["cost"], 0.0)
         self.assertEqual(structural["site"], DECISION_SITE)
-        events = ledger.entries()
+        events = [e for e in ledger.entries() if e["event"] == "jev_eval"]
         self.assertEqual([e["event"] for e in events], ["jev_eval"])
         self.assertEqual(events[0]["site"], DECISION_SITE)
         self.assertEqual(events[0]["decision_verdict"], "escalate")
@@ -332,6 +333,7 @@ class EvaluateDecisionPolicyTests(unittest.TestCase):
             FakeTransport(models=[m("jev-test", prompt="0", completion="0")]),
             "sk-test", max_cost=0.10)
         ledger = self._ledger()
+        ledger.ensure_offered_task_id("t1", source="test_setup")
         settings = load_settings({"jev_api_key": "jev-key"})
         policy = policy_for(settings, transport=transport, governor=governor,
                             ledger=ledger)
@@ -344,7 +346,7 @@ class EvaluateDecisionPolicyTests(unittest.TestCase):
         self.assertFalse(structural["is_fallback"])
         self.assertAlmostEqual(structural["cost"], expected)
         self.assertAlmostEqual(governor.spent, expected)
-        events = ledger.entries()
+        events = [e for e in ledger.entries() if e["event"] == "jev_eval"]
         self.assertEqual([e["event"] for e in events], ["jev_eval"])
         self.assertEqual(events[0]["decision_verdict"], "proceed")
         self.assertEqual(events[0]["decision_disposition"], "proceed")
@@ -368,13 +370,16 @@ class EvaluateDecisionPolicyTests(unittest.TestCase):
             FakeTransport(models=[m("jev-test", prompt="0", completion="0")]),
             "sk-test", max_cost=0.10)
         ledger = self._ledger()
+        ledger.ensure_offered_task_id("t9", source="test_setup")
         settings = load_settings({"jev_api_key": "jev-key"})
         policy = policy_for(settings, transport=transport, governor=governor,
                             ledger=ledger)
         verdict, _structural = policy.evaluate_decision(
             "push directly to main", "ship fast", "no review")
         self.assertEqual(verdict["verdict"], "escalate")
-        self.assertEqual(ledger.entries()[0]["decision_verdict"], "escalate")
+        decision = next(e for e in ledger.entries()
+                        if e["event"] == "jev_eval")
+        self.assertEqual(decision["decision_verdict"], "escalate")
 
 
 class DecisionCalibrationTests(unittest.TestCase):
@@ -493,6 +498,7 @@ class EvaluateDecisionRefusalTests(unittest.TestCase):
             FakeTransport(models=[m("jev-test", prompt="0", completion="0")]),
             "sk-test", max_cost=0.10)
         ledger = self._ledger()
+        ledger.ensure_offered_task_id("t9", source="test_setup")
         settings = load_settings({"jev_api_key": "jev-key"})
         policy = policy_for(settings, governor=governor, ledger=ledger,
                             evaluator=_ExplodingEvaluator())
@@ -505,6 +511,7 @@ class EvaluateDecisionRefusalTests(unittest.TestCase):
         self.assertEqual(governor.spent, 0.0)
         self.assertEqual(structural["cost"], 0.0)
         events = ledger.entries()
-        self.assertEqual([e["event"] for e in events], ["jev_refusal"])
-        self.assertEqual(events[0]["site"], DECISION_SITE)
-        self.assertEqual(events[0]["reason"], "TypeSafe transport exploded")
+        refusals = [e for e in events if e["event"] == "jev_refusal"]
+        self.assertEqual(len(refusals), 1)
+        self.assertEqual(refusals[0]["site"], DECISION_SITE)
+        self.assertEqual(refusals[0]["reason"], "TypeSafe transport exploded")

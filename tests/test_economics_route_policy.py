@@ -53,6 +53,7 @@ class EconomicsRoutePolicyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             settings = load_settings(overrides={"ledger_path": os.path.join(tmp, "l.jsonl")})
             ledger = AutonomyLedger(settings.ledger_path)
+            ledger.append("offer", task_id="t-unkeyed", model="(test)")
             policy = JevPolicy(
                 settings,
                 ledger=ledger,
@@ -72,6 +73,7 @@ class EconomicsRoutePolicyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             settings = load_settings(overrides={"ledger_path": os.path.join(tmp, "l.jsonl")})
             ledger = AutonomyLedger(settings.ledger_path)
+            ledger.append("offer", task_id="t-keyed", model="(test)")
             gov = SpendGovernor(transport=None, api_key="k", max_cost=0.50)
             policy = JevPolicy(
                 settings,

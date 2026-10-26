@@ -24,6 +24,15 @@ class ApplyTests(ApplyFixture):
             engine.apply_edit(task_id="t1", file_path=os.path.join(self.dir.name, "nope.py"),
                               instruction="change it", require_consent=False)
 
+    def test_unknown_task_id_is_rejected_without_a_ledger_write(self):
+        p = self.make_file()
+        _, _, ledger, engine = self.make_env()
+        before = ledger.entries()
+        with self.assertRaisesRegex(HarnessError, "unknown task_id"):
+            engine.apply_edit(task_id="nope", file_path=p,
+                              instruction="change it", require_consent=False)
+        self.assertEqual(ledger.entries(), before)
+
     def test_file_too_large_refused(self):
         p = self.make_file("\n".join(f"line {i}" for i in range(501)) + "\n")
         _, _, _, engine = self.make_env()
@@ -52,7 +61,8 @@ class ApplyTests(ApplyFixture):
             self.assertEqual(f.read(), CHANGED)
         self.assertTrue(os.path.exists(result["backup"]))
         events = [e["event"] for e in ledger.entries()]
-        self.assertEqual(events, ["dispatch_start", "model_result", "verify_round", "complete"])
+        self.assertEqual(events, ["offer", "dispatch_start", "model_result",
+                                  "verify_round", "complete"])
 
     def test_apply_with_token_budget_and_token_details(self):
         from harness.token_budget import TokenBudget
@@ -91,6 +101,7 @@ class ApplyTests(ApplyFixture):
         }
         fake2, gov2, ledger2, engine2 = self.make_env(
             posts=[resp_data2], run=scripted_run([(0, "")]))
+        self.offer_task(engine2, "t2")
         result2 = engine2.apply_edit(task_id="t2", file_path=p2, instruction="add +0",
                                      verify_cmd="python -m py_compile math.py",
                                      require_consent=False, token_budget=tb2)
@@ -220,6 +231,7 @@ class ApplyTests(ApplyFixture):
             ],
             run=scripted_run([(0, "")]), default_consent=True,
             router_kw={"apply_pool": [CODER_A]})
+        self.offer_task(engine, "costs")
         result = engine.apply_edit(task_id="costs", file_path=p,
                                    instruction="change", verify_cmd="check",
                                    max_rounds=1, task_max_cost=0.001)
@@ -261,6 +273,7 @@ class ApplyTests(ApplyFixture):
                              default_renew_consent=True)
         engine.run_verify = scripted_run([(0, "")])
 
+        self.offer_task(engine, "t_cheap")
         engine.apply_edit(task_id="t_cheap", file_path=p, instruction="fix",
                           allow_escalation=False, verify_cmd="python -c pass")
         posts = fake.chat_posts()
@@ -453,7 +466,7 @@ class ApplyTests(ApplyFixture):
         fake2 = FakeTransport(models=[m(APPLY), m(JUDGE), m(ESC), m(CODER_A), m(CODER_B)],
                               posts=[comp(CHANGED)])
         gov2 = SpendGovernor(fake2, "sk-test")
-        ledger2 = AutonomyLedger(os.path.join(self.dir.name, "ledger2.jsonl"))
+        ledger2 = AutonomyLedger(self.ledger_path)
         router2 = Router(["a", "b"], JUDGE, APPLY)
         engine2 = ApplyEngine(fake2, "k", gov2, ledger2, router2,
                               default_require_consent=True, default_renew_consent=False)
@@ -500,6 +513,7 @@ class ApplyTests(ApplyFixture):
             posts=[comp(PARTIAL + "HARNESS_DEFER: "
                         '{"remaining_scope":"finish +0","reason":"low on tokens"}')],
             renew=False)
+        self.offer_task(engine, "orig-task")
         r1 = engine.apply_edit(task_id="orig-task", file_path=p, instruction="add +0",
                                verify_cmd="check", require_consent=False)
         self.assertEqual(r1["status"], "deferred")
@@ -507,7 +521,7 @@ class ApplyTests(ApplyFixture):
         fake2 = FakeTransport(models=[m(APPLY), m(JUDGE), m(ESC), m(CODER_A)],
                               posts=[comp(CHANGED)])
         gov2 = SpendGovernor(fake2, "sk-test")
-        ledger2 = AutonomyLedger(os.path.join(self.dir.name, "ledger3.jsonl"))
+        ledger2 = AutonomyLedger(self.ledger_path)
         engine2 = ApplyEngine(fake2, "k", gov2, ledger2,
                               Router(["a"], JUDGE, APPLY),
                               default_require_consent=True, default_renew_consent=False)
@@ -524,6 +538,7 @@ class ApplyTests(ApplyFixture):
         p = self.make_file()
         _, _, _, engine = self.make_env(
             posts=[comp(CHANGED)], run=scripted_run([(1, "verification failed")]))
+        self.offer_task(engine, "gated")
         failed = engine.apply_edit(task_id="gated", file_path=p, instruction="change",
                                    verify_cmd="authoritative-check", require_consent=False,
                                    max_rounds=1)
@@ -540,6 +555,7 @@ class ApplyTests(ApplyFixture):
         p = self.make_file()
         _, _, _, engine = self.make_env(posts=[comp(CHANGED)],
                                         run=scripted_run([(1, "verification failed")]))
+        self.offer_task(engine, "gated-preview")
         failed = engine.apply_edit(task_id="gated-preview", file_path=p,
                                    instruction="change", verify_cmd="check",
                                    require_consent=False, max_rounds=1)
@@ -579,6 +595,7 @@ class ApplyTests(ApplyFixture):
         # The fresh apply on the SAME engine with a DIFFERENT gate must run.
         with open(p, "w", encoding="utf-8") as f:
             f.write(ORIGINAL)
+        self.offer_task(engine, "t3")
         fresh = engine.apply_edit(task_id="t3", file_path=p, instruction="fresh",
                                   verify_cmd="gateB", require_consent=False)
         self.assertEqual(fresh["status"], "ok")
@@ -591,6 +608,7 @@ class ApplyTests(ApplyFixture):
         p = self.make_file()
         _, _, _, engine = self.make_env(posts=[comp(CHANGED)],
                                         run=scripted_run([(0, "")]))
+        self.offer_task(engine, "bench/add")
         result = engine.apply_edit(task_id="bench/add", file_path=p,
                                    instruction="change", verify_cmd="check",
                                    require_consent=False)
@@ -617,6 +635,27 @@ class ApplyTests(ApplyFixture):
         self.assertEqual(result["verify"], {"command": "check", "passed": True})
         for r in result["results"]:
             self.assertEqual(r["status"], "ok")
+
+    def test_apply_batch_accepts_an_explicitly_offered_parent_task(self):
+        a = self.make_file()
+        b = os.path.join(self.dir.name, "other.py")
+        with open(b, "w", encoding="utf-8") as f:
+            f.write(ORIGINAL)
+        _, _, ledger, engine = self.make_env(
+            posts=[comp(CHANGED), comp(CHANGED)],
+            run=scripted_run([(0, "")]))
+        self.offer_task(engine, "batch-parent")
+
+        result = engine.apply_batch(
+            [a, b], task_id="batch-parent",
+            options=BatchOptions(instruction="change", verify_cmd="check",
+                                 require_consent=False))
+
+        self.assertEqual(result["status"], "ok")
+        offered = {entry["task_id"] for entry in ledger.entries()
+                   if entry.get("event") == "offer"}
+        self.assertTrue({"batch-parent", "batch-parent-1",
+                         "batch-parent-2"}.issubset(offered))
 
     def test_apply_batch_fails_fast(self):
         a = self.make_file()
@@ -698,6 +737,7 @@ class ApplyTests(ApplyFixture):
         p = self.make_file()
         _, _, _, engine = self.make_env(posts=[comp(CHANGED)],
                                         run=scripted_run([(0, "")]))
+        self.offer_task(engine, "same-task")
         result = engine.apply_batch(
             [p], task_id="same-task",
             options=BatchOptions(instruction="change", verify_cmd="check",
@@ -896,6 +936,7 @@ class ApplyTests(ApplyFixture):
                              Router([CODER_A], CODER_A, CODER_A),
                              default_require_consent=False,
                              run_verify=runner, default_renew_consent=False)
+        ledger.ensure_offered_task_id("gb", source="test_setup")
         result = engine.apply_edit(task_id="gb", file_path=target,
                                    instruction="change x", verify_cmd="false",
                                    max_rounds=3)

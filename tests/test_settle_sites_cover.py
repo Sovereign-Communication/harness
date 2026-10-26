@@ -173,6 +173,7 @@ class SettleSitesCoverTests(unittest.TestCase):
         td = tempfile.TemporaryDirectory()
         self.addCleanup(td.cleanup)
         ledger = AutonomyLedger(os.path.join(td.name, "ledger.jsonl"))
+        ledger.ensure_offered_task_id("t1", source="test_setup")
         governor = governor if governor is not None else _CountingGovernor()
         policy = JevPolicy(
             load_settings({"jev_api_key": "jev-key"}),

@@ -22,7 +22,10 @@ from .panel import panel_judge
 from ._http import HttpTransport
 from .saturation import advise, pre_run_warning
 from .claims import build_claims_prompt, load_claims_manifest, load_definitions_file
-from .session import apply_session, governor_for, ledger_for, run_meta
+from .session import (
+    apply_session, ensure_offered_task_id, governor_for, ledger_for,
+    maybe_ledger_for, run_meta,
+)
 from .filesafety import validate_target_file, validate_verify_command
 from .batch import BatchOptions
 from .prompts import MAX_FILE_LINES
@@ -30,6 +33,19 @@ from .prompts import MAX_FILE_LINES
 # BOM-tolerant reader: Windows tooling (PowerShell ``>`` redirects) emits
 # BOM'd text; ONE reader for every interface (the utf-8-sig rule).
 PROMPT_ENCODING = "utf-8-sig"
+
+
+def _preflight_task_id(ledger, task_id, *, generated, model, source):
+    """Record internal task IDs and reject external IDs without an offer."""
+    if task_id is None:
+        return
+    if generated:
+        ensure_offered_task_id(
+            ledger, task_id, model=model, required=False, source=source)
+        return
+    require = getattr(ledger, "require_offered_task_id", None)
+    if callable(require):
+        require(task_id)
 
 
 def read_text_file(path, what="input file"):
@@ -250,6 +266,13 @@ def run_verify(settings=None, *, prompt, task_id=None, cancel_check=None,
             raise ValueError("verify requires settings or an injected ledger")
         ledger = ledger_for(settings)
 
+    generated_task_id = task_id is None and generate_task_id
+    if generated_task_id:
+        task_id = uuid.uuid4().hex[:8]
+    _preflight_task_id(
+        ledger, task_id, generated=generated_task_id,
+        model="(verify)", source="service_verify")
+
     resolved = ResolvedVerifyInputs(
         settings=settings, router=router, panel=panel, judge=judge,
         convergence_model=convergence_model, specialist_pool=specialist_pool,
@@ -263,8 +286,6 @@ def run_verify(settings=None, *, prompt, task_id=None, cancel_check=None,
         "use_free": resolved.use_free,
     }
     pre_run_warning(governor=gov, ledger=ledger, use_free=resolved.use_free)
-    if task_id is None and generate_task_id:
-        task_id = uuid.uuid4().hex[:8]
     try:
         with _task_scope:
             result = panel_judge(
@@ -329,8 +350,14 @@ def run_dogfood(settings=None, *,
       3. APPLY   -- self-edit via ApplyEngine, the operator's verify command
                     as the gate; a failed run leaves the tree untouched.
     """
-    if task_id is None:
+    generated_task_id = task_id is None
+    if generated_task_id:
         task_id = uuid.uuid4().hex[:8]
+    dogfood_ledger = maybe_ledger_for(settings, caller="service")
+    if not generated_task_id:
+        _preflight_task_id(
+            dogfood_ledger, task_id, generated=False,
+            model="(dogfood)", source="service_dogfood")
 
     report = {"phases": []}
 
@@ -372,6 +399,10 @@ def run_dogfood(settings=None, *,
         raise ToolCancelled("dogfood cancelled")
 
     # ---- phase 2: live panel verify ----
+    if generated_task_id:
+        _preflight_task_id(
+            dogfood_ledger, task_id, generated=True,
+            model="(dogfood)", source="service_dogfood")
     reassurance = ",".join(getattr(c, "claim_id", "") for c in claims_to_use
                            if getattr(c, "kind", "") == "reassurance" and getattr(c, "claim_id", ""))
     verify_caller = run_verify_fn if run_verify_fn is not None else run_verify

@@ -317,6 +317,7 @@ class PolicyEscalationDecisionTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.ledger = AutonomyLedger(
             os.path.join(self.tmp.name, "ledger.jsonl"))
+        self.ledger.ensure_offered_task_id("t1", source="test_setup")
 
     def _policy(self, result, keyed=True):
         settings = load_settings()
@@ -475,6 +476,7 @@ class DefensiveBranchTests(unittest.TestCase):
             default_require_consent=False, default_renew_consent=False,
             jev_policy=_ExplodingJevPolicy(settings), min_confidence=0.70)
         engine.run_verify = scripted_run_two_fail_then_pass()
+        engine.ledger.ensure_offered_task_id("jev-refuse", source="test_setup")
         result = engine.apply_edit(
             task_id="jev-refuse", file_path=self._target(),
             instruction="change x", verify_cmd="python -c \"pass\"",

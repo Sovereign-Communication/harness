@@ -383,6 +383,7 @@ class JevPolicyTests(unittest.TestCase):
 
         # SpendGovernor's catalog transport and Jev transport are independent.
         ledger = self._ledger()
+        ledger.ensure_offered_task_id("t1", source="test_setup")
         settings = load_settings({"jev_api_key": "jev-key"})
         policy = policy_for(settings, transport=transport, governor=governor,
                             ledger=ledger)
@@ -395,10 +396,12 @@ class JevPolicyTests(unittest.TestCase):
         self.assertAlmostEqual(governor.spent, expected)
         self.assertEqual(len(transport.calls), 1)
         events = ledger.entries()
-        self.assertEqual([e["event"] for e in events], ["jev_eval"])
-        self.assertEqual(events[0]["site"], "apply")
-        self.assertEqual(events[0]["input_tokens"], 100)
-        self.assertAlmostEqual(events[0]["cost"], expected)
+        self.assertEqual([e["event"] for e in events
+                          if e["event"] == "jev_eval"], ["jev_eval"])
+        jev_eval = next(e for e in events if e["event"] == "jev_eval")
+        self.assertEqual(jev_eval["site"], "apply")
+        self.assertEqual(jev_eval["input_tokens"], 100)
+        self.assertAlmostEqual(jev_eval["cost"], expected)
         self.assertEqual(structural["cost"], result.cost)
 
     def test_site_reachability_uses_one_typed_noul_through_shared_policy(self):
@@ -412,6 +415,7 @@ class JevPolicyTests(unittest.TestCase):
             FakeTransport(models=[m("jev-test", prompt="0", completion="0")]),
             "sk-test", max_cost=0.10)
         ledger = self._ledger()
+        ledger.ensure_offered_task_id("site-check", source="test_setup")
         policy = policy_for(
             load_settings({"jev_api_key": "jev-key"}),
             transport=transport, governor=governor, ledger=ledger,
@@ -432,8 +436,11 @@ class JevPolicyTests(unittest.TestCase):
         self.assertIn("true", question["criteria"])
         self.assertIn("false", question["criteria"])
         events = ledger.entries()
-        self.assertEqual([event["event"] for event in events], ["jev_eval"])
-        self.assertEqual(events[0]["site"], "site_reachability")
+        self.assertEqual([event["event"] for event in events
+                          if event["event"] == "jev_eval"], ["jev_eval"])
+        jev_eval = next(event for event in events
+                        if event["event"] == "jev_eval")
+        self.assertEqual(jev_eval["site"], "site_reachability")
         self.assertEqual(structural["site"], "site_reachability")
         self.assertLessEqual(governor.spent, 0.10)
 
@@ -462,9 +469,11 @@ class JevPolicyTests(unittest.TestCase):
         governor = SpendGovernor(
             FakeTransport(models=[m("jev-test", prompt="0", completion="0")]),
             "sk-test", max_cost=0.10)
+        ledger = self._ledger()
+        ledger.ensure_offered_task_id("site-check", source="test_setup")
         policy = policy_for(
             load_settings({"jev_api_key": "jev-key"}),
-            transport=transport, governor=governor, ledger=self._ledger(),
+            transport=transport, governor=governor, ledger=ledger,
             request_timeout=10.0, single_attempt=True)
         result, structural = policy.evaluate_request_workflow(
             {"request": "is example.com up?"}, task_id="site-check",
@@ -557,6 +566,7 @@ class JevPolicyTests(unittest.TestCase):
             FakeTransport(models=[m("jev-latest", prompt="0", completion="0")]),
             "sk-test", max_cost=0.10)
         ledger = self._ledger()
+        ledger.ensure_offered_task_id("task-spend-limit", source="test_setup")
         settings = load_settings({"jev_api_key": "jev-key"})
         policy = policy_for(
             settings, transport=_FailingSpendLimitTransport(),
@@ -568,7 +578,8 @@ class JevPolicyTests(unittest.TestCase):
         self.assertEqual(ctx.exception.known_cost, 0.0012)
         self.assertEqual(governor.spent, 0.0012)
         self.assertEqual(governor.outstanding, 0.0)
-        entries = ledger.entries()
+        entries = [entry for entry in ledger.entries()
+                   if entry["event"] == "jev_eval"]
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["result_state"], "provider_spend_limit")
         self.assertEqual(entries[0]["cost"], 0.0012)

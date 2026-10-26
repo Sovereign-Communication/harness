@@ -308,7 +308,8 @@ class ConfirmPlanTests(_WaistFixture):
             plan_result=plan, model="m/front", chat_fn=lambda p: ('{"verdict": "approve"}', 0.01))
         self.assertEqual(confirmed["confirmation"]["verdict"], "approved")
         self.assertEqual(confirmed["confirmation"]["rounds"], 1)
-        self.assertEqual([e["event"] for e in self.events()], ["plan_verdict"])
+        self.assertEqual([e["event"] for e in self.events()],
+                         ["offer", "plan_verdict"])
 
     def test_refuse_stops_execution_fail_closed(self):
         refused = confirm_plan(

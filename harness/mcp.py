@@ -572,6 +572,22 @@ class McpServer:
         raise HarnessError(message)
 
     def _invoke(self, name, args, cancel_check=None):
+        # Task-bound tools must refer to an offer already present in the
+        # durable ledger. Check at the MCP boundary before dispatch so an
+        # unknown ID cannot cause any intermediate ledger writes.
+        if name != "offer_work" and args.get("task_id") is not None:
+            task_id = validate_mcp_task_id(args.get("task_id"))
+            self.ledger.require_offered_task_id(task_id)
+        if name == "continue_work" and isinstance(args.get("continuation"), dict):
+            continuation_task_id = args["continuation"].get("task_id")
+            if continuation_task_id is None:
+                if args.get("task_id") is None:
+                    raise HarnessError(
+                        "continue_work requires a task_id from an existing offer")
+            else:
+                continuation_task_id = validate_mcp_task_id(continuation_task_id)
+                self.ledger.require_offered_task_id(continuation_task_id)
+
         if name == "ask":
             prompt = validate_mcp_prompt(args.get("prompt"))
             settings = self.settings or load_settings()
@@ -1024,7 +1040,7 @@ class McpServer:
                 log_text, pack, jev_policy,
                 info_sample=int(args.get("info_sample") or 0),
                 task_id=validate_mcp_task_id(args.get("task_id"))
-                if args.get("task_id") else None)
+                if args.get("task_id") is not None else None)
             return {
                 "status": "ok",
                 "analysis": analysis,
@@ -1346,6 +1362,8 @@ class McpServer:
                 max_cost = finite_number(max_cost, "max_cost", 0.0, HARD_MAX_COST)
             max_rounds = int(args.get("max_rounds", 3) or 3)
             task_id = args.get("task_id") or uuid.uuid4().hex[:8]
+            self.ledger.ensure_offered_task_id(
+                task_id, model="(dogfood)", required=False, source="mcp_dogfood")
             return _service_run_dogfood(
                 self.settings,
                 file=raw_file,

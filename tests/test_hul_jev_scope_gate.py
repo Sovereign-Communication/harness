@@ -408,6 +408,9 @@ class MissionPackScopeStorageTests(unittest.TestCase):
         self.assertTrue(evals[0]["verifier_holds"])
         ledger_events = _jev_evals(self.ledger)
         self.assertEqual(len(ledger_events), 1)
+        offered = [entry["task_id"] for entry in self.ledger.entries()
+                   if entry.get("event") == "offer"]
+        self.assertIn(self.pack.id, offered)
 
     def test_evaluate_scope_on_pack_keyed_green_stores_complete(self):
         evaluator = _FixedEvaluator(_good_answers())
@@ -442,8 +445,17 @@ class MissionPackScopeStorageTests(unittest.TestCase):
         with self.assertRaises(HarnessError):
             mr.evaluate_scope_on_pack(ghost, policy)
 
+    def test_evaluate_scope_on_pack_rejects_unknown_explicit_task_id(self):
+        policy = policy_for(_unkeyed_settings(), ledger=self.ledger)
+        from harness.errors import HarnessError
+        with self.assertRaisesRegex(HarnessError, "unknown task_id"):
+            mr.evaluate_scope_on_pack(
+                self.pack, policy, task_id="never-offered")
+        self.assertEqual(self.ledger.entries(), [])
+
     def test_evaluate_scope_on_pack_extra_state_merge(self):
         policy = policy_for(_unkeyed_settings(), ledger=self.ledger)
+        self.ledger.append("offer", task_id="custom-task", model="(test)")
         _r, _s, determination = mr.evaluate_scope_on_pack(
             self.pack, policy,
             evidence_summary="extra",

@@ -676,6 +676,7 @@ class ApprovalGateTests(TempRootCase):
 
     def test_every_record_is_ledgered_with_its_own_timestamp_key(self):
         plan = mutating_plan(self.root)
+        self.ledger.ensure_offered_task_id("t1", source="test_setup")
         gate = pv.ApprovalGate(ledger=self.ledger, task_id="t1")
         gate.approve_plan(plan, "alice", "ok")
         gate.decline_step(plan, "mk1", "alice", "nope")
@@ -729,6 +730,7 @@ class ExecutorTests(TempRootCase):
     def run_plan(self, plan, gate, **kw):
         runner = kw.pop("runner", FakeRunner())
         kw.setdefault("which", fake_which)
+        self.ledger.ensure_offered_task_id("t", source="test_setup")
         report = pv.execute_plan(plan, gate, policy=self.policy,
                                  ledger=self.ledger, task_id="t", runner=runner,
                                  **kw)
@@ -790,6 +792,7 @@ class ExecutorTests(TempRootCase):
                     "--only-binary=:all:", "--target", self.work(), "ruff"),
                     pv.MUTATING, "installs", "delete it", requires_network=True),
         ], self.root, "x", "x", True)
+        self.ledger.ensure_offered_task_id("t", source="test_setup")
         gate = pv.ApprovalGate(ledger=self.ledger, task_id="t")
         gate.approve_plan(plan, "alice")
         report, runner = self.run_plan(plan, gate, dry_run=False)
@@ -806,7 +809,7 @@ class ExecutorTests(TempRootCase):
         # ledger: plan, approval, 3 steps, end -- one chain
         names = [e["event"] for e in self.ledger.entries()]
         self.assertEqual(names, [
-            "provision_approval", "provision_plan",
+            "offer", "provision_approval", "provision_plan",
             "provision_step_start", "provision_step",   # python --version
             "provision_step_start", "provision_step",   # mkdir (builtin)
             "provision_step_start", "provision_step",   # pip install
@@ -1340,6 +1343,7 @@ class EvaluateProvisionTests(TempRootCase):
         self.assertTrue(evals[0]["is_fallback"])
 
     def test_keyed_dispatches_once_and_settles_spend(self):
+        self.ledger.ensure_offered_task_id("t", source="test_setup")
         policy, evaluator, governor = self.policy_for()
         result, structural = policy.evaluate_provision({"goal": "g"}, self.questions,
                                                        task_id="t")
@@ -1386,6 +1390,7 @@ class EvaluateProvisionTests(TempRootCase):
 
 class EndToEndTests(TempRootCase):
     def test_probe_plan_preview_approve_execute_audit(self):
+        self.ledger.ensure_offered_task_id("e2e", source="test_setup")
         probe = self.probe(managers=("pip",))
         plan = pv.plan_provision("provision ruff==0.6.1", probe,
                                  policy=self.policy)

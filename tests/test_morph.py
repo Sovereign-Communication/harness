@@ -9,11 +9,14 @@ from tests._fake import comp, m
 
 
 class MorphTests(ApplyFixture):
+    DEFAULT_OFFER_TASK_IDS = ()
+
     def test_morph_verify_only_is_read_only(self):
         p = self.make_file()
         fake, _, ledger, engine = self.make_env(
             posts=[comp(CHANGED)],
             models=[m(APPLY), m(JUDGE), m(ESC), m(CODER_A), m(CODER_B), m(MORPH)])
+        self.offer_task(engine, "morph-preview")
         verify_calls = []
         engine.run_verify = lambda command: verify_calls.append(command)
 
@@ -38,13 +41,14 @@ class MorphTests(ApplyFixture):
         self.assertIn("<code>" + ORIGINAL + "</code>", prompt)
         self.assertIn("<update>return a + b + 0</update>", prompt)
         self.assertEqual([e["event"] for e in ledger.entries()],
-                         ["dispatch_start", "model_result", "complete"])
+                         ["offer", "dispatch_start", "model_result", "complete"])
 
     def test_morph_verify_only_capability_deferral_does_not_write_partial(self):
         p = self.make_file()
         _, _, _, engine = self.make_env(
             posts=[comp(PARTIAL + "HARNESS_DEFER: finish the timing proof")],
             models=[m(APPLY), m(JUDGE), m(ESC), m(CODER_A), m(CODER_B), m(MORPH)])
+        self.offer_task(engine, "morph-defer-preview")
 
         result = engine.apply_edit(
             task_id="morph-defer-preview", file_path=p, instruction="fix timing safety",
@@ -67,6 +71,7 @@ class MorphTests(ApplyFixture):
         _, _, _, engine = self.make_env(
             posts=[comp(PARTIAL + "HARNESS_DEFER: finish the timing proof")],
             models=models)
+        self.offer_task(engine, "morph-preview-resume")
         first = engine.apply_edit(
             task_id="morph-preview-resume", file_path=p, instruction="fix timing safety",
             verify_cmd="must-not-run", require_consent=False, renew_consent=False,

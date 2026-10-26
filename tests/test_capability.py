@@ -303,6 +303,8 @@ class RoutingOrderTest(unittest.TestCase):
             for m in ("acme/good:free", "acme/flaky:free")}
         with tempfile.TemporaryDirectory() as d:
             ledger = AutonomyLedger(os.path.join(d, "l.jsonl"))
+            ledger.ensure_offered_task_id("t1", source="test_setup")
+            ledger.ensure_offered_task_id("t2", source="test_setup")
             # one unusable output, plus real successes from the same model
             # recorded the way the engine records them (verify_round passes
             # feed the code-task success rate).
@@ -373,6 +375,8 @@ class RoutingOrderTest(unittest.TestCase):
             for m in ("acme/good:free", "acme/waster:free")}
         with tempfile.TemporaryDirectory() as d:
             ledger = AutonomyLedger(os.path.join(d, "l.jsonl"))
+            ledger.ensure_offered_task_id("t1", source="test_setup")
+            ledger.ensure_offered_task_id("t2", source="test_setup")
             ledger.append("abort", task_id="t1", model="acme/waster:free",
                           reason="verify rounds exhausted", rotations=3)
             ledger.append("abort", task_id="t2", model="acme/waster:free",
@@ -499,6 +503,24 @@ class ProbeTest(unittest.TestCase):
                 self.assertTrue(all(e["json_ok"] for e in mr))
                 # And the persisted evidence feeds observed json reliability.
                 self.assertAlmostEqual(observed_json_reliability(ledger, "m1"), 1.0)
+
+    def test_probe_rejects_unknown_explicit_task_before_provider_call(self):
+        from unittest import mock
+        import harness.chat as chat_mod
+
+        class Gov:
+            def check_byok(self, _model):
+                raise AssertionError("unknown task must fail before provider setup")
+
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = AutonomyLedger(os.path.join(directory, "ledger.jsonl"))
+            with mock.patch.object(chat_mod, "chat") as chat:
+                with self.assertRaisesRegex(HarnessError, "unknown task_id"):
+                    probe_json_reliability(
+                        "transport", "key", Gov(), ["m1"], ledger=ledger,
+                        task_id="missing-task")
+            chat.assert_not_called()
+            self.assertEqual(ledger.entries(), [])
 
 
 class StalePoolSelfHealingTest(unittest.TestCase):

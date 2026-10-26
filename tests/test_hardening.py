@@ -307,6 +307,7 @@ class ApplyConsentOptionalTests(unittest.TestCase):
                        comp(body)])
             gov = SpendGovernor(fake, "sk-test")
             ledger = AutonomyLedger(os.path.join(d, "l.jsonl"))
+            ledger.ensure_offered_task_id("t", source="test_setup")
             engine = ApplyEngine(fake, "k", gov, ledger, Router(["a"], "m/judge", "m/apply"),
                                  default_require_consent=False, default_renew_consent=True)
             # Unknown trust requires gateless writes to carry a gate; the

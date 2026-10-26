@@ -186,18 +186,20 @@ class ConsentProbeTests(unittest.TestCase):
         self.assertEqual(r["scope_suggestion"], "split into two PRs")
 
     def test_renew_records_renew_event(self):
+        self.ledger.ensure_offered_task_id("t1", source="test_setup")
         fake = FakeTransport(models=self.models, posts=[consent("accept")])
         gov = SpendGovernor(fake, "sk-test")
         r = consent_renew(transport=fake, api_key="k", governor=gov, task_id="t1",
                           task="continue work", model=JUDGE, ledger=self.ledger)
         self.assertEqual(r["decision"], "accept")
         events = [e["event"] for e in self.ledger.entries()]
-        self.assertEqual(events, ["consent_renew_accept"])
+        self.assertEqual(events, ["offer", "consent_renew_accept"])
 
     def test_renew_attributes_rotated_answer_to_answerer(self):
         """A renewal that rotates must bill the model that answered, not
         the requested primary -- otherwise per-model calibration learns
         from the wrong teacher."""
+        self.ledger.ensure_offered_task_id("t1", source="test_setup")
         models = [m(JUDGE), m(FALLBACK)]
         fake = FakeTransport(models=models,
                              posts=[comp(None, reasoning="hmm"),

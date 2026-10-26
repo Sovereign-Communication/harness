@@ -408,6 +408,12 @@ class ApplyLadderE2ETests(unittest.TestCase):
                 return []
 
         class Led:
+            def ensure_offered_task_id(self, *a, **k):
+                return None
+
+            def require_offered_task_id(self, *a, **k):
+                return None
+
             def append(self, *a, **k):
                 return None
 
@@ -521,6 +527,12 @@ class ApplyLadderE2ETests(unittest.TestCase):
                 return False
 
         class Led:
+            def ensure_offered_task_id(self, *a, **k):
+                return None
+
+            def require_offered_task_id(self, *a, **k):
+                return None
+
             def append(self, *a, **k):
                 return None
 
@@ -654,6 +666,12 @@ class ApplyLadderE2ETests(unittest.TestCase):
                 return False
 
         class Led:
+            def ensure_offered_task_id(self, *a, **k):
+                return None
+
+            def require_offered_task_id(self, *a, **k):
+                return None
+
             def append(self, *a, **k):
                 return None
 

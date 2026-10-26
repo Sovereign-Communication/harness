@@ -1292,6 +1292,7 @@ class LowConfidenceFloorTests(_Base):
 class AnalyticsTests(_Base):
     def test_calibration_honors_repeat_count_and_excludes_cache_hits(self):
         ledger = self.ledger
+        ledger.ensure_offered_task_id("t1", source="test_setup")
         ledger.append("jev_eval", site="route", is_fallback=True, cost=0.0,
                       input_tokens=0, repeat_count=4, fallback_reason="x",
                       task_id="t1", verdict="pass", confidence=0.0, supported=1.0)
@@ -1377,6 +1378,7 @@ class CoverageGapTests(_Base):
         self.assertEqual(len(transport.calls), 1)
 
     def test_analytics_tolerates_garbage_ledger_fields(self):
+        self.ledger.ensure_offered_task_id("t", source="test_setup")
         self.ledger.append("jev_eval", site="s", is_fallback=True, cost=0.0,
                            repeat_count="many", task_id="t")
         self.ledger.append("jev_eval", model="jev-test", input_tokens=10,
@@ -1928,6 +1930,7 @@ class AnalyticsBaselineTests(_Base):
     def test_site_export_weights_fallbacks_and_skips_cache_and_flush_rows(self):
         from harness.site_export import build_runs
         ledger = self.ledger
+        ledger.ensure_offered_task_id("t", source="test_setup")
         ledger.append("jev_eval", task_id="t", cost=0.0, is_fallback=True,
                       repeat_count=5, confidence=0.0)
         ledger.append("jev_eval", task_id="t", cost=0.0, is_fallback=False,
@@ -1980,6 +1983,7 @@ class CoverageGapTests2(_Base):
 
     def test_site_export_tolerates_a_garbage_repeat_count(self):
         from harness.site_export import build_runs
+        self.ledger.ensure_offered_task_id("t", source="test_setup")
         self.ledger.append("jev_eval", task_id="t", cost=0.0, is_fallback=True,
                            repeat_count="many", confidence=0.0)
         self.ledger.append("verify_round", task_id="t", passed=True, model="m")

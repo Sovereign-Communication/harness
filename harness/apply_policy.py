@@ -100,6 +100,10 @@ class ApplyEngineMixin:
             # in-memory proposal starts from this saved partial.
             current_content=req.continuation.get("partial_content") or req.original)
         consent = self._initial_consent(req)
+        if consent is None and not req.continuation:
+            # The public apply entry has already minted and offered a new ID,
+            # or required the caller's existing ID before any writer runs.
+            self.ledger.require_offered_task_id(req.task_id)
         if consent is not None and consent.get("decision") != "accept":
             return {"status": "consent_blocked", "task_id": req.task_id, **consent}
         state.consent_attempts = (consent.get("attempts", [])

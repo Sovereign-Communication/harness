@@ -20,6 +20,8 @@ class JevCalibrationReportTests(unittest.TestCase):
 
     def test_joins_jev_confidence_with_verify_outcomes(self):
         led = self.ledger
+        for task_id in ("t1", "t2", "t3"):
+            led.ensure_offered_task_id(task_id, source="test_setup")
         # Overconfident: high supported, verify fails.
         led.append("jev_eval", task_id="t1", site="apply", verdict="pass",
                    confidence=0.9, supported=0.95, is_fallback=False,
@@ -60,6 +62,7 @@ class JevCalibrationReportTests(unittest.TestCase):
         self.assertTrue(any("overconfidence" in n for n in report["review_notes"]))
 
     def test_participation_report_embeds_jev_calibration(self):
+        self.ledger.ensure_offered_task_id("t9", source="test_setup")
         self.ledger.append("jev_eval", task_id="t9", site="apply",
                            verdict="pass", confidence=0.9, supported=0.9,
                            is_fallback=False, input_tokens=8, cost=0.000336)
@@ -75,6 +78,7 @@ class JevCalibrationReportTests(unittest.TestCase):
         from harness.config import load_settings
         settings = load_settings()
         before = settings.min_confidence
+        self.ledger.ensure_offered_task_id("t1", source="test_setup")
         self.ledger.append("jev_eval", task_id="t1", site="apply",
                            verdict="pass", confidence=0.4, supported=0.4,
                            is_fallback=False, input_tokens=10, cost=0.00042)

@@ -3410,7 +3410,7 @@ class JevPolicy:
         pack: Any = None,
         *,
         site: str = AUDIT_DIMENSIONS_SITE,
-        task_id: Optional[str] = "audit",
+        task_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Evaluate the 4 self-audit dimensions with Jev as the authoritative gate.
 

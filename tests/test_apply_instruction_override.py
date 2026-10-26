@@ -30,6 +30,7 @@ class PrepareInstructionOverrideTests(unittest.TestCase):
         transport = FakeTransport(models=[m("deepseek/deepseek-chat")])
         gov = SpendGovernor(transport, "sk-test", max_cost=0.10)
         ledger = AutonomyLedger(os.path.join(td, "ledger.jsonl"))
+        ledger.ensure_offered_task_id("orig-task", source="test_setup")
         router = Router(["deepseek/deepseek-chat"], "deepseek/deepseek-chat",
                         "deepseek/deepseek-chat")
         engine = ApplyEngine(

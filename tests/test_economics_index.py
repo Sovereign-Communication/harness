@@ -143,6 +143,7 @@ class PerLaneMeteringTests(unittest.TestCase):
     def test_cost_report_by_lane_tokens_rolling_and_price_table_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
             ledger = AutonomyLedger(os.path.join(tmp, "ledger.jsonl"))
+            ledger.append("offer", task_id="t1", model="deepseek/deepseek-v4.1-flash")
             ledger.append(
                 "model_result",
                 task_id="t1",

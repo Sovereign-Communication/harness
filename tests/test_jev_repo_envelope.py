@@ -496,8 +496,9 @@ class CliFaceTests(unittest.TestCase):
         rows = [json.loads(line) for line in
                 Path(self.settings.ledger_path).read_text(encoding="utf-8").splitlines()
                 if line.strip()]
-        self.assertEqual(len(rows), env["coverage"]["judged"])
-        self.assertTrue(all(r["site"] == "repo_summary" for r in rows))
+        self.assertEqual(len(rows), env["coverage"]["judged"] + 1)
+        self.assertEqual(rows[0]["event"], "offer")
+        self.assertTrue(all(r["site"] == "repo_summary" for r in rows[1:]))
 
     def test_limit_bounds_the_pilot(self):
         opts = self._opts(limit=2, save_to=None, map=None)

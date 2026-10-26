@@ -9,7 +9,9 @@ from .history import load_chat_checkpoint, save_chat_turn
 from .orchestrator import keyword_fallback, triage_files
 from .repo_scope import discover_target_files, enumerate_repo_files
 from .request_intent import classify_prompt_intent, is_literal_greeting_request
-from .session import governor_for
+from .session import (
+    ensure_offered_task_id, governor_for, maybe_ledger_for as ledger_for,
+)
 from .simple_request import (
     is_simple_answer_request,
     is_workspace_inspection_request,
@@ -59,6 +61,11 @@ class RequestRoutingMixin:
             raise HarnessError("Prompt cannot be empty")
 
         sid = session_id or "default"
+        request_ledger = ledger_for(
+            getattr(self, "settings", None), caller="agent")
+        ensure_offered_task_id(
+            request_ledger, sid, model="(agent)", required=False,
+            source="agent_request")
         # A site audit with no identifiable target cannot be made safe by a
         # web search or a model guess.  Reconcile before spending a turn; a
         # remembered site is a target, so "audit that site again" proceeds.

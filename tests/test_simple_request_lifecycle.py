@@ -446,6 +446,33 @@ class SimpleLifecycleTests(unittest.TestCase):
             call["status"] == "completed"
             for call in state["usage"]["provider_calls"].values()))
 
+    def test_simple_answer_completes_without_an_optional_ledger(self):
+        policy = MagicMock()
+        policy.evaluate_simple_strategy.return_value = _pre()
+        policy.evaluate_answer.return_value = _post()
+        completion = {
+            "content": "Use two slices of bread.", "model": "cheap-test-model",
+            "cost": 0.000002, "input_tokens": 12, "output_tokens": 5,
+            "cost_estimated": False,
+        }
+        with (
+            patch("harness.simple_answer_lifecycle.governor_for",
+                  return_value=("key", self.gov)),
+            patch("harness.simple_answer_lifecycle.policy_for",
+                  return_value=policy),
+            patch("harness.simple_answer_lifecycle.ledger_for",
+                  return_value=None),
+            patch("harness.simple_answer_lifecycle.governed_completion",
+                  return_value=completion),
+            patch("harness.simple_answer_lifecycle.load_chat_history",
+                  return_value=[]),
+        ):
+            result = self.agent.run_simple_request(
+                "How do I make toast?", session_id="ledger-free")
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["response"], completion["content"])
+
     def test_billed_overrun_returns_answer_and_skips_further_jev_spend(self):
         completion = {
             "content": "The Pan-American Highway is generally considered longest.",
