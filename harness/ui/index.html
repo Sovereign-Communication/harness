@@ -108,27 +108,40 @@
       <button type="button" id="btn-web-toggle" class="mode-badge web-badge" title="Toggle live web search/fetch for chat (off: the agent states it has no web access). Shift+click to configure the fetch allowlist (enable/modify/disable)">
         <span id="web-icon">🌐</span> <span id="web-text">Web off</span>
       </button>
-      <button type="button" id="btn-auth-toggle" class="mode-badge auth-badge" title="Configure or view X-Harness-Auth token">
+      <button type="button" id="btn-auth-toggle" class="mode-badge auth-badge" title="Connect this browser or pair another one">
         <span id="auth-icon">🔒</span> <span id="auth-text">Auth</span>
       </button>
     </div>
   </header>
 
-  <!-- Auth Token Modal -->
+  <!-- Browser pairing and recovery -->
   <div id="auth-modal" class="auth-modal" hidden>
     <div class="auth-card">
-      <div class="auth-title">🔒 Connect to this Harness server</div>
-      <p class="auth-desc">This browser tab needs the local UI token (<code id="auth-error-msg">missing or wrong X-Harness-Auth token</code>). It is separate from your model provider API key.</p>
-      <div class="auth-help">
-        <p><strong>Using <code>harness desktop</code>?</strong> It authenticates the window it opens automatically. Switch to that window or tab.</p>
-        <p><strong>Using <code>harness serve</code>?</strong> Start it with <code>--auth-token &lt;token&gt; --open</code>, or set <code>HARNESS_UI_AUTH_TOKEN</code> before running <code>harness serve --open</code>. If you opened the page yourself, enter the same token here.</p>
+      <div class="auth-title" id="auth-title">Connect this browser to Harness</div>
+      <p class="auth-desc" id="auth-desc">Use a one-time pairing code from a signed-in Harness window. The server token stays private.</p>
+      <div class="auth-help" id="auth-connect-help">
+        <p>In a signed-in Harness window, click the lock and choose <strong>Create pairing code</strong>. Enter that code below. It expires after five minutes and works once.</p>
+        <p>If no signed-in window is open, open the private <code>gui-open.url</code> shortcut in your Harness config folder. If Harness is stopped, run <code>harness serve --open</code>; it reuses your saved owner access. You never need to paste or share the token.</p>
       </div>
-      <label class="auth-label" for="auth-token-input">Local UI token</label>
-      <input type="password" id="auth-token-input" class="pane-input" placeholder="Enter X-Harness-Auth token..." autocomplete="off" />
+      <div id="auth-connect-panel">
+        <label class="auth-label" for="auth-pair-input">One-time pairing code</label>
+        <input type="text" id="auth-pair-input" class="pane-input" placeholder="Enter the code shown in Harness" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" />
+        <div class="auth-actions">
+          <button type="button" id="btn-connect-pair" class="pane-fetch">Connect browser</button>
+        </div>
+      </div>
+      <div id="auth-pair-panel" hidden>
+        <p class="auth-desc">Enter this code in the other browser. It can be used once and expires in five minutes.</p>
+        <output id="auth-pair-code" class="auth-pair-code" aria-label="One-time pairing code"></output>
+        <p class="auth-help">For recovery, keep the private <code>gui-open.url</code> shortcut in your Harness config folder. If the server is stopped, run <code>harness serve --open</code>.</p>
+        <div class="auth-actions">
+          <button type="button" id="btn-create-pair" class="pane-fetch">Create pairing code</button>
+          <button type="button" id="btn-copy-pair" class="btn-cancel" hidden>Copy code</button>
+        </div>
+      </div>
       <p id="auth-feedback" class="auth-feedback" role="status" aria-live="polite" hidden></p>
       <div class="auth-actions">
-        <button type="button" id="btn-save-token" class="pane-fetch">Authenticate</button>
-        <button type="button" id="btn-cancel-token" class="btn-cancel">Cancel</button>
+        <button type="button" id="btn-cancel-token" class="btn-cancel">Close</button>
       </div>
     </div>
   </div>

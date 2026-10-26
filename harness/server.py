@@ -9,9 +9,10 @@ Design rules, inherited from the MCP server:
   trust gates all stay exactly where they are -- the UI adds a human approval
   step (the dispatch form) on top, never instead.
 - **Loopback only.** The server binds 127.0.0.1 and rejects non-loopback
-  Host headers (DNS-rebinding guard). A shared token (``--auth-token`` /
-  ``HARNESS_UI_AUTH_TOKEN`` or a persisted per-user token) gates every /api
-  route by default.
+  Host headers (DNS-rebinding guard). A persisted per-user owner token gates
+  every /api route. An optional ``--auth-token`` / ``HARNESS_UI_AUTH_TOKEN``
+  adds a session token while the owner token remains valid for recovery and
+  browser pairing.
 - **Events, not scraping.** Run progress is the Phase-1 typed event stream
   (harness/events.py): the server registers one sink into a bounded ring
   buffer; the browser polls ``/api/events`` / ``/api/runs/{id}/events``.
@@ -49,7 +50,7 @@ from . import osal
 from .history import delete_chat_session, list_chat_sessions, load_chat_history as _history_load_chat_history
 from .session import (apply_session, governor_for, ledger_for, run_meta)
 from .workspace import require_workspace, resolve_workspace_path
-from .ui_auth import load_or_create_ui_token
+from .ui_auth import load_or_create_ui_token, write_ui_handoff
 
 # Single-owner delegation with patch-propagation: tests patch server.get_default_history_dir,
 # so wrappers temporarily install that patched function into harness.history before delegating.
@@ -1172,15 +1173,56 @@ class UiState:
 
     CACHE_TTL = 15.0  # seconds: dashboard polls beat on /api/spend et al.
 
-    def __init__(self, auth_token=None):
+    PAIR_CODE_TTL = 300
+    PAIR_ATTEMPTS_PER_MINUTE = 10
+
+    def __init__(self, auth_token=None, owner_token=None):
         self.lock = threading.Lock()
         self.runs = {}
         self.events = deque(maxlen=MAX_EVENT_BUFFER)
         self.last_seq = 0
         self.auth_token = auth_token or None
+        self.owner_token = owner_token or None
+        self._pair_code_digest = None
+        self._pair_code_expires_at = 0.0
+        self._pair_attempts = deque()
         self.started_at = time.time()
         self._event_sink_installed = False
         self._api_cache = {}
+
+    def create_pairing_code(self):
+        """Create one short-lived code; creating another invalidates it."""
+        alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+        code = "".join(secrets.choice(alphabet) for _ in range(10))
+        expires_at = time.time() + self.PAIR_CODE_TTL
+        digest = hashlib.sha256(code.encode("ascii")).digest()
+        with self.lock:
+            self._pair_code_digest = digest
+            self._pair_code_expires_at = expires_at
+        return code, expires_at
+
+    def redeem_pairing_code(self, code):
+        """Consume the active pairing code once and return the owner token."""
+        normalized = re.sub(r"[\s-]", "", code).upper()
+        candidate = hashlib.sha256(normalized.encode("utf-8")).digest()
+        now = time.time()
+        with self.lock:
+            while self._pair_attempts and now - self._pair_attempts[0] >= 60:
+                self._pair_attempts.popleft()
+            if len(self._pair_attempts) >= self.PAIR_ATTEMPTS_PER_MINUTE:
+                return "rate_limited", None
+            self._pair_attempts.append(now)
+            expected = self._pair_code_digest
+            expires_at = self._pair_code_expires_at
+            if expected is None or now >= expires_at:
+                self._pair_code_digest = None
+                self._pair_code_expires_at = 0.0
+                return "invalid", None
+            if not hmac.compare_digest(candidate, expected):
+                return "invalid", None
+            self._pair_code_digest = None
+            self._pair_code_expires_at = 0.0
+            return "ok", self.owner_token or self.auth_token
 
     def cached(self, key, build):
         """Short-TTL cache for polled read endpoints. Each miss would call
@@ -1468,15 +1510,18 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         non-ASCII header cannot raise). A token in the query string is not
         accepted: URLs are logged, kept in history and sent in Referer.
         """
-        if not self.ui.auth_token:
+        valid_tokens = [token for token in
+                        (self.ui.auth_token, self.ui.owner_token) if token]
+        if not valid_tokens:
             return True
-        expected = self.ui.auth_token.encode("utf-8")
         candidates = [self.headers.get("X-Harness-Auth", "")]
         auth_header = self.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             candidates.append(auth_header[7:].strip())
-        return any(hmac.compare_digest(c.encode("utf-8", "replace"), expected)
-                   for c in candidates)
+        return any(
+            hmac.compare_digest(candidate.encode("utf-8", "replace"),
+                                token.encode("utf-8"))
+            for candidate in candidates for token in valid_tokens)
 
     def _host_ok(self):
         """DNS-rebinding guard: with a loopback bind, the Host header must
@@ -1485,6 +1530,63 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         host = (self.headers.get("Host") or "").split(":")[0].lower()
         return host in ("127.0.0.1", "localhost", "::1")
 
+    def _same_loopback_origin(self):
+        """Allow the unauthenticated pairing route only from this UI origin."""
+        if not self._host_ok():
+            return False
+        host = (self.headers.get("Host") or "").strip()
+        origin = urlparse(self.headers.get("Origin") or "")
+        return (
+            origin.scheme == "http"
+            and origin.netloc.lower() == host.lower()
+            and origin.path in ("", "/")
+            and not origin.params
+            and not origin.query
+            and not origin.fragment
+        )
+
+    def _api_pair_create(self):
+        if not self.ui.owner_token:
+            return self._error(503, "persistent owner authentication is unavailable")
+        code, expires_at = self.ui.create_pairing_code()
+        return self._send_json({
+            "code": code,
+            "expires_in": self.ui.PAIR_CODE_TTL,
+            "expires_at": int(expires_at),
+        })
+
+    def _api_pair_redeem(self):
+        if not self._same_loopback_origin():
+            self._drain_body()
+            return self._error(403, "pairing requires the same loopback origin",
+                               close=True)
+        if (self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+                != "application/json"):
+            self._drain_body()
+            return self._error(415, "pairing requires an application/json body",
+                               close=True)
+        try:
+            length = int(self.headers.get("Content-Length") or "")
+        except ValueError:
+            return self._error(400, "pairing request requires Content-Length",
+                               close=True)
+        if length < 0 or length > 4096:
+            self._drain_body()
+            return self._error(413, "pairing request body is too large",
+                               close=True)
+        try:
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return self._error(400, "pairing request body is not valid JSON")
+        if not isinstance(body, dict) or not isinstance(body.get("code"), str):
+            return self._error(400, "pairing code is required")
+        state, token = self.ui.redeem_pairing_code(body["code"])
+        if state == "rate_limited":
+            return self._error(429, "too many pairing attempts; wait one minute")
+        if state != "ok" or not token:
+            return self._error(401, "pairing code is invalid, expired, or already used")
+        return self._send_json({"token": token})
+
     def _guard(self):
         if not self._host_ok():
             self._drain_body()
@@ -1492,7 +1594,7 @@ class UiRequestHandler(BaseHTTPRequestHandler):
             return False
         if not self._authorized():
             self._drain_body()
-            self._error(401, "missing or wrong X-Harness-Auth token",
+            self._error(401, "This browser is not connected to Harness",
                         close=True)
             return False
         return True
@@ -1607,6 +1709,8 @@ class UiRequestHandler(BaseHTTPRequestHandler):
     # -- POST --------------------------------------------------------------
     def do_POST(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/api/auth/pair/redeem":
+            return self._api_pair_redeem()
         if not self._guard():
             return
         try:
@@ -1615,6 +1719,8 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         except ValueError:
             return self._error(400, "request body is not valid JSON")
         try:
+            if parsed.path == "/api/auth/pair/create":
+                return self._api_pair_create()
             if parsed.path == "/api/chat":
                 # Single chat box entry point: text in, text out
                 return self._api_dispatch({"kind": "chat", "args": body})
@@ -1721,7 +1827,7 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         runs.sort(key=lambda r: r["created_at"], reverse=True)
         self._send_json({
             "status": "ok", "started_at": self.ui.started_at,
-            "auth_required": bool(self.ui.auth_token),
+            "auth_required": bool(self.ui.auth_token or self.ui.owner_token),
             "events_buffered": len(self.ui.events), "runs": runs[:50],
         })
 
@@ -2184,14 +2290,18 @@ class UiServer(ThreadingHTTPServer):
 
 
 _DEFAULT_AUTH_TOKEN = object()
+_DEFAULT_OWNER_TOKEN = object()
 
 
 def make_server(host="127.0.0.1", port=8765,
-                auth_token=_DEFAULT_AUTH_TOKEN):
+                auth_token=_DEFAULT_AUTH_TOKEN,
+                owner_token=_DEFAULT_OWNER_TOKEN):
     """Build the UI server with its UiState attached."""
     if auth_token is _DEFAULT_AUTH_TOKEN:
         auth_token = secrets.token_urlsafe(24)
-    ui = UiState(auth_token=auth_token)
+    if owner_token is _DEFAULT_OWNER_TOKEN:
+        owner_token = auth_token
+    ui = UiState(auth_token=auth_token, owner_token=owner_token)
     httpd = UiServer((host, port), UiRequestHandler)
     httpd.daemon_threads = True
     httpd.ui = ui
@@ -2207,7 +2317,7 @@ def main(argv=None):
                     help="bind address (default and recommended: 127.0.0.1)")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--auth-token", default=os.environ.get("HARNESS_UI_AUTH_TOKEN"),
-                    help="override the default persisted token protecting /api routes")
+                    help="add a session token; the persistent owner shortcut remains valid")
     ap.add_argument("--open", action="store_true",
                     help="open the tokenized UI in the default browser")
     opts = ap.parse_args(argv)
@@ -2215,14 +2325,31 @@ def main(argv=None):
         print("[FATAL] the UI server binds loopback only; pass 127.0.0.1, "
               "localhost, or ::1", file=sys.stderr)
         sys.exit(1)
-    auth_token = opts.auth_token or load_or_create_ui_token()
-    httpd = make_server(opts.host, opts.port, auth_token=auth_token)
+    try:
+        owner_token = load_or_create_ui_token()
+    except OSError as exc:
+        print("[FATAL] Cannot persist the Harness owner credential; refusing "
+              f"to start so recovery remains possible: {exc}", file=sys.stderr)
+        sys.exit(1)
+    auth_token = opts.auth_token or owner_token
+    httpd = make_server(opts.host, opts.port, auth_token=auth_token,
+                        owner_token=owner_token)
     host, port = httpd.server_address[:2]
     url = f"http://{host}:{port}/"
+    try:
+        shortcut = write_ui_handoff(url=url, token=owner_token)
+    except OSError as exc:
+        httpd.ui.uninstall_event_sink()
+        httpd.server_close()
+        print("[FATAL] Cannot save the user recovery shortcut; refusing to "
+              f"start without it: {exc}", file=sys.stderr)
+        sys.exit(1)
     print(f"[OK] harness UI serving at {url} (token-protected; Ctrl-C to stop)",
           file=sys.stderr)
+    print(f"[OK] user recovery shortcut saved at {shortcut}",
+          file=sys.stderr)
     if opts.open:
-        osal.open_url(url + "#" + auth_token)
+        osal.open_url(url + "#" + owner_token)
     else:
         print("[OK] use `harness serve --open` or `harness desktop` to open an authenticated UI",
               file=sys.stderr)

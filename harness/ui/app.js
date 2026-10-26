@@ -1,44 +1,54 @@
 let authTokenOverride;
+let authTokenPersisted = true;
 
 function getAuthToken() {
   if (authTokenOverride !== undefined) return authTokenOverride;
-  if (typeof location !== "undefined") {
-    if (location.hash && location.hash.length > 1) {
-      const h = decodeURIComponent(location.hash.slice(1));
-      if (h && !h.startsWith("/")) {
-        let stored = false;
-        try {
-          localStorage.setItem("harness_ui_auth_token", h);
-          stored = true;
-        } catch (_e) {}
-        if (stored && window.history && window.history.replaceState) {
-          try {
-            window.history.replaceState(window.history.state, "",
-              window.location.pathname + window.location.search);
-          } catch (_e) {}
-        }
-        return h;
+  if (typeof location !== "undefined" && location.hash && location.hash.length > 1) {
+    let token = "";
+    try { token = decodeURIComponent(location.hash.slice(1)); } catch (_e) {}
+    if (token && !token.startsWith("/")) {
+      try {
+        localStorage.setItem("harness_ui_auth_token", token);
+      } catch (_e) {
+        authTokenOverride = token;
+        authTokenPersisted = false;
       }
+      try {
+        if (window.history && window.history.replaceState) {
+          window.history.replaceState(window.history.state, "",
+            window.location.pathname + window.location.search);
+        }
+      } catch (_e) {}
+      return token;
     }
   }
-  // The fragment is only a launch handoff. Remove it from the address bar and
-  // browser history before any API request; the token is sent in a header.
+  // The fragment is a one-time launch handoff. Remove it before API requests;
+  // the durable credential is read from this browser's local storage.
   try {
     if (typeof history !== "undefined" && history.replaceState) {
       history.replaceState(history.state, "", location.pathname + location.search);
     }
   } catch (_e) {}
+  try {
+    return localStorage.getItem("harness_ui_auth_token") || null;
+  } catch (_e) {
+    return null;
+  }
 }
 
 function setAuthToken(token) {
-  const t = token ? String(token).trim() : null;
-  authTokenOverride = t;
-  if (t) {
-    try { localStorage.setItem("harness_ui_auth_token", t); } catch (_e) {}
-  } else {
-    try { localStorage.removeItem("harness_ui_auth_token"); } catch (_e) {}
+  const value = token ? String(token).trim() : null;
+  authTokenOverride = value;
+  let persisted = true;
+  try {
+    if (value) localStorage.setItem("harness_ui_auth_token", value);
+    else localStorage.removeItem("harness_ui_auth_token");
+  } catch (_e) {
+    persisted = false;
   }
+  authTokenPersisted = persisted;
   updateAuthDisplay();
+  return persisted;
 }
 
 window.HARNESS_GET_TOKEN = getAuthToken;
@@ -47,109 +57,122 @@ window.HARNESS_SET_TOKEN = setAuthToken;
 let isAuthPromptOpen = false;
 let authPromptPromise = null;
 let authPromptGeneration = 0;
+let authPromptResolve = null;
+let displayedPairCode = null;
+
+function setAuthModalMode(mode) {
+  const title = document.getElementById("auth-title");
+  const desc = document.getElementById("auth-desc");
+  const connectHelp = document.getElementById("auth-connect-help");
+  const connectPanel = document.getElementById("auth-connect-panel");
+  const pairPanel = document.getElementById("auth-pair-panel");
+  const pairing = mode === "pair";
+  if (title) title.textContent = pairing
+    ? "Pair another browser" : "Connect this browser to Harness";
+  if (desc) desc.textContent = pairing
+    ? "Create a short-lived code for a browser profile you control. The server token stays private."
+    : "Use a one-time pairing code from a signed-in Harness window. The server token stays private.";
+  if (connectHelp) connectHelp.hidden = pairing;
+  if (connectPanel) connectPanel.hidden = pairing;
+  if (pairPanel) pairPanel.hidden = !pairing;
+}
+
+function setAuthFeedback(message, isError = true) {
+  const feedback = document.getElementById("auth-feedback");
+  if (!feedback) return;
+  feedback.textContent = message || "";
+  feedback.hidden = !message;
+  feedback.style.color = isError ? "var(--bad)" : "var(--accent)";
+}
+
+function finishAuthPrompt(value, generation = authPromptGeneration) {
+  if (generation !== authPromptGeneration) return;
+  const modal = document.getElementById("auth-modal");
+  if (modal) modal.hidden = true;
+  isAuthPromptOpen = false;
+  authPromptPromise = null;
+  const resolve = authPromptResolve;
+  authPromptResolve = null;
+  if (resolve) resolve(value);
+}
 
 function promptForAuthToken(errMsg) {
   if (isAuthPromptOpen && authPromptPromise) return authPromptPromise;
   isAuthPromptOpen = true;
   const generation = ++authPromptGeneration;
   authPromptPromise = new Promise((resolve) => {
+    authPromptResolve = resolve;
     const modal = document.getElementById("auth-modal");
+    const input = document.getElementById("auth-pair-input");
+    const connectBtn = document.getElementById("btn-connect-pair");
+    const cancelBtn = document.getElementById("btn-cancel-token");
     if (!modal) {
-      const entered = window.prompt("The Harness server requires an authorization token (X-Harness-Auth). Enter token:", getAuthToken() || "");
-      if (entered) setAuthToken(entered);
-      isAuthPromptOpen = false;
-      resolve(entered);
+      finishAuthPrompt(null, generation);
       return;
     }
-    const errText = document.getElementById("auth-error-msg");
-    if (errText && errMsg) errText.textContent = errMsg;
-    const input = document.getElementById("auth-token-input");
-    const feedback = document.getElementById("auth-feedback");
-    if (input) input.value = getAuthToken() || "";
-    if (feedback) {
-      feedback.textContent = "";
-      feedback.hidden = true;
-    }
-    modal.hidden = false;
-    if (input) input.focus();
-
-    const saveBtn = document.getElementById("btn-save-token");
-    const cancelBtn = document.getElementById("btn-cancel-token");
-    if (saveBtn) saveBtn.disabled = false;
-
-    const cleanup = () => {
-      if (generation !== authPromptGeneration || !isAuthPromptOpen) return;
-      modal.hidden = true;
-      isAuthPromptOpen = false;
-      authPromptPromise = null;
-    };
-
+    setAuthModalMode("connect");
+    setAuthFeedback(errMsg || "");
     if (input) {
-      input.onkeydown = (e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          if (saveBtn) saveBtn.click();
-        } else if (e.key === "Escape") {
-          e.preventDefault();
+      input.value = "";
+      input.onkeydown = (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          if (connectBtn) connectBtn.click();
+        } else if (event.key === "Escape") {
+          event.preventDefault();
           if (cancelBtn) cancelBtn.click();
         }
       };
     }
-
-    if (saveBtn) {
-      saveBtn.onclick = async () => {
-        const val = input ? input.value.trim() : "";
-        if (!val) {
-          if (feedback) {
-            feedback.textContent = "Enter the local UI token to continue.";
-            feedback.hidden = false;
-          }
+    modal.hidden = false;
+    if (input) input.focus();
+    if (connectBtn) {
+      connectBtn.disabled = false;
+      connectBtn.onclick = async () => {
+        const code = input ? input.value.trim().replace(/[\s-]/g, "").toUpperCase() : "";
+        if (!/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{10}$/.test(code)) {
+          setAuthFeedback("Enter the 10-character pairing code shown in Harness.");
           if (input) input.focus();
           return;
         }
-        saveBtn.disabled = true;
-        if (feedback) {
-          feedback.textContent = "Checking token…";
-          feedback.hidden = false;
-        }
+        connectBtn.disabled = true;
+        setAuthFeedback("Connecting this browser?", false);
         try {
-          const check = await fetch("/api/status", {
-            headers: { "X-Harness-Auth": val }, cache: "no-store",
+          const response = await fetch("/api/auth/pair/redeem", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ code }),
+            cache: "no-store",
           });
+          const result = await response.json().catch(() => ({}));
           if (generation !== authPromptGeneration || !isAuthPromptOpen) return;
-          if (check.status === 401) {
-            if (feedback) feedback.textContent =
-              "That token was not accepted. Check the launch instructions above and try again.";
+          if (!response.ok || !result.token) {
+            setAuthFeedback(response.status === 401
+              ? "That code expired, was used already, or was typed incorrectly. Create a new code in the signed-in window."
+              : (result.error || "Harness could not pair this browser (HTTP " + response.status + ")."));
             return;
           }
-          if (!check.ok) {
-            if (feedback) feedback.textContent =
-              `Harness could not validate the token (HTTP ${check.status}). Try again.`;
-            return;
-          }
-          setAuthToken(val);
-          cleanup();
+          const token = result.token;
+          const persisted = setAuthToken(token);
+          if (input) input.value = "";
+          finishAuthPrompt(token, generation);
           pollRoute();
           pollSpend();
           refreshSessionList();
-          resolve(val);
+          if (!persisted) updateAuthDisplay();
         } catch (_e) {
-          if (generation === authPromptGeneration && isAuthPromptOpen && feedback) {
-            feedback.textContent =
-              "Could not reach Harness to check the token. Confirm the server is running and try again.";
+          if (generation === authPromptGeneration && isAuthPromptOpen) {
+            setAuthFeedback("Could not reach Harness. Confirm the server is running and try again.");
           }
         } finally {
           if (generation === authPromptGeneration && isAuthPromptOpen) {
-            saveBtn.disabled = false;
+            connectBtn.disabled = false;
           }
         }
       };
     }
     if (cancelBtn) {
-      cancelBtn.onclick = () => {
-        cleanup();
-        resolve(null);
-      };
+      cancelBtn.onclick = () => finishAuthPrompt(null, generation);
     }
   });
   return authPromptPromise;
@@ -157,20 +180,99 @@ function promptForAuthToken(errMsg) {
 
 window.HARNESS_PROMPT_AUTH = promptForAuthToken;
 
+function promptForPairingCode() {
+  const modal = document.getElementById("auth-modal");
+  if (!modal) return;
+  authPromptGeneration += 1;
+  isAuthPromptOpen = true;
+  authPromptPromise = null;
+  authPromptResolve = null;
+  displayedPairCode = null;
+  setAuthModalMode("pair");
+  setAuthFeedback("");
+  const output = document.getElementById("auth-pair-code");
+  const copyBtn = document.getElementById("btn-copy-pair");
+  const createBtn = document.getElementById("btn-create-pair");
+  const cancelBtn = document.getElementById("btn-cancel-token");
+  if (output) output.textContent = "";
+  if (copyBtn) copyBtn.hidden = true;
+  if (createBtn) {
+    createBtn.disabled = false;
+    createBtn.onclick = async () => {
+      createBtn.disabled = true;
+      setAuthFeedback("Creating a one-time code?", false);
+      try {
+        const response = await fetch("/api/auth/pair/create", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Harness-Auth": getAuthToken() || "",
+          },
+          body: "{}",
+          cache: "no-store",
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.code) {
+          if (response.status === 401) {
+            setAuthToken(null);
+            setAuthModalMode("connect");
+            setAuthFeedback("This browser needs to pair again. Use a code from another signed-in Harness window.");
+          } else {
+            setAuthFeedback(result.error || "Could not create a code (HTTP " + response.status + ").");
+          }
+          return;
+        }
+        displayedPairCode = result.code;
+        if (output) output.textContent =
+          result.code.slice(0, 5) + "-" + result.code.slice(5);
+        if (copyBtn) copyBtn.hidden = false;
+        setAuthFeedback("Code ready. Enter it in the other browser within five minutes.", false);
+      } catch (_e) {
+        setAuthFeedback("Could not reach Harness. Confirm the server is running and try again.");
+      } finally {
+        createBtn.disabled = false;
+      }
+    };
+  }
+  if (copyBtn) {
+    copyBtn.onclick = async () => {
+      if (!displayedPairCode) return;
+      try {
+        await navigator.clipboard.writeText(
+          displayedPairCode.slice(0, 5) + "-" + displayedPairCode.slice(5));
+        setAuthFeedback("Pairing code copied.", false);
+      } catch (_e) {
+        setAuthFeedback("Select and copy the code shown above.");
+      }
+    };
+  }
+  if (cancelBtn) {
+    cancelBtn.onclick = () => {
+      modal.hidden = true;
+      isAuthPromptOpen = false;
+      authPromptPromise = null;
+      authPromptResolve = null;
+    };
+  }
+  modal.hidden = false;
+}
+
 function updateAuthDisplay() {
   const btn = document.getElementById("btn-auth-toggle");
   const text = document.getElementById("auth-text");
   const icon = document.getElementById("auth-icon");
-  const tok = getAuthToken();
+  const token = getAuthToken();
   if (btn && text) {
-    if (tok) {
-      text.textContent = "Auth set";
-      if (icon) icon.textContent = "🔒";
-      btn.title = "X-Harness-Auth token configured. Click to view or change.";
+    if (token) {
+      text.textContent = authTokenPersisted ? "Connected" : "Tab only";
+      if (icon) icon.textContent = "\u{1F512}";
+      btn.title = authTokenPersisted
+        ? "Create a one-time code to connect another browser."
+        : "Connected for this tab only. Browser storage is blocked; pairing is needed again after closing it.";
     } else {
-      text.textContent = "Auth";
-      if (icon) icon.textContent = "🔓";
-      btn.title = "No X-Harness-Auth token set. Click to configure.";
+      text.textContent = "Connect";
+      if (icon) icon.textContent = "\u{1F513}";
+      btn.title = "Connect this browser with a one-time pairing code.";
     }
   }
 }
@@ -199,7 +301,8 @@ async function api(path, opts = {}) {
   let body = null;
   try { body = await res.json(); } catch (_e) {}
   if (res.status === 401) {
-    const errReason = (body && body.error) ? body.error : "missing or wrong X-Harness-Auth token";
+    if (token) setAuthToken(null);
+    const errReason = (body && body.error) ? body.error : "This browser is not connected to Harness.";
     const entered = await promptForAuthToken(errReason);
     if (entered) {
       headers["X-Harness-Auth"] = entered;
@@ -483,7 +586,8 @@ function setupHeaderControls() {
   if (authBtn) {
     updateAuthDisplay();
     authBtn.addEventListener("click", () => {
-      promptForAuthToken("Enter or update your X-Harness-Auth token:");
+      if (getAuthToken()) promptForPairingCode();
+      else promptForAuthToken("Connect this browser with a one-time pairing code.");
     });
   }
 }
