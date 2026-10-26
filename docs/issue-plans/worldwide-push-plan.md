@@ -5,7 +5,7 @@ Objective: finish the three open fronts and ship the public face of the tool —
 existence check, built in the shape Lucas picks; (3) a separate public
 visibility site showing models and their stats worldwide, fed by sanitized,
 aggregated opt-in user ledger stats, driving users to download the tool;
-then deploy it. Iterate through ALL phases, fully, in order. Land each phase
+then deploy it. Iterate through ALL phases, fully, in order — every phase completed across ALL its aspects (implementation, tests, verification, docs, disposition). No phase counts as done with an aspect left open. Land each phase
 on main green before moving to the next; if a phase blocks, name the blocker
 exactly and continue with the next unblocked phase — never mark done what is
 not on main green.
@@ -41,27 +41,35 @@ canonical path now. It was saved somewhere on this machine — find it.
    do not invent a key, do not silently request a new one. That is the
    blocker, named.
 
-## Phase 2 — #333: ledger existence check (Lucas's pick)
+## Phase 2 — #333: ledger existence check — DECIDED: (b) ledger-backed validation
+
+DECISION (Lucas, 2026-10-25, Jev-flushed unanimous: choice (b) with
+confidence 1.0, non-destructive 0.06): implement (b) ledger-backed
+validation. No further decision needed — build it.
+
+Why (b): MCP servers here are per-client stdio, so every client spawns a
+fresh server process and a memory-only registry evaporates between sessions;
+it cannot validate a task offered in an earlier session. The ledger is the
+durable truth, so the check lives where the truth lives. The (a)
+in-process-registry option was evaluated and rejected on exactly that
+ground.
 
 The bug: `defer_work({"task_id": "nope"})` returns success and writes a
 `defer_midtask` ledger event for a task that never existed, polluting
 participation metrics and `jev_calibration` input. The fix: validate task
-existence before appending ANY ledger event.
+existence against the ledger before appending ANY ledger event.
 
-- `offer_work` must record the IDs it mints.
-- `defer_work` / `log_judgment` must reject unknown task_ids with an explicit
-  error and NO ledger write.
-- The shape is Lucas's call — (a) in-process registry of offered IDs
-  (simpler, memory-only, dies with the process) or (b) ledger-backed
-  validation (survives restarts, consistent with the hash-chained design,
-  more code). DO NOT decide the shape yourself. Implement the shape recorded
-  on #333 or in-thread by Lucas. If no pick is recorded, complete all other
-  phases and leave #333 as the single surfaced decision — do not stall the
-  whole push on it.
-- Verification: the `nope` repro must error, not fabricate; hermetic
-  regression test pinning that; #336's never-prune list absorbs the existing
-  phantom entries. PR green, merge, main green, disposition on #333 naming
-  the merge commit and evidence.
+- ALL aspects, ALL writers: `offer_work` must record the IDs it mints, and
+  EVERY ledger-writing path — `defer_work`, `log_judgment`, and any other
+  event writer — must reject unknown task_ids with an explicit error and NO
+  ledger write. No writer left unguarded; a partial fix that covers only
+  `defer_work` is not complete.
+- Verification, all aspects: the `nope` repro must error, not fabricate;
+  hermetic regression tests pinning every writer's rejection; the
+  participation and `jev_calibration` consumers verified clean of phantoms;
+  #336's never-prune list absorbs the existing phantom entries. PR green,
+  merge, main green, disposition on #333 naming the merge commit and
+  evidence.
 
 ## Phase 3 — Public visibility site (worldwide model stats)
 
@@ -102,7 +110,7 @@ do not claim a deploy that did not happen.
 
 - One-PR-at-a-time, green-CI merges; main branch protection is active
   (11 required checks, 0 required approvals).
-- Do NOT decide #333. Do NOT touch #306's key value beyond presence checks.
+- #333 is DECIDED: (b) ledger-backed validation (Lucas 2026-10-25, Jev unanimous). Build it; do not reopen the shape question. Do NOT touch #306's key value beyond presence checks.
 - Do NOT loosen any audit/Jev bar, baseline, or pinned score. Do NOT raise
   any spending ceiling. Do NOT re-run paid attestation.
 - Do NOT start #277 (dogfood round 2) in this push — it stays unstarted
@@ -118,8 +126,9 @@ do not claim a deploy that did not happen.
 
 - #306 installed + EV-8 receipt landed (or the key-search blocker named
   with the searched locations).
-- #333 implemented in Lucas's picked shape (or surfaced as the single
-  decision with everything else done).
+- #333 implemented as (b) ledger-backed validation across ALL ledger-writing
+  paths, with all aspects verified (repro, every writer's regression tests,
+  consumers clean, phantoms absorbed).
 - Visibility-site issue filed, site built, deployed publicly at a recorded
   URL, fed by sanitized aggregated opt-in stats, driving downloads.
 - Main green, 0 open PRs for this push, inventory updated.

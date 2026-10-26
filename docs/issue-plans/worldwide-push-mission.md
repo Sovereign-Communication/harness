@@ -23,8 +23,8 @@ you land it — no phase left half-done.
 ## Phase order (from the plan)
 
 0. Services up. 1. #306 — find the Fireworks key, install it (0600),
-   probe receipt + EV-8 flip. 2. #333 — build Lucas's picked shape, or
-   surface it as the single decision if he has not picked. 3. Visibility
+   probe receipt + EV-8 flip. 2. #333 — build (b) ledger-backed validation across ALL
+   ledger-writing paths (DECIDED by Lucas 2026-10-25, Jev unanimous). 3. Visibility
    site — file the tracking issue, build the separate public stats hub on
    sanitized aggregated opt-in data, feature the 0.23¢ audit receipt and the
    download path. 4. Deploy via the local Cloudflare setup; verify the
@@ -32,7 +32,8 @@ you land it — no phase left half-done.
 
 ## Hard constraints
 
-- Do NOT decide #333. Do NOT print, log, or commit any key value. Do NOT
+- #333 is DECIDED: (b) ledger-backed (Lucas 2026-10-25). Do NOT reopen
+it. Do NOT print, log, or commit any key value. Do NOT
   loosen any audit/Jev bar, baseline, or pinned score. Do NOT raise any
   ceiling. Do NOT start #277. Do NOT claim a deploy that did not happen.
 - One PR at a time, green CI, merge commits on main. Jev gate v1 before
@@ -43,7 +44,7 @@ you land it — no phase left half-done.
 ## Done looks like
 
 #306 installed + EV-8 receipt on main (or blocker named with searched
-locations); #333 built per Lucas's pick (or the single surfaced decision);
+locations); #333 built as (b) ledger-backed across all writers, all aspects verified;
 visibility site live at a recorded public URL; main green; inventory true;
 a final report naming what landed, what remains, and who owns each
 remaining item. The mission ends only when every phase is landed or
