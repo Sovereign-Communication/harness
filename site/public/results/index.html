@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Results — Harness issue program</title>
-  <meta name="description" content="Measured Harness issue-program results: eight landed items with merge commits, current test totals and the open-issue ledger.">
+  <meta name="description" content="Measured Harness issue-program results: nine landed items with merge commits, current test totals and the open-issue ledger.">
   <meta property="og:title" content="Results — Harness issue program">
-  <meta property="og:description" content="Eight landed items, 5,122 tests and 58 open issues — receipts first, no invented metrics.">
+  <meta property="og:description" content="Nine landed items, 5,122 tests and 57 open issues — receipts first, no invented metrics.">
   <meta property="og:type" content="website">
   <link rel="canonical" href="https://harness.pages.dev/results/">
   <link rel="stylesheet" href="../assets/site.css">
@@ -30,7 +30,7 @@
     <h1>Results: issue program, batch 1</h1>
     <p class="lede">One reviewed slice at a time. An issue counts as complete only after its changes merge with green CI; a queued row is never presented as done.</p>
 
-    <p class="small muted">Receipt base for these counts: <code>main</code> <code>919d2ac</code> (post-PR #398) &middot; post-merge check <a href="https://github.com/Sovereign-Communication/harness/actions/runs/40275515384">run 40275515384</a> &middot; 12/12 green &middot; 58 live open issues (GitHub, 2026-10-26).</p>
+    <p class="small muted">Main baseline before PR #401: <code>2fc842c</code> (post-PR #400) &middot; <a href="https://github.com/Sovereign-Communication/harness/actions/runs/40282832793">run 40282832793</a> passed 12/12. PR #401 closes #287 after its docs/site-only light-path checks; the queue below reflects 57 live open issues after merge (GitHub, 2026-10-26).</p>
 
     <h2>Landed items</h2>
     <table>
@@ -87,10 +87,16 @@
           <td><a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/333.md">plan receipt</a>; 5,122-test local audit; D12 pass; PR-head and post-merge CI 12/12; local Jev 1.14 non-fallback, A/R/SM/SD 10.00</td>
         </tr>
         <tr>
+          <td><a href="https://github.com/Sovereign-Communication/harness/issues/287">#287</a> CI cancellation and docs-only path</td>
+          <td>complete</td>
+          <td><code>2fc842c</code></td>
+          <td><a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/287.md">plan receipt</a>; PR #400 head CI 13 checks green; same-ref superseded runs canceled automatically; <a href="https://github.com/Sovereign-Communication/harness/actions/runs/40285330698">PR #401 final light-path CI</a> passed with matrix skipped and audit/package/checkout hygiene/installed-package checks green; <a href="https://github.com/Sovereign-Communication/harness/actions/runs/40285330668">site workflow</a> passed</td>
+        </tr>
+        <tr>
           <td><a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/queue.json">Open issues</a></td>
           <td>queued</td>
           <td>—</td>
-          <td>58 live open issues: 64 queue rows minus six landed queue items; #339 and #331 landed outside the queue</td>
+          <td>57 live open issues: 64 queue rows minus seven landed queue items; #339 and #331 landed outside the queue</td>
         </tr>
       </tbody>
     </table>
@@ -104,10 +110,10 @@
         <tr><td>Audit A / R / SM / SD</td><td>10.00 / 10.00 / 10.00 / 10.00</td><td>All four dimensions at the ceiling</td></tr>
         <tr><td>D12 coverage</td><td>PASS</td><td>runtime merge-base; passed on PR #398 and post-merge main CI; no manual baseline</td></tr>
         <tr><td>JEV gate</td><td>PASS</td><td>Hard gates green; sentiment buckets pass</td></tr>
-        <tr><td>Queue ledger gate</td><td>PASS</td><td>64 of 64 rows valid; 6 complete, 58 queued</td></tr>
+        <tr><td>Queue ledger gate</td><td>PASS</td><td>64 of 64 rows valid; 7 complete, 57 queued</td></tr>
         <tr><td>Site gate</td><td>PASS</td><td>67 tests</td></tr>
         <tr><td>Ruff</td><td>clean</td><td><code>python -m ruff check harness tests</code></td></tr>
-        <tr><td>Merge-result CI</td><td>12/12</td><td><a href="https://github.com/Sovereign-Communication/harness/actions/runs/40275515384">run 40275515384</a> on <code>919d2ac</code></td></tr>
+        <tr><td>Merge-result CI</td><td>12/12</td><td><a href="https://github.com/Sovereign-Communication/harness/actions/runs/40282832793">run 40282832793</a> on <code>2fc842c</code></td></tr>
       </tbody>
     </table>
 
@@ -121,13 +127,14 @@
       <li><strong>#276</strong> made D12 measure the runtime merge-base instead of a stored baseline SHA. Current-tree coverage is regenerated when the fast-path document does not name that base; the real-diff proof is <strong>1/1 = 100%</strong> with a <strong>0/1 = 0%</strong> negative control. S5 now names the shared ruff resolver, and the triage runbook records the missing-tool signature.</li>
       <li><strong>#331</strong> stopped a fail-open D12 SKIP from earning measurement credit. The table prints <code>skip</code>, the receipt writes <code>status=skip</code> with a null score, and dimension means/Jev evidence count only measured rows; an all-skip dimension is <code>not_evaluated</code>, never a pass.</li>
       <li><strong>#333</strong> made task-ID validity ledger-backed: offers establish IDs, all non-offer task-bound writes reject unknown IDs without ledger rows, and external IDs are preflighted before provider calls. Generated IDs are recorded before use, with a Windows short-path regression pinned through the CLI.</li>
+      <li><strong>#287</strong> preserves per-ref cancellation and skips the five-platform matrix only for docs/site-only diffs; missing or failed change detection keeps the full matrix, while audit and the other required checks remain active.</li>
     </ul>
 
     <h2>Measured cost case</h2>
     <p>On a previous live task the apply seat produced a one-character fix for <strong>0.23&cent;</strong>. On the same task, the paid judge returned a post-response parse error plus a <strong>0.38&cent;</strong> protocol retry, so the run cost <strong>0.61&cent;</strong>. The number is unflattering, and it is published for that reason: the judge's retry cost more than the apply it reviewed.</p>
 
     <h2>What remains open</h2>
-    <p>The <a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/closing-report-2026-10-25.md">closing report</a> is the 54-open snapshot before #276; the current 58-issue inventory is on <a href="https://github.com/Sovereign-Communication/harness/issues/295">#295</a>, and the <a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/queue.json">execution queue</a> carries the same state as machine-readable JSON. With #276, #331, and #333 landed, <strong>#277</strong>'s named prerequisites (#276, #331, #327, #330) are complete and #277 remains reserved for the final cross-surface verification round. <strong>#306</strong>'s one-shot probe is waiting on the exact Fireworks model path required by the CLI. The rest are blocked by named prerequisite issues or are ready and queued.</p>
+    <p>The <a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/closing-report-2026-10-25.md">closing report</a> is the 54-open snapshot before #276; the current 57-issue inventory is on <a href="https://github.com/Sovereign-Communication/harness/issues/295">#295</a>, and the <a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/queue.json">execution queue</a> carries the same state as machine-readable JSON. With #276, #287, #331, and #333 landed, <strong>#277</strong>'s named prerequisites (#276, #331, #327, #330) are complete and #277 remains reserved for the final cross-surface verification round. <strong>#306</strong>'s one-shot probe is waiting on the exact Fireworks model path required by the CLI. The rest are blocked by named prerequisite issues or are ready and queued.</p>
     <p class="small muted">This is a static results surface. Deployment is performed only by <code>.github/workflows/site.yml</code>, and only when the <code>CF_API_TOKEN</code> repository secret is configured. A merged page is not by itself a deployed page; the workflow run is the deployment record.</p>
   </main>
 

@@ -77,11 +77,11 @@ jobs:
   test:
     name: hermetic suite (${{ matrix.os }}, py${{ matrix.python-version }})
     needs: changes
-    # Keep the required workflow alive for docs-only PRs: skip just this job,
-    # never the whole workflow. If path detection fails, run the matrix.
-    if: >-
-      !cancelled() && (needs.changes.result != 'success' ||
-        needs.changes.outputs.run_hermetic != 'false')
+    # Keep every branch-protection matrix context present for docs-only PRs.
+    # Those runs take a lightweight pass below; code changes run the suite.
+    if: ${{ !cancelled() }}
+    env:
+      RUN_HERMETIC: ${{ needs.changes.result != 'success' || needs.changes.outputs.run_hermetic != 'false' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -97,11 +97,19 @@ jobs:
           - os: ubuntu-latest
             python-version: "3.13"
     steps:
+      - name: Docs/site-only matrix receipt
+        if: env.RUN_HERMETIC != 'true'
+        shell: bash
+        run: |
+          echo "Docs/site-only change: skipped hermetic setup and tests." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@v4
+        if: env.RUN_HERMETIC == 'true'
       - uses: actions/setup-python@v5
+        if: env.RUN_HERMETIC == 'true'
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install development tooling
+        if: env.RUN_HERMETIC == 'true'
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e '.[dev]'
@@ -109,12 +117,21 @@ jobs:
       # platform, so a lint finding is never a runner-specific artefact.
       - name: Lint (ruff)
         if: runner.os == 'Linux'
-        run: python -m ruff check harness tests examples/oc_handoff
+        shell: bash
+        run: |
+          if [[ "$RUN_HERMETIC" != "true" ]]; then
+            echo "Docs/site-only change: skipped lint." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python -m ruff check harness tests examples/oc_handoff
       - name: Compile
+        if: env.RUN_HERMETIC == 'true'
         run: python -m compileall -q harness tests examples/oc_handoff
       - name: Check repo philosophy cards (drift check)
+        if: env.RUN_HERMETIC == 'true'
         run: python -m harness.repo_cards --check
       - name: Run tests (hermetic, no network, warnings clean)
+        if: env.RUN_HERMETIC == 'true'
         run: python -W error::ResourceWarning -m unittest discover -s tests -v
 
   audit:

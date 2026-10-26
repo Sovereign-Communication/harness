@@ -192,7 +192,7 @@
         327
       ],
       "acceptance": "Cancel stale runs; docs light path retains audit; code retains every required check; workflow negative controls.",
-      "status": "queued"
+      "status": "complete"
     },
     {
       "issue": 288,
