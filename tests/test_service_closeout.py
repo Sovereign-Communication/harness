@@ -160,6 +160,101 @@ class ServiceParityTests(unittest.TestCase):
         self.assertAlmostEqual(result["actual_cost"], 0.001, places=9)
         self.assertEqual(result["meta"]["judge"], "m/j")
 
+    def test_run_verify_offers_a_generated_task_before_panel_dispatch(self):
+        import os
+        import unittest.mock
+        from harness import service
+        from harness.ledger import AutonomyLedger
+
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = AutonomyLedger(os.path.join(directory, "ledger.jsonl"))
+            gov = type("G", (), {"cost_by_model": lambda self: {}})()
+            captured = {}
+
+            def fake_panel_judge(**kwargs):
+                captured.update(kwargs)
+                return {"status": "ok"}
+
+            with unittest.mock.patch.object(service, "pre_run_warning"), \
+                 unittest.mock.patch.object(service, "panel_judge",
+                                            side_effect=fake_panel_judge):
+                service.run_verify(
+                    self._settings(), prompt="hi", governor=gov, ledger=ledger,
+                    attach_meta=False)
+
+            task_id = captured["task_id"]
+            self.assertTrue(task_id)
+            self.assertIn(task_id, {
+                entry.get("task_id") for entry in ledger.entries()
+                if entry["event"] == "offer"})
+
+    def test_run_verify_rejects_unknown_task_before_panel_or_ledger_write(self):
+        import os
+        import unittest.mock
+        from harness import service
+        from harness.errors import HarnessError
+        from harness.ledger import AutonomyLedger
+
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = AutonomyLedger(os.path.join(directory, "ledger.jsonl"))
+            gov = type("G", (), {})()
+            with unittest.mock.patch.object(service, "panel_judge") as panel, \
+                 self.assertRaisesRegex(HarnessError, "unknown task_id"):
+                service.run_verify(
+                    self._settings(), prompt="hi", task_id="missing-task",
+                    governor=gov, ledger=ledger)
+
+            panel.assert_not_called()
+            self.assertEqual(ledger.entries(), [])
+
+    def test_run_dogfood_offers_its_generated_id_before_verify(self):
+        import os
+        from types import SimpleNamespace
+        from harness.claims import Claim
+        from harness.ledger import AutonomyLedger
+        from harness.service import run_dogfood
+
+        with tempfile.TemporaryDirectory() as directory:
+            ledger_path = os.path.join(directory, "ledger.jsonl")
+            settings = SimpleNamespace(ledger_path=ledger_path)
+            target = os.path.join(directory, "target.py")
+            with open(target, "w", encoding="utf-8") as stream:
+                stream.write("HARD_MAX_COST = 0.10\n")
+            claim = Claim(claim_id="c1", kind="defect",
+                          text="HARD_MAX_COST is 0.10", source_refs=[1])
+            captured = {}
+
+            def verify(_settings, **kwargs):
+                captured.update(kwargs)
+                return {"convergence": {"tally": {"claims": {}}}}
+
+            report = run_dogfood(
+                settings, file=target, instruction="fix",
+                claims=[claim], source_text="HARD_MAX_COST = 0.10\n",
+                run_verify_fn=verify)
+
+            self.assertEqual(report["status"], "not_confirmed")
+            task_id = captured["task_id"]
+            self.assertIn(task_id, {
+                entry.get("task_id") for entry in AutonomyLedger(ledger_path).entries()
+                if entry["event"] == "offer"})
+
+    def test_run_dogfood_rejects_unknown_explicit_id_without_a_write(self):
+        import os
+        from types import SimpleNamespace
+        from harness.errors import HarnessError
+        from harness.ledger import AutonomyLedger
+        from harness.service import run_dogfood
+
+        with tempfile.TemporaryDirectory() as directory:
+            ledger_path = os.path.join(directory, "ledger.jsonl")
+            ledger = AutonomyLedger(ledger_path)
+            settings = SimpleNamespace(ledger_path=ledger_path)
+            with self.assertRaisesRegex(HarnessError, "unknown task_id"):
+                run_dogfood(settings, file="target.py", instruction="fix",
+                            task_id="missing-task")
+            self.assertEqual(ledger.entries(), [])
+
     def test_run_verify_meta_uses_effective_lane_overrides(self):
         import unittest.mock
         from harness import service

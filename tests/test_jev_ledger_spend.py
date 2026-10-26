@@ -34,6 +34,7 @@ class JevLedgerSpendTests(unittest.TestCase):
                                                   completion="0")])
         governor = SpendGovernor(spend_transport, "sk-test", max_cost=0.10)
         ledger = self._ledger()
+        ledger.ensure_offered_task_id("task-1", source="test_setup")
         settings = load_settings({"jev_api_key": "jev-key"})
         policy = policy_for(settings, transport=jev_transport,
                             governor=governor, ledger=ledger)

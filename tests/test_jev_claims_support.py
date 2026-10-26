@@ -63,6 +63,7 @@ class ClaimSupportPolicyTests(unittest.TestCase):
         td = tempfile.TemporaryDirectory()
         self.addCleanup(td.cleanup)
         ledger = AutonomyLedger(os.path.join(td.name, "ledger.jsonl"))
+        ledger.ensure_offered_task_id("t-claims", source="test_setup")
         governor = SpendGovernor(
             FakeTransport(models=[m("jev-test", prompt="0", completion="0")]),
             "sk-test", max_cost=0.10)

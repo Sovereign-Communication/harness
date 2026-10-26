@@ -3,6 +3,7 @@ through the engine/router/gate, sharing the task budget, fail-fast on the
 first non-success, and the batch envelope. The engine (harness/apply.py)
 owns the per-file apply; this module owns the LOOP and the result shapes.
 """
+import uuid
 from collections import Counter
 from dataclasses import asdict, dataclass
 
@@ -70,6 +71,7 @@ def run_batch(engine, files, *, task_id=None, apply_pool=None,
     ``options`` carries the per-file session options as one :class:`BatchOptions`
     bundle (the CLI face constructs it once); its ``continuation`` field is
     honored when the run-level parameter is unset."""
+    ledger = getattr(engine, "ledger", None)
     if continuation is None:
         # A caller may carry the resume state in the bundle instead of the
         # run-level parameter; the parameter wins when both are given.
@@ -87,12 +89,32 @@ def run_batch(engine, files, *, task_id=None, apply_pool=None,
     kw["cancel_check"] = cancel_check
     kw["continuation"] = continuation
     if len(files) == 1:
-        return engine.apply_edit(task_id=task_id or "apply",
+        if task_id is None:
+            task_id = uuid.uuid4().hex[:8]
+            if ledger is not None:
+                ledger.ensure_offered_task_id(
+                    task_id, model="(apply)", required=False,
+                    source="apply_batch")
+        return engine.apply_edit(task_id=task_id,
                                  file_path=files[0], **kw)
 
     def _worker(i, fp):
-        return engine.apply_edit(task_id=(task_id or "apply") + f"-{i + 1}",
+        child_task_id = task_id + f"-{i + 1}"
+        if ledger is not None:
+            ledger.ensure_offered_task_id(
+                child_task_id, model="(apply)", required=False,
+                source="apply_batch")
+        return engine.apply_edit(task_id=child_task_id,
                                  file_path=fp, **kw)
+
+    if task_id is None:
+        task_id = uuid.uuid4().hex[:8]
+        if ledger is not None:
+            ledger.ensure_offered_task_id(
+                task_id, model="(apply)", required=False,
+                source="apply_batch")
+    elif ledger is not None:
+        ledger.require_offered_task_id(task_id)
 
     if is_parallel:
         from .executor import ConcurrentExecutor

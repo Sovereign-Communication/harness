@@ -100,6 +100,7 @@ class SpecialistRotationTests(unittest.TestCase):
         led_path = os.path.join(tempfile.mkdtemp(), "led.jsonl")
         from harness.ledger import AutonomyLedger
         ledger = AutonomyLedger(led_path)
+        ledger.ensure_offered_task_id("rot1", source="test_setup")
         fake = FakeTransport(
             models=[m(P1), m(P2), m(JUDGE), m("z-ai/glm-5.2:free")],
             posts=[comp(json.dumps({"c1": {"real": False, "confidence": 0.9}}), cost=0.0),

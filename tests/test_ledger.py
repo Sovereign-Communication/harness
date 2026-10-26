@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 
+from harness.errors import HarnessError
 from harness.ledger import AutonomyLedger
 
 
@@ -62,12 +63,13 @@ class LedgerTests(unittest.TestCase):
         both appended from the same prev_hash and forked the chain with
         duplicate seqs. append() must re-read the file under the lock and
         continue the OTHER writer's chain."""
+        self.ledger.append("offer", task_id="t1", model="m1")
         self.ledger.append("dispatch_start", task_id="t1", model="m1")
         self.ledger.append("model_result", task_id="t1", model="m1")
-        self._other_writer_append("dispatch_start")
+        self._other_writer_append("dispatch_start", task_id="t1")
         self.ledger.append("complete", task_id="t1", model="m1")
         seqs = [e["seq"] for e in self.ledger.entries()]
-        self.assertEqual(seqs, [1, 2, 3, 4])
+        self.assertEqual(seqs, [1, 2, 3, 4, 5])
         reloaded = AutonomyLedger(self.path)
         ok, bad = reloaded.verify()
         self.assertTrue(ok)
@@ -117,6 +119,7 @@ class LedgerTests(unittest.TestCase):
         # neither the host gate counts nor the per-model denial count may
         # treat it as a strike (that poisoned every rescue rung).
         led = self.ledger
+        led.append("offer", task_id="t1", model="rung", required=True)
         led.append("trust_gate", task_id="t1", model="rung",
                    reason="preview-band", severity="soft")
         led.append("trust_gate", task_id="t1", model="rung",
@@ -132,6 +135,7 @@ class LedgerTests(unittest.TestCase):
         # gate would otherwise feed itself strikes forever). Hostile
         # attempts and soft denies above the band stay evidence.
         led = self.ledger
+        led.append("offer", task_id="t1", model="m", required=True)
         led.append("trust_gate", task_id="t1", model="m",
                    reason="refused", severity="soft", combined=-11)
         led.append("trust_gate", task_id="t1", model="m",
@@ -172,6 +176,8 @@ class LedgerTests(unittest.TestCase):
     def test_calibration_tracks_readiness_vs_verify(self):
         """Join HARNESS_READY: confident verdicts with the same-round verify outcome."""
         led = self.ledger
+        for task_id in ("t1", "t2", "t3", "t4", "t5"):
+            led.append("offer", task_id=task_id, model="judge", required=True)
         # coder_a: confident twice, both passed -> well-calibrated
         led.append("readiness", task_id="t1", model="coder_a", round=1, decision="confident")
         led.append("verify_round", task_id="t1", round=1, passed=True, model="coder_a",
@@ -201,6 +207,7 @@ class LedgerTests(unittest.TestCase):
     def test_calibration_ignores_unmatched_readiness(self):
         """A confident verdict with no same-round verify outcome does not count as pass."""
         led = self.ledger
+        led.append("offer", task_id="t1", model="judge", required=True)
         led.append("readiness", task_id="t1", model="coder", round=1, decision="confident")
         # verify_round for a different round -> no join
         led.append("verify_round", task_id="t1", round=2, passed=False, model="coder",
@@ -214,6 +221,8 @@ class LedgerTests(unittest.TestCase):
     def test_success_rate_and_model_result_samples(self):
         """success_rate aggregates verify outcomes; samples counts model_result events."""
         led = self.ledger
+        for task_id in ("t1", "t2", "t3"):
+            led.append("offer", task_id=task_id, model="judge", required=True)
         led.append("verify_round", task_id="t1", round=1, passed=True, model="coder")
         led.append("verify_round", task_id="t1", round=2, passed=True, model="coder")
         led.append("verify_round", task_id="t2", round=1, passed=False, model="coder")
@@ -245,6 +254,8 @@ class LedgerTests(unittest.TestCase):
         predicate the dogfood curator turns into its headline claim --
         so pool ordering can demote demonstrated gate-wasters."""
         led = self.ledger
+        for task_id in ("t1", "t2", "t3", "t4", "t5"):
+            led.append("offer", task_id=task_id, model="judge", required=True)
         led.append("abort", task_id="t1", model="acme/waster:free",
                    reason="verify rounds exhausted", rotations=3)
         led.append("abort", task_id="t2", model="acme/waster:free",
@@ -259,6 +270,51 @@ class LedgerTests(unittest.TestCase):
         r = led.participation_report()
         self.assertEqual(r["calibration"]["acme/waster:free"]["gate_wasted_runs"], 3)
         self.assertNotIn("gate_wasted_runs", r["calibration"].get("acme/other:free", {}))
+
+
+    def test_unknown_task_ids_are_rejected_without_ledger_writes(self):
+        before = list(self.ledger.entries())
+        for event in ("defer_midtask", "consent_accept", "dispatch_start",
+                      "complete", "log_judgment"):
+            with self.subTest(event=event):
+                with self.assertRaisesRegex(HarnessError, "unknown task_id"):
+                    self.ledger.append(event, task_id="never-offered")
+                self.assertEqual(self.ledger.entries(), before)
+
+        self.ledger.append("offer", task_id="offered", model="m1")
+        restarted = AutonomyLedger(self.path)
+        restarted.require_offered_task_id("offered")
+        appended = restarted.append("defer_midtask", task_id="offered",
+                                    reason="partial work")
+        self.assertEqual(appended["event"], "defer_midtask")
+
+    def test_unknown_task_id_does_not_create_ledger_file(self):
+        with self.assertRaisesRegex(HarnessError, "unknown task_id"):
+            self.ledger.append("defer_midtask", task_id="phantom")
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_offer_helpers_allow_none_and_reject_invalid_new_ids(self):
+        self.assertIsNone(self.ledger.require_offered_task_id(None))
+        self.assertIsNone(self.ledger.ensure_offered_task_id(None))
+        for invalid in ("", 7):
+            with self.subTest(task_id=invalid):
+                with self.assertRaisesRegex(HarnessError, "unknown task_id"):
+                    self.ledger.ensure_offered_task_id(invalid)
+        self.assertEqual(self.ledger.entries(), [])
+
+    def test_repair_of_an_empty_valid_prefix_rebuilds_the_offer_index(self):
+        self.ledger.append("offer", task_id="discarded", model="m")
+        with open(self.path, "w", encoding="utf-8") as stream:
+            stream.write("not-json\n")
+
+        damaged = AutonomyLedger(self.path)
+        self.assertEqual(damaged.entries(), [])
+        self.assertGreater(damaged.quarantined, 0)
+        kept, dropped = damaged.repair()
+
+        self.assertEqual((kept, dropped), (0, 1))
+        with self.assertRaisesRegex(HarnessError, "unknown task_id"):
+            damaged.require_offered_task_id("discarded")
 
 
 class LedgerCallerTests(unittest.TestCase):
@@ -285,9 +341,12 @@ class LedgerCallerTests(unittest.TestCase):
 
     def test_participation_report_breaks_out_per_caller(self):
         led = AutonomyLedger(self.path)
+        led.append("offer", task_id="t1", model="m", required=True)
         led.append("complete", task_id="t1", model="m", status="ok")
+        led.append("offer", task_id="t2", model="m", required=True)
         led.caller = "mcp:probe/1.0"
         led.append("complete", task_id="t2", model="m", status="ok")
+        led.append("offer", task_id="t3", model="m", required=True)
         led.append("trust_gate", task_id="t3", model="m",
                    reason="x", severity="hostile")
         r = led.participation_report()

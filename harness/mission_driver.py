@@ -426,7 +426,7 @@ def _run_mission(
                     evidence_summary=receipt["evidence_summary"],
                     verifier_holds=receipt["verifier_holds"],
                     state_summary=receipt["state_summary"],
-                    task_id=task_id or pack.id,
+                    task_id=task_id,
                 )
                 last_determination = determination
             except HarnessError as exc:

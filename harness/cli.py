@@ -287,6 +287,8 @@ def _cmd_dogfood(opts, settings):
             raise HarnessError("--from-ledger requires --claims-out: the curated "
                                "manifest must be persisted for the next run")
         seed_ledger = _ledger(settings)
+        if opts.task_id is not None:
+            seed_ledger.require_offered_task_id(opts.task_id)
         manifest, evidence = curate_claims_from_ledger(
             seed_ledger.entries(), window=opts.evidence_window,
             max_claims=opts.max_claims)
@@ -296,7 +298,13 @@ def _cmd_dogfood(opts, settings):
                    "(no repeated model failures). Nothing to audit.")
             sys.exit(0)
         fixture = json.dumps(manifest, indent=2)
-        seed_ledger.append("dogfood_curate", task_id=opts.task_id or "dogfood-curate",
+        curation_task_id = (opts.task_id if opts.task_id is not None
+                            else "dogfood-curate")
+        if opts.task_id is None:
+            seed_ledger.ensure_offered_task_id(
+                curation_task_id, model="(dogfood)", required=False,
+                source="dogfood_curate")
+        seed_ledger.append("dogfood_curate", task_id=curation_task_id,
                            claims=len(manifest["claims"]),
                            evidence=evidence)
         # The verbatim source window the panel reviews IS the evidence file:
@@ -666,6 +674,9 @@ def _cmd_repo_summary(opts, settings):
     except ValueError as exc:
         raise HarnessError(f"repo-summary pack invalid: {exc}") from exc
     ledger = _ledger(settings)
+    ledger.ensure_offered_task_id(
+        "repo-summary", model="(repo-summary)", required=False,
+        source="cli")
     run_budget = getattr(opts, "run_budget", None)
     state_path = getattr(opts, "state", None)
     if not state_path and getattr(opts, "save_to", None):
@@ -1750,7 +1761,15 @@ def _cmd_provision(opts, settings):
         task_id = getattr(opts, "task_id", None)
         lifecycle = lifecycle_state = None
         if not dry_run:
-            task_id = str(task_id or f"provision-{plan.digest[:32]}")
+            if task_id is None:
+                task_id = f"provision-{plan.digest[:32]}"
+                if ledger is not None:
+                    ledger.ensure_offered_task_id(
+                        task_id, model="(provision)", required=False,
+                        source="provision_cli")
+            elif ledger is not None:
+                ledger.require_offered_task_id(task_id)
+            task_id = str(task_id)
             lifecycle = LifecycleCoordinator()
             lifecycle_state = lifecycle.load(task_id)
             if lifecycle_state is None:

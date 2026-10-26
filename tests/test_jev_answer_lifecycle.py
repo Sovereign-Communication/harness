@@ -59,6 +59,7 @@ class AnswerInputBudgetTests(unittest.TestCase):
 
     def test_a_long_answer_reaches_the_judge_intact(self):
         policy, transport = self._policy()
+        policy.ledger.ensure_offered_task_id("long-answer", source="test_setup")
         tail = "TAIL-MARKER-END"
         answer = ("body line. " * 500) + tail  # ~5,500 chars: a real audit
         policy.evaluate_answer("q", answer, "ctx", task_id="long-answer")
@@ -88,6 +89,7 @@ class AnswerPolicyTests(unittest.TestCase):
         settings = load_settings({"jev_api_key": "jev-key"})
         governor = SpendGovernor(FakeTransport(), "sk-test", max_cost=0.50)
         ledger = AutonomyLedger(os.path.join(td.name, "ledger.jsonl"))
+        ledger.ensure_offered_task_id("answer-1", source="test_setup")
         policy = policy_for(settings, transport=transport, governor=governor,
                             ledger=ledger)
 
@@ -102,8 +104,11 @@ class AnswerPolicyTests(unittest.TestCase):
         self.assertFalse(structural["iteration_required"])
         self.assertFalse(structural["plan_required"])
         self.assertEqual(len(transport.calls), 1)
-        self.assertEqual([e["event"] for e in ledger.entries()], ["jev_eval"])
-        self.assertEqual(ledger.entries()[0]["site"], "answer")
+        self.assertEqual([e["event"] for e in ledger.entries()
+                          if e["event"] == "jev_eval"], ["jev_eval"])
+        jev_eval = next(e for e in ledger.entries()
+                        if e["event"] == "jev_eval")
+        self.assertEqual(jev_eval["site"], "answer")
 
     def test_unkeyed_policy_cannot_claim_sufficiency(self):
         settings = load_settings()
@@ -452,6 +457,28 @@ class HourglassAnswerOnceTests(unittest.TestCase):
 
 
 class HourglassRequestContextTests(unittest.TestCase):
+    def test_context_event_is_linked_to_the_offered_request(self):
+        from harness.ledger import AutonomyLedger
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_path = root / "ledger.jsonl"
+            ledger = AutonomyLedger(str(ledger_path))
+            ledger.ensure_offered_task_id(
+                "request-1", model="(test)", source="test_setup")
+            settings = _ladder_settings(ledger_path=str(ledger_path))
+            agent = AutonomousAgent(settings=settings, root_dir=root,
+                                    history_dir=root)
+
+            agent._hourglass_request_context(
+                "Explain this project", workspace=False,
+                session_id="request-1")
+
+            brief = [event for event in AutonomyLedger(str(ledger_path)).entries()
+                     if event["event"] == "brief_built"]
+            self.assertEqual(len(brief), 1)
+            self.assertEqual(brief[0]["task_id"], "request-1")
+
     def test_reads_discovered_candidate_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -35,6 +35,8 @@ def scripted_run(results):
 
 
 class ApplyFixture(unittest.TestCase):
+    DEFAULT_OFFER_TASK_IDS = ("t1",)
+
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
         self.ledger_path = os.path.join(self.dir.name, "ledger.jsonl")
@@ -56,6 +58,10 @@ class ApplyFixture(unittest.TestCase):
                              posts=posts, jev_posts=jev_posts)
         gov = SpendGovernor(fake, "sk-test")
         ledger = AutonomyLedger(self.ledger_path)
+        # Apply tests model a task already offered by its caller before the
+        # engine receives the ID.
+        for task_id in self.DEFAULT_OFFER_TASK_IDS:
+            ledger.ensure_offered_task_id(task_id, source="test_setup")
         if with_jev and jev_policy is None:
             from harness.config import load_settings
             from harness.jev_policy import policy_for
@@ -76,6 +82,12 @@ class ApplyFixture(unittest.TestCase):
         if run:
             engine.run_verify = run
         return fake, gov, ledger, engine
+
+    @staticmethod
+    def offer_task(engine, task_id):
+        """Seed a task offer at the caller boundary for an apply test."""
+        engine.ledger.ensure_offered_task_id(task_id, source="test_setup")
+        return task_id
 
     def leftovers(self):
         return [n for n in os.listdir(self.dir.name) if n.endswith(".tmp")]

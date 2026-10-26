@@ -84,6 +84,7 @@ class LaneParityTests(unittest.TestCase):
         with open(self.target, "w", encoding="utf-8") as stream:
             stream.write(ORIGINAL)
         self.ledger = AutonomyLedger(os.path.join(self.tmp.name, "ledger.jsonl"))
+        self.ledger.ensure_offered_task_id("apply", source="test_setup")
         self.settings = hermetic_settings(
             ledger_path=os.path.join(self.tmp.name, "settings-ledger.jsonl"))
 
@@ -250,6 +251,7 @@ class D12CoverageTests(unittest.TestCase):
         from harness.apply_state import ApplyRequest
         with tempfile.TemporaryDirectory() as td:
             ledger = AutonomyLedger(os.path.join(td, "ledger.jsonl"))
+            ledger.ensure_offered_task_id("t", source="test_setup")
             target = os.path.join(td, "x.py")
             with open(target, "w", encoding="utf-8") as stream:
                 stream.write(ORIGINAL)

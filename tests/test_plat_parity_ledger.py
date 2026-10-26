@@ -26,7 +26,7 @@ FROZEN_STRFTIME = "20260926T120000.000000"
 
 # sha256 of the exact JSONL produced by the appends in _build_ledger below,
 # as produced on Linux/macOS and (after the newline fix) on Windows.
-EXPECTED_SHA256 = "ed904b3852b4f4a45215f57c212106fb2fcda939ede45f4c8f580cc244b1adc7"
+EXPECTED_SHA256 = "2ca0d1039f292f5a0a2ccffae0142d2f04fbff2e88a95c92f781a83081166425"
 
 
 class _FrozenDatetime(object):
@@ -51,6 +51,7 @@ def _build_ledger(path):
     """A fixed set of appends: the parity fixture, built by the real owner."""
     with mock.patch("harness.ledger.datetime", _FrozenDatetime):
         ledger = AutonomyLedger(path)
+        ledger.ensure_offered_task_id("parity-1", source="test_setup")
         ledger.append("run_start", task_id="parity-1", model="test/paid-flash",
                       surface="hourglass")
         ledger.append("jev_eval", task_id="parity-1", model="test/paid-flash",
@@ -84,7 +85,7 @@ class LedgerParityTest(unittest.TestCase):
         with open(self.path, "rb") as handle:
             raw = handle.read()
         self.assertNotIn(b"\r\n", raw)
-        self.assertEqual(raw.count(b"\n"), 3)
+        self.assertEqual(raw.count(b"\n"), 4)
         self.assertTrue(raw.endswith(b"\n"))
 
     def test_chain_still_verifies_and_is_stable_under_reload(self):
@@ -95,7 +96,7 @@ class LedgerParityTest(unittest.TestCase):
         reloaded = AutonomyLedger(self.path)
         ok, bad = reloaded.verify()
         self.assertTrue(ok, f"reloaded chain broke at entry {bad}")
-        self.assertEqual(len(reloaded.entries()), 3)
+        self.assertEqual(len(reloaded.entries()), 4)
         # Reloading must not rewrite the file (a rewrite would change bytes).
         before = self._digest()
         AutonomyLedger(self.path)

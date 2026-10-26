@@ -20,7 +20,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 1.0,
+        "confidence": 0.99,
         "evaluated": true
       },
       "R": {
@@ -256,7 +256,7 @@
         "label": "full suite green hermetically",
         "score": 1.0,
         "status": "pass",
-        "evidence": "unittest: Ran 5098 tests in 293.604s\n\nOK (env clean; empty home)"
+        "evidence": "unittest: Ran 5122 tests in 333.083s\n\nOK (env clean; empty home)"
       },
       {
         "id": "R14",
@@ -300,7 +300,7 @@
         "label": "ruff clean",
         "score": 1.0,
         "status": "pass",
-        "evidence": "ruff check harness tests: clean via shared resolver `C:\\Python314\\python.exe -m ruff check harness tests`"
+        "evidence": "ruff check harness tests: clean via shared resolver `C:\\Users\\SCM\\.freebuff\\worktrees\\e208075a\\Harness\\.venv\\Scripts\\python.exe -m ruff check harness tests`"
       },
       {
         "id": "S6",
@@ -358,7 +358,7 @@
         "label": "version single-sourced",
         "score": 1.0,
         "status": "pass",
-        "evidence": "pyproject=0.5.0 __version__=0.5.0 (one source)"
+        "evidence": "pyproject=0.5.1 __version__=0.5.1 (one source)"
       },
       {
         "id": "D6",
@@ -407,7 +407,7 @@
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
         "status": "pass",
-        "evidence": "changed harness lines are suite-executed (changed-line coverage 2/2 = 100% (bar 95%) vs merge-base 0bd253d474 (origin/main; traced battery at merge-base 0bd253d474))"
+        "evidence": "changed harness lines are suite-executed (changed-line coverage 164/164 = 100% (bar 95%) vs merge-base 874befefb1 (origin/main; traced battery at merge-base 874befefb1))"
       }
     ]
   }

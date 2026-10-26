@@ -152,6 +152,7 @@ class TestEnvelopeCostAndPreflightStillHold(unittest.TestCase):
             FakeTransport(models=models), "sk-test", max_cost=0.10)
         td, ledger = _ledger()
         self.addCleanup(td.cleanup)
+        ledger.ensure_offered_task_id("t-p4", source="test_setup")
         settings = load_settings({"jev_api_key": "jev-key"})
         policy = policy_for(settings, transport=transport, governor=governor,
                             ledger=ledger)
@@ -193,6 +194,7 @@ class TestLedgerAnalyticsJevSurface(unittest.TestCase):
     def test_participation_report_embeds_jev_calibration(self):
         td, ledger = _ledger()
         self.addCleanup(td.cleanup)
+        ledger.ensure_offered_task_id("t1", source="test_setup")
         ledger.append("jev_eval", task_id="t1", site="apply", verdict="pass",
                       confidence=0.9, supported=0.9, cost=0.0004,
                       input_tokens=10, is_fallback=False)

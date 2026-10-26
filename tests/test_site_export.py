@@ -121,15 +121,18 @@ class PricingTests(SiteExportTestBase):
 
 class ChainTests(SiteExportTestBase):
     def test_clean_chain_verifies(self):
+        self.ledger.ensure_offered_task_id("t1", source="test_setup")
         self.ledger.append("dispatch_start", task_id="t1", model="m")
         chain = verify_chain(self.ledger_path)
         self.assertTrue(chain["verified_claim"])
-        self.assertEqual(chain["entries"], 1)
+        self.assertEqual(chain["entries"], 2)
 
     def test_tampered_entry_refused(self):
         """A rewritten tail fails prev_hash linkage: entry[0]'s stored hash
         is chained into entry[1]'s prev_hash, so a naive re-hash of one
         entry does NOT restore validity (that is the chain's whole point)."""
+        self.ledger.ensure_offered_task_id("t1", source="test_setup")
+        self.ledger.ensure_offered_task_id("t2", source="test_setup")
         self.ledger.append("dispatch_start", task_id="t1", model="m")
         self.ledger.append("dispatch_start", task_id="t2", model="m")
         with open(self.ledger_path, encoding="utf-8") as f:
@@ -160,6 +163,7 @@ def _populate_task_ledger(ledger, *, v2_escalation=False):
     With ``v2_escalation`` the escalate event carries the additive fields
     the Jev-directed escalation work is expected to add.
     """
+    ledger.ensure_offered_task_id("task/a", source="test_setup")
     ledger.append("dispatch_start", task_id="task/a", model="test/free-model:free")
     ledger.append("model_result", task_id="task/a", model="test/free-model:free",
                   cost=0.0002, status="ok")
@@ -227,6 +231,7 @@ class BuildRunsTests(SiteExportTestBase):
         self.assertIsNone(esc["condensed_context_chars"])
 
     def test_ungated_run_flagged(self):
+        self.ledger.ensure_offered_task_id("task/ng", source="test_setup")
         self.ledger.append("dispatch_start", task_id="task/ng", model="m")
         self.ledger.append("complete", task_id="task/ng", model="m",
                            rounds=1, status="ok", note="no verification gate")
@@ -235,6 +240,8 @@ class BuildRunsTests(SiteExportTestBase):
         self.assertEqual(runs[0]["outcome"], "pass")
 
     def test_abort_and_defer_outcomes(self):
+        self.ledger.ensure_offered_task_id("task/ab", source="test_setup")
+        self.ledger.ensure_offered_task_id("task/df", source="test_setup")
         self.ledger.append("dispatch_start", task_id="task/ab", model="m")
         self.ledger.append("abort", task_id="task/ab", reason="verify rounds exhausted")
         self.ledger.append("dispatch_start", task_id="task/df", model="m")
@@ -307,12 +314,14 @@ class ExportTests(SiteExportTestBase):
         _populate_task_ledger(self.ledger)
         consent = _write_consent(self.tmp)
         first = export_bundle(self.ledger_path, consent)
+        self.ledger.ensure_offered_task_id("task/b", source="test_setup")
         self.ledger.append("dispatch_start", task_id="task/b", model="m")
         second = export_bundle(self.ledger_path, consent)
         self.assertNotEqual(first["bundle_id"], second["bundle_id"])
 
     def test_no_exportable_events_refused(self):
         consent = _write_consent(self.tmp)
+        self.ledger.ensure_offered_task_id("x", source="test_setup")
         self.ledger.append("consent_accept", task_id="x")  # allowlist excludes it
         with self.assertRaises(HarnessError):
             export_bundle(self.ledger_path, consent)

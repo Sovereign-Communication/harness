@@ -107,6 +107,26 @@ def ledger_for(settings, caller="cli"):
     return AutonomyLedger(settings.ledger_path, caller=caller)
 
 
+def maybe_ledger_for(settings, caller="cli"):
+    """Return the configured ledger, or ``None`` for lightweight callers.
+
+    Production settings always name a ledger path. Keeping optional harness
+    and test facades ledger-free avoids inventing a path solely for an
+    in-memory request that cannot write task evidence.
+    """
+    if not getattr(settings, "ledger_path", None):
+        return None
+    return ledger_for(settings, caller=caller)
+
+
+def ensure_offered_task_id(ledger, task_id, **fields):
+    """Offer an internally created ID when the configured ledger supports it."""
+    ensure = getattr(ledger, "ensure_offered_task_id", None)
+    if callable(ensure):
+        return ensure(task_id, **fields)
+    return None
+
+
 def jev_for(settings, transport=None, governor=None, ledger=None,
             **options) -> JevPolicy:
     """Session composition for Jev: ONE policy owner (JEV-P4).

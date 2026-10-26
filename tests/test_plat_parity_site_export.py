@@ -24,7 +24,7 @@ from harness.site_export import (CONSENT_SCHEMA, export_bundle, write_bundle)
 FROZEN_ISO = "2026-09-26T12:00:00+00:00"
 FROZEN_STRFTIME = "20260926T120000.000000"
 
-EXPECTED_SHA256 = "55af4d87936d176fa16b735928c0a7fdff52a84074effb9bf0db112fd4051466"
+EXPECTED_SHA256 = "4e7fef175b536d745311c9411162e4963978f1a4b8a3b31d15bcb70115720741"
 
 
 class _FrozenDatetime(object):
@@ -52,6 +52,7 @@ def _write_ledger(dirpath):
     path = os.path.join(dirpath, "ledger.jsonl")
     with mock.patch("harness.ledger.datetime", _FrozenDatetime):
         ledger = AutonomyLedger(path)
+        ledger.ensure_offered_task_id("parity-site", source="test_setup")
         ledger.append("consent_accept", task_id="parity-site", model="test/paid-flash",
                       surface="site", reason="opted in")
         ledger.append("dispatch_start", task_id="parity-site",

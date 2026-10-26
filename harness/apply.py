@@ -257,9 +257,18 @@ class ApplyEngine(ApplyEngineMixin):
         edit_snippet = kwargs.get("edit_snippet") or continuation.get("edit_snippet")
         if not instruction:
             raise HarnessError("apply requires an instruction")
-        task_id = kwargs.get("task_id")
+        requested_task_id = kwargs.get("task_id")
+        continuation_task_id = continuation.get("task_id")
+        task_id = requested_task_id
         if task_id is None:
-            task_id = continuation.get("task_id") or uuid.uuid4().hex[:8]
+            task_id = continuation_task_id or uuid.uuid4().hex[:8]
+        if self.ledger is not None:
+            if requested_task_id is not None or continuation_task_id:
+                self.ledger.require_offered_task_id(task_id)
+            else:
+                self.ledger.ensure_offered_task_id(
+                    task_id, model=kwargs.get("model") or "(apply)",
+                    required=False, source="apply")
         if resumed and kwargs.get("file_path") is not None:
             # No file retarget (C4): a saved continuation's gate and hash
             # were verified against ITS file. Reusing them on a different

@@ -57,6 +57,7 @@ class AutonomyLedger(LedgerAnalytics):
         self.caller = caller
         self._lock = threading.Lock()
         self._tail = []
+        self._offered_task_ids = set()
         self._seq = 0
         self._prev_hash = None
         self._segmented = False
@@ -67,6 +68,57 @@ class AutonomyLedger(LedgerAnalytics):
         self.chain_broken = False
         self.first_bad_seq = None
         self._load()
+        self._rebuild_offered_task_ids()
+
+    def _rebuild_offered_task_ids(self):
+        """Index task IDs that have an offer event in the retained ledger."""
+        self._offered_task_ids = {
+            entry.get("task_id") for entry in self._tail
+            if entry.get("event") == "offer"
+            and isinstance(entry.get("task_id"), str)
+        }
+
+    @staticmethod
+    def _unknown_task_id_error():
+        return HarnessError(
+            "unknown task_id: no prior offer is recorded in the ledger")
+
+    def require_offered_task_id(self, task_id):
+        """Fail closed unless the ledger already records this task's offer.
+
+        MCP uses this before dispatching task-bound tools so an unknown ID is
+        rejected before the tool can make another ledger write or call a
+        provider. ``append`` repeats the check under the append lock.
+        """
+        if task_id is None:
+            return
+        with self._lock:
+            with self._file_lock():
+                self._rebase_under_lock()
+                if (not isinstance(task_id, str) or not task_id
+                        or task_id not in self._offered_task_ids):
+                    raise self._unknown_task_id_error()
+
+    def ensure_offered_task_id(self, task_id, *, model="(system)",
+                               required=False, **fields):
+        """Record a newly created internal task ID once, before its writers.
+
+        External task references must use ``require_offered_task_id``. This
+        helper is for entry points that create a new task locally, such as a
+        consent-free apply or a generated plan ID.
+        """
+        if task_id is None:
+            return None
+        if not isinstance(task_id, str) or not task_id:
+            raise self._unknown_task_id_error()
+        with self._lock:
+            with self._file_lock():
+                self._rebase_under_lock()
+                already_offered = task_id in self._offered_task_ids
+        if already_offered:
+            return None
+        return self.append("offer", task_id=task_id, model=model,
+                           required=required, **fields)
 
     def _rotated_paths(self):
         """Return retained ledger segments oldest-first, excluding the active
@@ -326,6 +378,9 @@ class AutonomyLedger(LedgerAnalytics):
                             continue  # torn line: quarantine policy applies at next load
                         if entry["seq"] > last_seq:
                             self._tail.append(entry)
+                            if (entry.get("event") == "offer"
+                                    and isinstance(entry.get("task_id"), str)):
+                                self._offered_task_ids.add(entry["task_id"])
                             last_seq = entry["seq"]
                             last_hash = entry["hash"]
             except OSError:
@@ -353,11 +408,17 @@ class AutonomyLedger(LedgerAnalytics):
                 # lock, which is exactly the fork the rebase exists to
                 # prevent.
                 self._rebase_under_lock()
+                if (task_id is not None and event != "offer"
+                        and (not isinstance(task_id, str) or not task_id
+                             or task_id not in self._offered_task_ids)):
+                    raise self._unknown_task_id_error()
                 body.pop("hash", None)  # recompute over the rebased seq/prev_hash only
                 body["seq"] = self._seq + 1
                 body["prev_hash"] = self._prev_hash
                 body["hash"] = hashlib.sha256(_canon(body).encode("utf-8")).hexdigest()
                 self._tail.append(body)
+                if event == "offer" and isinstance(task_id, str):
+                    self._offered_task_ids.add(task_id)
                 self._seq = body["seq"]
                 self._prev_hash = body["hash"]
                 # Persist first. Rotating before this write would move the
@@ -573,6 +634,7 @@ class AutonomyLedger(LedgerAnalytics):
                 if kept and quarantined and not dropped and not self._segmented:
                     self._rewrite_file(self.path, kept)
                     self._tail = kept
+                    self._rebuild_offered_task_ids()
                     self._seq = kept[-1]["seq"]
                     self._prev_hash = kept[-1]["hash"]
                     self.chain_broken = False
@@ -594,6 +656,7 @@ class AutonomyLedger(LedgerAnalytics):
                         except OSError:
                             pass
                     self._tail, self._seq, self._prev_hash = [], 0, None
+                    self._rebuild_offered_task_ids()
                     self._segmented = False
                     self.chain_broken = False
                     self.quarantined = 0
@@ -652,6 +715,7 @@ class AutonomyLedger(LedgerAnalytics):
                         cut_done = True
                     # else: file fully kept -- untouched, byte-identical.
                 self._tail = kept
+                self._rebuild_offered_task_ids()
                 self._seq = kept[-1]["seq"] if kept else 0
                 self._prev_hash = kept[-1]["hash"] if kept else None
                 # A repaired chain starting mid-history is still a

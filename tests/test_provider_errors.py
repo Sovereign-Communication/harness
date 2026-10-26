@@ -250,6 +250,8 @@ class ProviderErrorsEdgeCasesTests(unittest.TestCase):
             ledger_path = os.path.join(td, "ledger.jsonl")
             settings = SimpleNamespace(ledger_path=ledger_path)
             err = ProviderSpendLimitError("out of credits", http_status=402, known_cost=0.000042)
+            AutonomyLedger(ledger_path).ensure_offered_task_id(
+                "task-xyz", source="test_setup")
 
             with events.task_context("task-xyz"), \
                  mock.patch("harness.config.load_settings", return_value=settings):

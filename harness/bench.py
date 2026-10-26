@@ -187,11 +187,17 @@ def run_bench(engine, manifest_tasks, runner=None, task_max_cost=None):
             if not task.get("instruction"):
                 raise HarnessError(
                     f"bench task '{name}' is missing required key 'instruction'")
+            task_id = f"bench/{name}"
+            ensure_offered = getattr(
+                getattr(engine, "ledger", None), "ensure_offered_task_id", None)
+            if callable(ensure_offered):
+                ensure_offered(task_id, model="(bench)", required=False,
+                               source="bench")
             eprint(f"[bench] running '{name}' ...")
-            _events.emit("bench_task", task_id=f"bench/{name}", phase="start", name=name)
+            _events.emit("bench_task", task_id=task_id, phase="start", name=name)
             try:
                 r = engine.apply_edit(
-                    task_id=f"bench/{name}",
+                    task_id=task_id,
                     file_path=sandbox.file,
                     instruction=task["instruction"],
                     verify_cmd=task.get("verify"),
@@ -209,7 +215,7 @@ def run_bench(engine, manifest_tasks, runner=None, task_max_cost=None):
                 r = {"status": "error", "error": str(e)}
             results.append({"name": name, **r})
             eprint(f"[bench] '{name}' -> {r.get('status')}")
-            _events.emit("bench_task", task_id=f"bench/{name}", phase="end", name=name,
+            _events.emit("bench_task", task_id=task_id, phase="end", name=name,
                          status=r.get("status"), cost=r.get("cost"))
     finally:
         # Idempotency includes the tree we leave behind: restore every

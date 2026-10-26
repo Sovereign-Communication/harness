@@ -79,6 +79,7 @@ class _LifecycleCase(unittest.TestCase):
             models=[m(PRIMARY), m("judge/j")] + [m(p) for p in POOL],
             posts=[comp(b) for b in bodies])
         ledger = AutonomyLedger(os.path.join(tmp.name, "ledger.jsonl"))
+        ledger.ensure_offered_task_id("lifecycle", source="test_setup")
         policy = _ScriptedJevPolicy(decision_result)
         engine = ApplyEngine(
             transport, "sk-test", SpendGovernor(transport, "sk-test"),

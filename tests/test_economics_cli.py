@@ -234,6 +234,7 @@ class EconomicsReportAndExportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             ledger_path = os.path.join(tmp, "ledger.jsonl")
             ledger = AutonomyLedger(ledger_path)
+            ledger.append("offer", task_id="t1", model="deepseek/deepseek-v4.1-flash")
             ledger.append("model_result", task_id="t1", model="deepseek/deepseek-v4.1-flash",
                           lane="apply", cost=0.0005, input_tokens=1000, output_tokens=200)
             settings = mock.Mock()
@@ -260,6 +261,7 @@ class EconomicsReportAndExportTests(unittest.TestCase):
             ledger_path = os.path.join(tmp, "ledger.jsonl")
             consent_path = os.path.join(tmp, "consent.json")
             ledger = AutonomyLedger(ledger_path)
+            ledger.append("offer", task_id="t1", model="deepseek/deepseek-v4.1-flash")
             ledger.append("dispatch_start", task_id="t1", model="deepseek/deepseek-v4.1-flash")
             ledger.append("model_result", task_id="t1", model="deepseek/deepseek-v4.1-flash",
                           lane="apply", cost=0.0005, input_tokens=1000, output_tokens=200)
@@ -372,9 +374,9 @@ class EconomicsSurfaceBranchCoverageTests(unittest.TestCase):
         from harness.server import UiRequestHandler
         with tempfile.TemporaryDirectory() as tmp:
             ledger = AutonomyLedger(os.path.join(tmp, "ledger.jsonl"))
+            ledger.append("offer", task_id="t1", model="deepseek/deepseek-v4.1-flash")
             ledger.append("verify_round", task_id="t1", model="deepseek/deepseek-v4.1-flash",
                           passed=True, cost=0.001, input_tokens=100, output_tokens=50)
-            ledger.append("offer", task_id="t1", model="deepseek/deepseek-v4.1-flash", cost=0.0001)
             ledger.append("model_result", task_id="t1", model="deepseek/deepseek-v4.1-flash",
                           event_note="probe", cost=0.0001)
             ledger.append("model_result", task_id="t1", model="deepseek/deepseek-v4.1-flash",

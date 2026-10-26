@@ -914,6 +914,10 @@ def plan_consensus(*, transport, api_key, governor, ledger, plan_result,
         def chat_fn(prompt):
             return governed_text(transport, api_key, governor, model, prompt,
                                  256, label="plan_consensus")
+    task_id = plan_task_id(plan_result)
+    if ledger is not None:
+        ledger.ensure_offered_task_id(
+            task_id, model=model, required=False, source="plan_consensus")
     spent_before = governor.spent if governor is not None else 0.0
     raw = chat_fn(build_consensus_prompt(plan_result))
     if isinstance(raw, tuple):
@@ -926,7 +930,7 @@ def plan_consensus(*, transport, api_key, governor, ledger, plan_result,
     verdict["model"] = model
     if ledger is not None:
         ledger.append(
-            "plan_consensus", task_id=plan_task_id(plan_result),
+            "plan_consensus", task_id=task_id,
             sound=verdict["sound"], reasons=verdict["reasons"],
             model=model, cost=cost)
     return verdict
@@ -1393,6 +1397,9 @@ def confirm_plan(*, transport, api_key, governor, ledger, plan_result,
                                  WAIST_MAX_TOKENS, label="waist")
     brief = _brief_for(plan_result)
     task_id = plan_task_id(plan_result)
+    if ledger is not None:
+        ledger.ensure_offered_task_id(
+            task_id, model=model, required=False, source="plan_confirmation")
     window_context = ""
     spent_before = governor.spent if governor is not None else 0.0
 

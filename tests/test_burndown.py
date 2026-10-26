@@ -243,6 +243,8 @@ class DeferStatsTests(unittest.TestCase):
 
     def _seed(self):
         lg = self.ledger
+        for task_id in ("r1", "r2", "r3", "r4"):
+            lg.ensure_offered_task_id(task_id, source="test_setup")
         lg.append("model_result", task_id="r1", event_note="panel", model="a",
                   status="ok")
         lg.append("complete", task_id="r1", event_note="panel_judge",

@@ -198,8 +198,12 @@ class FromLedgerWiringTests(unittest.TestCase):
         self.ledger_path = os.path.join(self.dir.name, "ledger.jsonl")
         from harness.ledger import AutonomyLedger
         led = AutonomyLedger(self.ledger_path)
+        # The CLI's explicit --task-id is an external reference and must name
+        # an offer already present before curation can write against it.
+        led.append("offer", task_id="curate-1", model="(test)")
         # Seed rule-1 evidence: one model fail-closed two runs.
         for t in ("t1", "t2"):
+            led.append("offer", task_id=t, model="m/slow:free")
             led.append("dispatch_start", task_id=t, model="m/slow:free")
             led.append("abort", task_id=t, model="m/slow:free",
                        reason="verify rounds exhausted")
@@ -248,6 +252,25 @@ class FromLedgerWiringTests(unittest.TestCase):
         from harness.ledger import AutonomyLedger
         events = [e["event"] for e in AutonomyLedger(self.ledger_path).entries()]
         self.assertIn("dogfood_curate", events)
+
+    def test_curated_chain_offers_its_generated_curation_id(self):
+        from harness.ledger import AutonomyLedger
+
+        argv = self._argv()
+        task_id_index = argv.index("--task-id")
+        del argv[task_id_index:task_id_index + 2]
+        captured = []
+        self._main(argv, captured)
+
+        events = AutonomyLedger(self.ledger_path).entries()
+        self.assertTrue(any(
+            event["event"] == "offer"
+            and event.get("task_id") == "dogfood-curate"
+            for event in events))
+        self.assertTrue(any(
+            event["event"] == "dogfood_curate"
+            and event.get("task_id") == "dogfood-curate"
+            for event in events))
 
     def test_from_ledger_conflicts_with_claims_file(self):
         captured = []

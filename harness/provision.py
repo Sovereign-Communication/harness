@@ -94,7 +94,7 @@ SKIPPED = "skipped"
 AUDIT_FAILED = "audit_failed"
 ALREADY_DONE = "already_done"
 
-PROVISION_EVENTS = ("provision_plan", "provision_approval",
+PROVISION_EVENTS = ("offer", "provision_plan", "provision_approval",
                     "provision_step_start", "provision_step", "provision_end")
 
 DEFAULT_STEP_TIMEOUT_S = 900
@@ -1679,6 +1679,8 @@ def execute_plan(plan: Plan, gate: ApprovalGate, *, policy: ProvisionPolicy,
     if not dry_run:
         _require_real_ledger(ledger)
     validate_plan(plan, policy)
+    if ledger is not None and task_id is not None:
+        ledger.require_offered_task_id(task_id)
     base_root = None if dry_run else _private_cwd_parent(plan, policy)
     run = runner or osal.run_tree
     find = which or osal.which

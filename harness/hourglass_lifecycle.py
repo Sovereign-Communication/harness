@@ -64,7 +64,9 @@ from .conversation_context import (
     sole_site,
 )
 from .jev_identity import jev_identity_block, jev_mentioned
-from .session import governor_for, ledger_for
+from .session import (
+    ensure_offered_task_id, governor_for, maybe_ledger_for as ledger_for,
+)
 from .site_evidence import evidence_summary, render_site_evidence
 from .simple_request import (
     is_comprehensive_workspace_inspection_request,
@@ -98,7 +100,8 @@ class HourglassLifecycleMixin:
         return candidates[:_MAX_HOURGLASS_CONTEXT_FILES]
     def _hourglass_request_context(self, prompt: str, web: bool = False,
                                   workspace: bool = True,
-                                  web_prompt: Optional[str] = None):
+                                  web_prompt: Optional[str] = None,
+                                  session_id: Optional[str] = None):
         """Gather a bounded, cheap intake brief for a non-edit request.
 
         Intake is local and deterministic: explicit paths win, then filename
@@ -150,9 +153,13 @@ class HourglassLifecycleMixin:
             files=files, summary=summary, max_tokens=context_tokens)
         # HV-2 evidence: the condensation is a ledger event, not a private
         # step -- site=hourglass, schema-v2 pack attached to the MicroBrief.
-        ledger_for(self.settings, caller="agent").append(
-            "brief_built", site="hourglass", schema=2,
-            **brief.ledger_fields())
+        request_ledger = ledger_for(self.settings, caller="agent")
+        if request_ledger is not None:
+            event = {"site": "hourglass", "schema": 2,
+                     **brief.ledger_fields()}
+            if session_id is not None:
+                event["task_id"] = session_id
+            request_ledger.append("brief_built", **event)
         context = brief.to_prompt_context()[:context_limit]
         web_sources = []
         if web:
@@ -471,6 +478,10 @@ class HourglassLifecycleMixin:
             raise HarnessError("confidence_threshold must be between 0 and 1")
         rounds = max(1, min(int(max_rounds), _MAX_HOURGLASS_ANSWER_ROUNDS))
         sid = session_id or "default"
+        request_ledger = ledger_for(self.settings, caller="agent")
+        ensure_offered_task_id(
+            request_ledger, sid, model="(agent)", required=False,
+            source="hourglass_request")
         intent = self._classify_prompt_intent(prompt)
         hourglass_policy = resolve_hourglass(self.settings)
         emit("hourglass_request", intent=intent, confidence_threshold=threshold,
@@ -550,6 +561,10 @@ class HourglassLifecycleMixin:
         policy = policy_for(
             self.settings, transport=self.transport, governor=gov,
             ledger=ledger_for(self.settings, caller="agent"))
+        policy_ledger = getattr(policy, "ledger", None)
+        ensure_offered_task_id(
+            policy_ledger, sid, model="(agent)", required=False,
+            source="hourglass_request")
         # Durable context is assembled once, before the route decides whether
         # to ask the operator to repeat a target this session already named.
         turns = load_chat_history(sid, self.history_dir)
@@ -741,7 +756,7 @@ class HourglassLifecycleMixin:
             context, file_contents, brief, web_sources = \
                 self._hourglass_request_context(
                     prompt, web=web, workspace=workspace_needed,
-                    web_prompt=web_prompt)
+                    web_prompt=web_prompt, session_id=sid)
             context_files = list(file_contents)
             context_tokens = int(brief.estimated_tokens)
             file_hashes = {

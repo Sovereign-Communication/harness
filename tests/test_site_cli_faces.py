@@ -193,6 +193,7 @@ class SiteServerEdgeTests(ServerHarness):
         ledger_path = os.path.join(tmp.name, "ledger.jsonl")
         from harness.ledger import AutonomyLedger
         ledger = AutonomyLedger(ledger_path)
+        ledger.ensure_offered_task_id("t1", source="test_setup")
         ledger.append("dispatch_start", task_id="t1", model="m")
         with open(ledger_path, "rb") as f:
             raw = f.read()

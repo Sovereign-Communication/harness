@@ -503,7 +503,15 @@ def probe_json_reliability(transport, api_key, governor, models, max_tokens=256,
     from .chat import (chat, extract_content_and_cost, _extract_json,
                        _reported_cost, _chat_reservation_slots)
     results = {}
-    tid = task_id or "bench/probe"
+    generated_task_id = task_id is None
+    tid = "bench/probe" if generated_task_id else task_id
+    if ledger is not None and models:
+        if generated_task_id:
+            ledger.ensure_offered_task_id(
+                tid, model="(capability_probe)", required=False,
+                source="capability_probe")
+        else:
+            ledger.require_offered_task_id(tid)
     for m in models:
         eff = reasoning_effort
         if eff is None:

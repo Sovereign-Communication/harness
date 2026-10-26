@@ -60,6 +60,7 @@ class ApplyModelEnvelopeTests(ApplyFixture):
         p = self.make_file()
         _, _, _, engine = self.make_env(posts=[comp(CHANGED)],
                                         run=scripted_run([(0, "")]))
+        self.offer_task(engine, "ms1")
         result = engine.apply_edit(task_id="ms1", file_path=p,
                                    instruction="change", verify_cmd="check",
                                    require_consent=False)

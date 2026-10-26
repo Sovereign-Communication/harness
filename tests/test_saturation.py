@@ -125,6 +125,9 @@ class PreRunWarningTests(unittest.TestCase):
     def _fed_ledger(self, n_429s, other=3):
         with tempfile.TemporaryDirectory() as d:
             led = AutonomyLedger(os.path.join(d, "l.jsonl"))
+            for i in range(max(n_429s, other)):
+                led.ensure_offered_task_id(f"t{i}", source="test_setup")
+                led.ensure_offered_task_id(f"o{i}", source="test_setup")
             for i in range(n_429s):
                 led.append("model_result", task_id=f"t{i}", model="m:free",
                            status="HTTP 429", reason="Rate limit exceeded")
@@ -165,6 +168,7 @@ class PreRunWarningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             led = AutonomyLedger(os.path.join(d, "l.jsonl"))
             for i in range(5):
+                led.ensure_offered_task_id(f"a{i}", source="test_setup")
                 led.append("model_result", task_id=f"a{i}", model="m:free",
                            status="HTTP 401", reason="invalid key")
             err = io.StringIO()
@@ -257,6 +261,7 @@ class ReasoningOnlyDemotionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             from harness.ledger import AutonomyLedger
             led = AutonomyLedger(os.path.join(d, "led.jsonl"))
+            led.ensure_offered_task_id("t1", source="test_setup")
             for e in ledger_events:
                 led.append(e.pop("event"), **e)
             report = led.participation_report()

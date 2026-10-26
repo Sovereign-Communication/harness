@@ -308,6 +308,8 @@ class LedgerAnalyticsCoveragePaths(unittest.TestCase):
 
     def test_calibration_handles_bad_numeric_and_mid_bucket(self):
         led = self._ledger()
+        for task_id in ("t1", "t2", "t3", "t-orphan", "t-noverify"):
+            led.ensure_offered_task_id(task_id, source="test_setup")
         led.append("jev_eval", task_id="t1", site="apply", verdict="pass",
                    confidence="not-a-number", supported=None,
                    is_fallback=False, input_tokens=1, cost=0.0)

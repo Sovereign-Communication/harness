@@ -26,7 +26,10 @@ from .orchestrator import drive
 from .prompts import MAX_FILE_LINES
 from .repo_scope import discover_verification_gate, enumerate_repo_files
 from .results import SUCCESS_STATUSES, model_envelope
-from .session import apply_session, attest_model_for, governor_for, jev_for, ledger_for
+from .session import (
+    apply_session, attest_model_for, ensure_offered_task_id, governor_for,
+    jev_for, maybe_ledger_for as ledger_for,
+)
 from .token_budget import budget_from_settings
 from .waist import STAGE_EXECUTION
 from .workspace import require_workspace
@@ -66,10 +69,18 @@ class AutoEditLifecycleMixin:
         # attestation), then a completion judge round that re-plans remaining
         # scope until the goal is met or the round budget is spent.
         root_dir = require_workspace(self.root_dir)
+        agent_ledger = ledger_for(self.settings, caller="agent")
+        ensure_offered_task_id(
+            agent_ledger,
+            session_id, model="(agent)", required=False, source="agent_edit")
         hourglass = resolve_hourglass(self.settings)
         adapter = adapter_for(self.lifecycle, "auto_edit")
         state = lifecycle_state or adapter.begin(
             session_id, prompt, data={"auto_apply": bool(auto_apply)})
+        ensure_offered_task_id(
+            agent_ledger,
+            state["request_id"], model="(agent)", required=False,
+            source="agent_edit_request")
         execution_directive = (
             any(p in prompt.lower() for p in EXECUTION_PHRASES)
             or any(re.search(
@@ -179,9 +190,10 @@ class AutoEditLifecycleMixin:
         if saved_plan and isinstance(state["context"].get("original_contents"), dict):
             original_contents = dict(state["context"]["original_contents"])
         brief = distill_context(files=file_contents, summary=prompt)
-        ledger_for(self.settings, caller="agent").append(
-            "brief_built", task_id=session_id, site="hourglass", schema=2,
-            **brief.ledger_fields())
+        if agent_ledger is not None:
+            agent_ledger.append(
+                "brief_built", task_id=session_id, site="hourglass", schema=2,
+                **brief.ledger_fields())
         emit("context_condensed", estimated_tokens=brief.estimated_tokens)
 
         # Formulate the FIRST-round DAG plan (LLM decomposition when the
@@ -194,6 +206,10 @@ class AutoEditLifecycleMixin:
         plan_policy = policy_for(
             self.settings, transport=self.transport, governor=gov,
             ledger=ledger_for(self.settings, caller="agent"))
+        policy_ledger = getattr(plan_policy, "ledger", None)
+        ensure_offered_task_id(
+            policy_ledger, state["request_id"], model="(agent)",
+            required=False, source="agent_edit_request")
         plan_prompt = prompt
         if saved_plan:
             plan = dict(saved_plan)

@@ -18,7 +18,9 @@ from .history import ChatResumePayload, load_chat_history, save_chat_turn
 from .jev_identity import jev_identity_block, jev_mentioned
 from .lifecycle import review_probability
 from .jev_policy import policy_for
-from .session import governor_for, ledger_for
+from .session import (
+    ensure_offered_task_id, governor_for, maybe_ledger_for as ledger_for,
+)
 from .simple_request import (
     answer_clock as simple_clock_answer,
     answer_prompt as simple_answer_prompt,
@@ -51,6 +53,9 @@ class SimpleAnswerLifecycleMixin:
         started = time.monotonic()
         deadline = started + max(0.0, float(max_wall_seconds))
         ledger = ledger_for(self.settings, caller="agent")
+        ensure_offered_task_id(
+            ledger, sid, model="(agent)", required=False,
+            source="simple_request")
         generation_attempts = 0
         pre_cost = 0.0
         generation_cost = 0.0
@@ -85,6 +90,8 @@ class SimpleAnswerLifecycleMixin:
                     f"simple request deadline exhausted before {stage}")
 
         def receipt(status: str, **fields):
+            if ledger is None:
+                return None
             return ledger.append(
                 "simple_request_result", task_id=sid, status=status,
                 workflow_tier="simple-answer", elapsed_ms=round(
@@ -173,6 +180,10 @@ class SimpleAnswerLifecycleMixin:
             policy = policy_for(
                 self.settings, transport=self.transport, governor=gov,
                 ledger=ledger)
+            policy_ledger = getattr(policy, "ledger", None)
+            ensure_offered_task_id(
+                policy_ledger, sid, model="(agent)", required=False,
+                source="simple_request")
             saved_turns = load_chat_history(sid, self.history_dir)
             effective_prompt = resolve_simple_answer_retry(prompt, saved_turns)
             memory = load_memory(self.history_dir)

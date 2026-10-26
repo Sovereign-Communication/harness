@@ -71,6 +71,108 @@ class OfferInputValidationTests(unittest.TestCase):
                 probe.assert_not_called()
 
 
+class ProvisionCliTaskLedgerTests(unittest.TestCase):
+    def _plan_file(self, directory):
+        from harness import provision as pv
+
+        # The provisioning path grammar intentionally rejects Windows 8.3
+        # aliases. GitHub's Windows runner exposes its temp directory as
+        # RUNNER~1, so pass the canonical path to the real CLI invocation.
+        directory = os.path.realpath(directory)
+        root = os.path.join(directory, "approved")
+        os.makedirs(root)
+        target = os.path.join(root, "created-by-approved-step")
+        plan = pv.Plan(
+            goal="create a test directory",
+            steps=(pv.Step("mkdir-test", "create a test directory",
+                           ("mkdir", target), pv.MUTATING,
+                           "create the directory", "remove the directory"),),
+            root=root, recipe="test", source="test", is_fallback=True)
+        path = os.path.join(directory, "plan.json")
+        with open(path, "w", encoding="utf-8") as stream:
+            json.dump(plan.to_dict(), stream)
+        return plan, path, root, target
+
+    def _run_cli(self, directory, ledger, plan_path, args):
+        from types import SimpleNamespace
+        from harness import provision as pv
+        from harness.lifecycle import LifecycleCoordinator
+
+        directory = os.path.realpath(directory)
+        probe = pv.HostProbe(
+            os_name="Windows", arch="x86_64", python_version="3.14",
+            python_executable=os.sys.executable, gpu_present=False, gpus=(),
+            free_disk_bytes=10**9, package_managers=(), probed_path=directory)
+        with mock.patch.object(cli, "load_settings",
+                               return_value=SimpleNamespace()), \
+             mock.patch.object(cli, "_ledger", return_value=ledger), \
+             mock.patch.object(cli._pv, "probe_host", return_value=probe), \
+             mock.patch.object(
+                 cli, "LifecycleCoordinator",
+                 side_effect=lambda: LifecycleCoordinator(
+                     history_dir=os.path.join(directory, "history"))), \
+             contextlib.redirect_stdout(io.StringIO()):
+            cli.main(["provision", "apply", "--plan-file", plan_path,
+                      "--execute", "--json", *args])
+
+    def test_execute_mints_and_records_the_generated_task_id_before_writing(self):
+        from harness.ledger import AutonomyLedger
+
+        with tempfile.TemporaryDirectory() as directory:
+            plan, plan_path, _root, target = self._plan_file(directory)
+            ledger = AutonomyLedger(os.path.join(directory, "ledger.jsonl"))
+            self._run_cli(directory, ledger, plan_path, [])
+
+            offers = [entry for entry in ledger.entries()
+                      if entry.get("event") == "offer"]
+            self.assertEqual([entry["task_id"] for entry in offers],
+                             [f"provision-{plan.digest[:32]}"])
+            self.assertFalse(os.path.exists(target),
+                             "the step remains pending without approval")
+
+    def test_execute_rejects_an_unknown_explicit_task_without_a_write(self):
+        from harness.ledger import AutonomyLedger
+
+        with tempfile.TemporaryDirectory() as directory:
+            _plan, plan_path, _root, target = self._plan_file(directory)
+            ledger = AutonomyLedger(os.path.join(directory, "ledger.jsonl"))
+            stderr = io.StringIO()
+            with mock.patch.object(cli, "load_settings",
+                                   return_value=mock.Mock()), \
+                 mock.patch.object(cli, "_ledger", return_value=ledger), \
+                 contextlib.redirect_stdout(io.StringIO()), \
+                 contextlib.redirect_stderr(stderr), \
+                 self.assertRaises(SystemExit) as ctx:
+                self._run_cli(directory, ledger, plan_path,
+                              ["--task-id", "never-offered"])
+
+            self.assertEqual(ctx.exception.code, 1)
+            self.assertIn("unknown task_id", stderr.getvalue())
+            self.assertEqual(ledger.entries(), [])
+            self.assertFalse(os.path.exists(target))
+
+
+class DogfoodCurationTaskLedgerTests(unittest.TestCase):
+    def test_from_ledger_rejects_unknown_explicit_id_before_curation_or_write(self):
+        from types import SimpleNamespace
+
+        with tempfile.TemporaryDirectory() as directory:
+            from harness.ledger import AutonomyLedger
+
+            ledger = AutonomyLedger(os.path.join(directory, "ledger.jsonl"))
+            opts = SimpleNamespace(
+                from_ledger=True, claims_file=None, claims_out="claims.json",
+                task_id="missing-task", evidence_window=10, max_claims=3,
+                out=None)
+            with mock.patch.object(cli, "_ledger", return_value=ledger), \
+                 mock.patch.object(cli, "curate_claims_from_ledger") as curate, \
+                 self.assertRaisesRegex(HarnessError, "unknown task_id"):
+                cli._cmd_dogfood(opts, object())
+
+            curate.assert_not_called()
+            self.assertEqual(ledger.entries(), [])
+
+
 class PanelWiringTests(unittest.TestCase):
     def test_verify_panel_flag_reaches_run_verify(self):
         """DF-CLI-2: ``harness verify --panel`` was declared in cli_parser.py
@@ -881,6 +983,7 @@ class CliResumeE2eTests(unittest.TestCase):
         gov = SpendGovernor(fake, "sk-test")
         gov.max_cost = 0.05
         ledger = AutonomyLedger(os.path.join(d, "ledger.jsonl"))
+        ledger.ensure_offered_task_id("orig-task", source="test_setup")
         engine = ApplyEngine(fake, "k", gov, ledger,
                              Router(["a"], "a", "deepseek/deepseek-chat"),
                              default_require_consent=False,

@@ -93,6 +93,7 @@ class DirectiveEvidenceParityTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.ledger = AutonomyLedger(
             os.path.join(self.tmp.name, "ledger.jsonl"))
+        self.ledger.ensure_offered_task_id("task/parity", source="test_setup")
 
     def test_directive_reaches_sanitized_bundle(self):
         from harness.site_export import export_bundle
@@ -152,6 +153,7 @@ class DirectiveEvidenceParityTests(unittest.TestCase):
         from harness.site_export import export_bundle
         policy = _DirectedJevPolicy(self.ledger)
         directive = policy.directive
+        self.ledger.ensure_offered_task_id("task/trace", source="test_setup")
         self.ledger.append(
             "escalate", task_id="task/trace", from_model="cheap/base",
             to_model="rung/top",

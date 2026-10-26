@@ -1006,6 +1006,15 @@ def evaluate_scope_on_pack(
     """
     if not pack.exists():
         raise HarnessError(f"mission pack not found: {pack.dir}")
+    evaluation_task_id = pack.id if task_id is None else task_id
+    ledger = getattr(policy, "ledger", None)
+    if ledger is not None:
+        if task_id is None:
+            ledger.ensure_offered_task_id(
+                evaluation_task_id, model="(mission)", required=False,
+                source="mission_scope")
+        else:
+            ledger.require_offered_task_id(evaluation_task_id)
     spec = pack.spec()
     state = {
         "mission_id": pack.id,
@@ -1019,11 +1028,11 @@ def evaluate_scope_on_pack(
     if extra_state:
         state.update(extra_state)
     result, structural, determination = policy.evaluate_scope(
-        state, site="hul_scope", task_id=task_id or pack.id)
+        state, site="hul_scope", task_id=evaluation_task_id)
     append_jev_eval(pack, {
         "site": "hul_scope",
         "mission_id": pack.id,
-        "task_id": task_id or pack.id,
+        "task_id": evaluation_task_id,
         "verdict": result.verdict,
         "supported": result.supported,
         "confidence": result.confidence,

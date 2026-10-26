@@ -460,6 +460,7 @@ class RetargetTests(unittest.TestCase):
                     "verification_required": True}
             validate_continuation(cont)  # sane fixture, then retarget it
             _, _, ledger, engine = fix.make_env()
+            ledger.ensure_offered_task_id("t", source="test_setup")
             with self.assertRaisesRegex(HarnessError, "does not match"):
                 engine.apply_edit(task_id="t", file_path=target_b,
                                   instruction="change", continuation=cont,
@@ -490,6 +491,7 @@ class EngineWriteGateTests(unittest.TestCase):
                 posts=[comp("HARNESS_READY: confident\n" + CHANGED)])
             gov = SpendGovernor(fake, "sk-test")
             ledger = AutonomyLedger(fix.ledger_path)
+            ledger.ensure_offered_task_id("t", source="test_setup")
             engine = ApplyEngine(fake, "k", gov, ledger,
                                  Router(["a"], "m/judge", "m/apply"),
                                  default_require_consent=False,
@@ -553,6 +555,7 @@ class CliTrustTests(unittest.TestCase):
         from harness.ledger import AutonomyLedger
         with tempfile.TemporaryDirectory() as d:
             ledger = AutonomyLedger(os.path.join(d, "l.jsonl"))
+            ledger.ensure_offered_task_id("t", source="test_setup")
             ledger.append("complete", task_id="t", model="m")
             with mock.patch.object(cli, "_ledger", return_value=ledger), \
                  mock.patch.object(cli, "_emit") as emit:

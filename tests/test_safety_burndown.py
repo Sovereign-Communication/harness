@@ -55,6 +55,12 @@ class _Gov:
 
 
 class _LedgerStub:
+    def ensure_offered_task_id(self, *a, **k):
+        return None
+
+    def require_offered_task_id(self, *a, **k):
+        return None
+
     def append(self, *a, **k):
         return None
 

@@ -40,6 +40,7 @@ class PanelJudgeTests(unittest.TestCase):
                                  posts=[comp("one"), comp("two"), comp("judge")])
             gov = _gov(fake)
             ledger = __import__("harness.ledger", fromlist=["AutonomyLedger"]).AutonomyLedger(path)
+            ledger.ensure_offered_task_id("ordinary-ledger", source="test_setup")
             result = panel_judge(transport=fake, api_key="k", governor=gov, prompt="Q?",
                                  panel=[P1, P2], judge=JUDGE, ledger=ledger,
                                  task_id="ordinary-ledger")
@@ -64,6 +65,7 @@ class PanelJudgeTests(unittest.TestCase):
                 ])
             gov = _gov(fake, max_cost=0.001)
             ledger = __import__("harness.ledger", fromlist=["AutonomyLedger"]).AutonomyLedger(path)
+            ledger.ensure_offered_task_id("429-cost", source="test_setup")
             result = panel_judge(transport=fake, api_key="k", governor=gov, prompt="Q?",
                                  panel=[P1, P2], judge=JUDGE, max_panelists=1,
                                  ledger=ledger, task_id="429-cost")
@@ -93,6 +95,7 @@ class PanelJudgeTests(unittest.TestCase):
                 ])
             gov = _gov(fake, max_cost=0.001)
             ledger = __import__("harness.ledger", fromlist=["AutonomyLedger"]).AutonomyLedger(path)
+            ledger.ensure_offered_task_id("rotation-cost", source="test_setup")
             result = panel_judge(transport=fake, api_key="k", governor=gov, prompt="Q?",
                                  panel=[P1, P2], judge=JUDGE, max_panelists=1,
                                  ledger=ledger, task_id="rotation-cost")
