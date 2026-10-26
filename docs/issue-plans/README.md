@@ -49,6 +49,15 @@ issue [#407](https://github.com/Sovereign-Communication/harness/issues/407) is
 now in the queue. Its implementation is stopped pending a decision on whether
 revocation is future-only or must retract past aggregate contributions.
 
+**2026-10-26 #306 blocker receipt update:** PR #409 merged as `baf6fe1`.
+PR-head CI run `40379030379` and post-merge main CI run `40380776860` both
+passed all 14 jobs. The post-merge site workflow `40380776750` passed
+build/tests and skipped deployment because `CF_API_TOKEN` was not configured;
+no public update is claimed. The inventory remains 65 queue rows, 9 complete,
+55 queued, 1 blocked, and 56 open issues. #306 remains open and blocked with
+its one-shot evidence and named operator-owned unblocker in [`306.md`](306.md).
+The #295 tracker comment records the same counts and deployment status.
+
 ### Closing verification - #277 (reserved for last)
 
 [#277](https://github.com/Sovereign-Communication/harness/issues/277) remains
