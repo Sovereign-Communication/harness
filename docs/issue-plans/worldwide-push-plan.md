@@ -2,10 +2,11 @@
 
 Objective: finish the three open fronts and ship the public face of the tool —
 (1) the #306 Fireworks key, found and installed; (2) the #333 ledger
-existence check, built in the shape Lucas picks; (3) a separate public
+existence check, built as (b) ledger-backed validation; (3) a separate public
 visibility site showing models and their stats worldwide, fed by sanitized,
 aggregated opt-in user ledger stats, driving users to download the tool;
-then deploy it. Iterate through ALL phases, fully, in order — every phase completed across ALL its aspects (implementation, tests, verification, docs, disposition). No phase counts as done with an aspect left open. Land each phase
+then deploy it; and (4) #277 (dogfood round 2) as the final verification
+round over everything built. Iterate through ALL phases, fully, in order — every phase completed across ALL its aspects (implementation, tests, verification, docs, disposition). No phase counts as done with an aspect left open. Land each phase
 on main green before moving to the next; if a phase blocks, name the blocker
 exactly and continue with the next unblocked phase — never mark done what is
 not on main green.
@@ -106,6 +107,26 @@ public URL in the repo. If the local Cloudflare setup turns out missing or
 broken, report exactly what is missing instead of inventing a deploy path —
 do not claim a deploy that did not happen.
 
+## Phase 5 — #277: dogfood round 2 (closing verification round)
+
+No technical blocker ever stood on #277 — its prerequisites (#276, #331,
+#327, #330) are all complete. It was held back only by prior passes'
+single-item scoping ("next, only when explicitly started"). That scoping
+is now lifted by Lucas (2026-10-25): #277 runs as the final phase of this
+push, so the round covers the finished state of everything, including the
+new visibility site.
+
+- One structured round across all four surfaces — CLI, GUI, MCP, website —
+  with a filed report: runtime, outputs, exit codes, calls, timing, costs.
+- Explicit findings even where there are none; 403/unverified never passes.
+- Each defect found is fixed with a test-bearing PR or filed separately
+  with severity. Nothing found is left unfiled and unfixed.
+- Known residual gaps to cover in the round: GUI access via the loopback
+  browser path (native pywebview absent), installed MCP runtime identity
+  via a real-client check, live model/Jev semantic approvals.
+- Verification: the filed matrix itself is the receipt; PR(s) green, merge,
+  main green, disposition on #277 with merge commit and evidence.
+
 ## Standing constraints (all phases)
 
 - One-PR-at-a-time, green-CI merges; main branch protection is active
@@ -113,8 +134,8 @@ do not claim a deploy that did not happen.
 - #333 is DECIDED: (b) ledger-backed validation (Lucas 2026-10-25, Jev unanimous). Build it; do not reopen the shape question. Do NOT touch #306's key value beyond presence checks.
 - Do NOT loosen any audit/Jev bar, baseline, or pinned score. Do NOT raise
   any spending ceiling. Do NOT re-run paid attestation.
-- Do NOT start #277 (dogfood round 2) in this push — it stays unstarted
-  until explicitly started.
+- #277 runs as the final phase of this push (Phase 5) — the earlier
+  "do not start #277" scoping is lifted by Lucas 2026-10-25.
 - Every comment, review, approval, disposition, or driving suggestion posted
   on GitHub passes full Jev gate policy v1 first
   (`docs/JEV_GATE_POLICY_V1.md`); below-bar → auto-investigate per policy;
@@ -131,6 +152,7 @@ do not claim a deploy that did not happen.
   consumers clean, phantoms absorbed).
 - Visibility-site issue filed, site built, deployed publicly at a recorded
   URL, fed by sanitized aggregated opt-in stats, driving downloads.
+- #277 round 2 completed with its filed matrix, defects fixed or filed.
 - Main green, 0 open PRs for this push, inventory updated.
 
 ## Appendix — full burndown (59 open issues, main 874befef, 2026-10-25)
@@ -140,7 +162,7 @@ The visibility-site issue from Phase 3 is NOT in this list yet — the lane
 files it, making 60. #295 is the tracker and stays open by design.
 
 READY NOW (prerequisites met or none):
-- #277 dogfood round 2 — prereqs #276/#331/#327/#330 ALL complete; next chain item, needs only an explicit start (NOT started in this push)
+- #277 dogfood round 2 — prereqs #276/#331/#327/#330 ALL complete; runs as the FINAL phase of this push (Phase 5) — the old "do not start" scoping is lifted
 - #333 ledger existence check — DECIDED (b), ready to build
 - #306 Fireworks key — operator machine, ready to execute (Phase 1)
 - #279 doctor · #287 CI cancel/paths · #288 pyright · #293 edge lines · #301 driver_core ruff · #310 provision split · #311 local-fit CI · #289 uv migration · #290 triage runbook · #325 v1 assessment gate (prereq #324 closed)

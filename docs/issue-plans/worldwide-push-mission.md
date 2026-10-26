@@ -28,14 +28,16 @@ you land it — no phase left half-done.
    site — file the tracking issue, build the separate public stats hub on
    sanitized aggregated opt-in data, feature the 0.23¢ audit receipt and the
    download path. 4. Deploy via the local Cloudflare setup; verify the
-   public URL serves; record it.
+   public URL serves; record it. 5. #277 — dogfood round 2 as the closing
+verification round over everything built (prereqs all complete; the old
+do-not-start scoping is lifted).
 
 ## Hard constraints
 
 - #333 is DECIDED: (b) ledger-backed (Lucas 2026-10-25). Do NOT reopen
 it. Do NOT print, log, or commit any key value. Do NOT
   loosen any audit/Jev bar, baseline, or pinned score. Do NOT raise any
-  ceiling. Do NOT start #277. Do NOT claim a deploy that did not happen.
+  ceiling. Do NOT claim a deploy that did not happen.
 - One PR at a time, green CI, merge commits on main. Jev gate v1 before
   every GitHub comment, review, approval, or disposition.
 - If a phase's spec turns out ambiguous or contradicted, stop that phase
@@ -45,7 +47,7 @@ it. Do NOT print, log, or commit any key value. Do NOT
 
 #306 installed + EV-8 receipt on main (or blocker named with searched
 locations); #333 built as (b) ledger-backed across all writers, all aspects verified;
-visibility site live at a recorded public URL; main green; inventory true;
+visibility site live at a recorded public URL; #277 round 2 completed with its filed matrix; main green; inventory true;
 a final report naming what landed, what remains, and who owns each
 remaining item. The mission ends only when every phase is landed or
 explicitly blocked with a named unblocker — not when the session ends.
