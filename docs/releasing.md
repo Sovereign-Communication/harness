@@ -136,7 +136,7 @@ Open gaps, in the order they block a first release:
    `[Unreleased]` changes are breaking) — and let the driver flatten the
    changelog; do not tag `0.4.2` for content that has since moved on.
 3. **README links break on the PyPI page.** The long description is the README,
-   and links such as `[docs/security.md](docs/security.md)` resolve against
+   and links such as `docs/security.md` resolve against
    `https://pypi.org/project/sovereign-harness/` rather than the repository.
    Absolute GitHub URLs render; relative ones 404. `twine check` does not catch
    this because the Markdown itself is valid.

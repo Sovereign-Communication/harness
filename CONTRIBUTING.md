@@ -236,7 +236,8 @@ cheap; losing either is not.
 | `harness/batch.py` | multi-file batch orchestration: one governed session per file, shared task budget, fail-fast -- owns the LOOP, the engine owns the per-file apply |
 | `harness/dag.py` | task decomposition & dependency DAG: TaskDAG, DAGNode, topological batching |
 | `harness/orchestrator.py` | the autonomous driver's judgment calls: completion judge (`assess_completion`), repo-wide file triage, and bounded plan/execute/judge rounds -- chat_fn injected, strict-JSON, degrades without inventing verdicts |
-| `harness/history.py` | persisted chat turns and session listing/deletion; the single owner of history filesystem state |
+| `harness/history.py` | persisted chat turns and session listing/deletion; the single owner of history filesystem state (also projects each saved turn into durable conversation memory, best-effort) |
+| `harness/conversation_context.py` | durable conversation facts (sites, URLs, paths), budget-driven history assembly, and the Jev recall judgment shared by every chat lane |
 | `harness/repo_scope.py` | repository file discovery and per-target verification-gate derivation/rebasing; the single owner of edit scope |
 | `harness/executor.py` | concurrent multi-threaded batch dispatch & file mutex manager |
 | `harness/condenser.py` | context distillation & micro-brief pipeline: AST signature extraction, error pruning |

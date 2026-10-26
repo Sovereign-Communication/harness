@@ -15,6 +15,13 @@ from .chat_policy import (
 )
 from . import script as _script
 from .config import Settings, effective_lane_policy
+from .conversation_context import (
+    assemble_history,
+    facts_block,
+    load_memory,
+    needs_earlier_context,
+    policy_recall_judge,
+)
 from .errors import HarnessError, ToolCancelled
 from .events import emit
 from .history import load_chat_history, save_chat_turn
@@ -22,7 +29,6 @@ from .lifecycle_types import LifecycleState
 from .prompts import CAPABILITY_MARKER
 from .results import _http_error
 from .session import governor_for, ledger_for
-from .simple_request import relevant_history as simple_relevant_history
 from .token_budget import resolve_lane_max_tokens as _resolve_lane_max_tokens
 from .web import gather_web_context, named_target_hosts, resolve_fetch_allowlist
 
@@ -107,17 +113,36 @@ class ConversationLifecycleMixin:
             system_prompt += "\n\n" + _UNTRUSTED_SCRIPT_NOTE + "\n\n" + untrusted_evidence
 
         messages = [{"role": "system", "content": system_prompt}]
-        past_turns = simple_relevant_history(
-            prompt, load_chat_history(session_id, self.history_dir), max_turns=3, max_chars=2400
+        turns = load_chat_history(session_id, self.history_dir)
+        # History is budget-driven, never count-capped: the lane's own token
+        # allowance sets the room, so a larger lane (or a later policy) admits
+        # more context without editing a constant in this file.
+        history_budget = max(0, int(target_tokens) * 4)
+        memory = load_memory(self.history_dir)
+        remembered = facts_block(
+            memory, budget_chars=max(0, history_budget // 2), focus=prompt)
+        recent_text = "\n".join(
+            f"User: {str(t.get('prompt') or '')[:240]}\n"
+            f"Assistant: {str(t.get('response') or '')[:240]}"
+            for t in turns[-2:]
         )
-        for turn in past_turns:
-            p_text = turn.get("prompt")
-            r_text = turn.get("response")
-            if p_text:
-                messages.append({"role": "user", "content": p_text})
-            if r_text:
-                messages.append({"role": "assistant", "content": r_text})
+        recall = needs_earlier_context(
+            prompt,
+            judge=self._context_recall_judge(remembered, recent_text, gov, session_id),
+        )
+        past_messages = assemble_history(
+            prompt, turns, budget_chars=history_budget,
+            memory=memory, expand=recall.needed)
+        fact_count = sum(1 for line in remembered.splitlines()
+                         if line.startswith("- "))
+        if remembered:
+            messages.append({"role": "system", "content": remembered})
+        messages.extend(past_messages)
         messages.append({"role": "user", "content": prompt})
+        emit("chat_context", facts=fact_count,
+             turns=sum(1 for m in past_messages if m["role"] == "user"),
+             expanded=recall.needed, native=recall.native,
+             reason=recall.reason)
 
         # One governed attempt per ladder rung (preflight -> chat -> bill, the
         # governed_text contract), advancing on HTTP failure or an unusable
@@ -332,10 +357,34 @@ class ConversationLifecycleMixin:
             ],
         }
 
+        result["context"] = {
+            "facts": fact_count,
+            "turns": sum(1 for m in past_messages if m["role"] == "user"),
+            "expanded": bool(recall.needed),
+            "native": bool(recall.native),
+            "reason": recall.reason,
+        }
         if persist:
             save_chat_turn(session_id, result, self.history_dir)
         emit("chat_response", intent="conversation", cost=cost, model=model)
         return result
+
+    def _context_recall_judge(self, remembered: str, recent: str, gov: Any,
+                              session_id: str):
+        """The Jev decision behind context expansion, or None when Jev cannot
+        judge.  None leaves the deterministic referential fallback in charge;
+        it never silently widens or narrows context."""
+        if not remembered:
+            return None
+        try:
+            from .jev_policy import policy_for
+
+            policy = policy_for(self.settings, governor=gov)
+        except Exception:  # noqa: BLE001 - absence of Jev is not a failure
+            return None
+        return policy_recall_judge(
+            policy, remembered, recent,
+            site="chat-context", task_id=session_id or "chat")
 
     def answer_from_script_output(self, prompt: str, evidence: str, *,
                                   session_id: Optional[str] = None,

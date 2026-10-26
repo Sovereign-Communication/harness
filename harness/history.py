@@ -108,6 +108,18 @@ def save_chat_turn(session_id: str, turn: Dict[str, Any], history_dir: Optional[
     file_path = _chat_history_path(session_id, hdir)
     with open(file_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(turn, ensure_ascii=False) + "\n")
+    # Project the turn into durable conversation memory (sites, paths, the
+    # last request).  The transcript is the source of truth and must survive
+    # even if the projection fails, so a memory error never breaks the save.
+    try:
+        from .conversation_context import remember_turn
+
+        remember_turn(session_id, str(turn.get("prompt") or ""),
+                      str(turn.get("response") or ""), history_dir=Path(hdir))
+    except Exception as exc:  # noqa: BLE001 - projection is best-effort
+        from .output import eprint
+
+        eprint(f"[memory] could not update conversation memory: {exc}")
     return file_path
 
 
