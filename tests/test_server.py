@@ -92,6 +92,15 @@ class ServeMainTests(unittest.TestCase):
         self.assertIn("gui-open.url", stderr.getvalue())
         fake_server.serve_forever.assert_called_once()
 
+    def test_unwritable_owner_state_refuses_to_start(self):
+        with mock.patch.object(
+                ui_server, "load_or_create_ui_token",
+                side_effect=OSError("private state unavailable")):
+            with self.assertRaises(SystemExit) as exc:
+                ui_server.main([])
+        self.assertEqual(exc.exception.code, 1)
+
+
 class SecurityGuardTests(ServerHarness):
     def test_loopback_host_required(self):
         """DNS-rebinding guard: an attacker-chosen Host header is refused."""
@@ -190,6 +199,61 @@ class PairingAuthTests(ServerHarness):
             self.assertEqual(status, 200)
         finally:
             conn.close()
+
+    def test_pair_create_fails_closed_without_persistent_owner(self):
+        self.httpd.ui.owner_token = None
+        conn = self._conn()
+        try:
+            status, body = _request(
+                conn, "POST", "/api/auth/pair/create", body={},
+                headers={"X-Harness-Auth": self.token},
+            )
+        finally:
+            conn.close()
+        self.assertEqual(status, 503)
+        self.assertIn("persistent owner", body["error"])
+
+    def test_pair_redemption_expires_old_rate_limit_attempts(self):
+        self.httpd.ui._pair_attempts.append(time.time() - 61)
+        code, _ = self.httpd.ui.create_pairing_code()
+        state, token = self.httpd.ui.redeem_pairing_code(code)
+        self.assertEqual((state, token), ("ok", "persistent-owner-token"))
+        self.assertEqual(len(self.httpd.ui._pair_attempts), 1)
+
+    def test_pair_redemption_rejects_bad_content_type_json_and_missing_code(self):
+        origin = f"http://127.0.0.1:{self.port}"
+        host = f"127.0.0.1:{self.port}"
+
+        def raw_post(content_type, payload):
+            conn = self._conn()
+            try:
+                headers = {"Host": host, "Origin": origin,
+                           "Content-Type": content_type}
+                conn.request("POST", "/api/auth/pair/redeem",
+                             body=payload, headers=headers)
+                response = conn.getresponse()
+                response.read()
+                return response.status
+            finally:
+                conn.close()
+
+        self.assertEqual(raw_post("text/plain", b"{}"), 415)
+        self.assertEqual(raw_post("application/json", b"{"), 400)
+        self.assertEqual(raw_post("application/json", b"{}"), 400)
+
+    def test_pair_redemption_requires_content_length(self):
+        origin = f"http://127.0.0.1:{self.port}"
+        request = (
+            f"POST /api/auth/pair/redeem HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{self.port}\r\n"
+            f"Origin: {origin}\r\n"
+            "Content-Type: application/json\r\n"
+            "Connection: close\r\n\r\n"
+        ).encode("ascii")
+        with socket.create_connection(("127.0.0.1", self.port), timeout=5) as sock:
+            sock.sendall(request)
+            response = sock.makefile("rb").read()
+        self.assertIn(b"400", response.split(b"\r\n", 1)[0])
 
     def test_persistent_owner_remains_valid_with_a_session_override(self):
         conn = self._conn()
@@ -1381,6 +1445,28 @@ class DesktopFallbackTests(unittest.TestCase):
         self.assertEqual(mode, "browser")
         self.assertEqual(opened, ["http://127.0.0.1:1/#tok"])
 
+    def test_default_desktop_path_opens_after_recovery_is_saved(self):
+        import harness.ui as ui_mod
+
+        httpd = mock.Mock()
+        httpd.server_address = ("127.0.0.1", 4242)
+        server_thread = mock.Mock()
+        with mock.patch.object(ui_mod, "make_server", return_value=httpd), \
+                mock.patch.object(ui_mod, "load_or_create_ui_token",
+                                  return_value="owner"), \
+                mock.patch.object(ui_mod, "write_ui_handoff",
+                                  return_value="gui-open.url") as save_handoff, \
+                mock.patch.object(ui_mod.threading, "Thread",
+                                  return_value=server_thread), \
+                mock.patch.object(ui_mod, "_open_window",
+                                  return_value="webview") as open_window:
+            ui_mod.main([])
+
+        save_handoff.assert_called_once_with(
+            url="http://127.0.0.1:4242/", token="owner")
+        server_thread.start.assert_called_once()
+        open_window.assert_called_once_with("http://127.0.0.1:4242/", "owner")
+
 
 class DesktopTokenTests(unittest.TestCase):
     """``harness desktop`` token provenance: an explicit token is used as
@@ -1457,6 +1543,32 @@ class DesktopTokenTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as exc:
             self._main([])
         self.assertEqual(exc.exception.code, 1)
+
+    def test_failed_handoff_save_closes_server_and_refuses_to_start(self):
+        import harness.ui as ui_mod
+
+        httpd = mock.Mock()
+        httpd.server_address = ("127.0.0.1", 4242)
+        with mock.patch.object(ui_mod, "make_server", return_value=httpd), \
+                mock.patch.object(ui_mod, "load_or_create_ui_token",
+                                  return_value="owner"), \
+                mock.patch.object(ui_mod, "write_ui_handoff",
+                                  side_effect=OSError("private file unavailable")), \
+                mock.patch("sys.stderr", io.StringIO()):
+            with self.assertRaises(SystemExit) as exc:
+                ui_mod.main(["--browser"])
+        self.assertEqual(exc.exception.code, 1)
+        httpd.ui.uninstall_event_sink.assert_called_once()
+        httpd.server_close.assert_called_once()
+        httpd.serve_forever.assert_not_called()
+
+    def test_posix_private_write_surfaces_permission_hardening_failure(self):
+        with mock.patch.object(self.ui_auth.osal, "IS_POSIX", True), \
+                mock.patch.object(self.ui_auth.os, "chmod",
+                                  side_effect=OSError("permission update failed")):
+            with self.assertRaises(OSError):
+                self.ui_auth._atomic_private_write(
+                    os.path.join(self.cfg, "handoff"), "private")
 
     def test_an_existing_token_file_is_replaced_not_written_in_place(self):
         with open(self.token_file, "w", encoding="utf-8") as f:
