@@ -316,7 +316,8 @@ class DoctorChecksTests(unittest.TestCase):
         request = build.return_value.open.call_args.args[0]
         self.assertEqual(request.get_method(), "GET")
         self.assertEqual(request.get_header("Authorization"), "Bearer fixture-secret")
-        error = urllib.error.HTTPError("https://example.test", 403, "denied", {}, None)
+        error = urllib.error.HTTPError("https://example.test", 403, "denied", {},
+                                       io.BytesIO(b""))
         with mock.patch.object(doctor.urllib.request, "build_opener") as build:
             build.return_value.open.side_effect = error
             self.assertEqual(doctor._openrouter_key_info("fixture-secret"), (403, None))
@@ -381,7 +382,8 @@ class DoctorChecksTests(unittest.TestCase):
         response = self._response(204)
         with mock.patch.object(doctor.urllib.request, "urlopen", return_value=response):
             self.assertEqual(doctor._typesafe_probe("https://typesafe.test"), 204)
-        error = urllib.error.HTTPError("https://typesafe.test", 405, "method", {}, None)
+        error = urllib.error.HTTPError("https://typesafe.test", 405, "method", {},
+                                       io.BytesIO(b""))
         with mock.patch.object(doctor.urllib.request, "urlopen", side_effect=error):
             self.assertEqual(doctor._typesafe_probe("https://typesafe.test"), 405)
         settings = self._settings(jev_endpoint="https://api.typesafe.ai/v1/systemone")
