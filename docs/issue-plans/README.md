@@ -6,17 +6,18 @@ authoritative order, dependencies and acceptance exits remain
 register plus the live GitHub open-issue set.
 
 **Snapshot 2026-10-25:** the queue was generated at 58 open GitHub issues,
-all mapped to a canon row. Six later tracking issues (#377–#382, opened
+all mapped to a canon row. Six later tracking issues (#377-#382, opened
 2026-10-25) were appended after generation, so the queue now holds 64 rows and
-all **56** live open issues are represented. Eight queue items have landed with receipts:
-**#339** (efficiency evidence, `76a95f6`, outside the 58-issue queue),
-**#330** (dogfood `cancel_check`, PR #364, `0737e62`), **#347** (config/Jev
-override precedence, PR #365, `4d9fea4`), **#327** (checkout-root gate and
-route resolution, PR #366, `8c4324a`), **#278** (one external-tool resolver
-and preflight, PR #367, `4155b68`), **#276** (runtime merge-base D12 and
-the S5 disposition, PR #369, `f54f8aa`), and **#331** (D12 SKIP has no
-passed-measurement credit, PR #371, `52f51b9`, outside the queue), and **#279**
-(doctor preflight, PR #403, `707c017`). The
+all **55** live open issues are represented. Nine queue items have landed with
+receipts: **#330** (dogfood `cancel_check`, PR #364, `0737e62`), **#347**
+(config/Jev override precedence, PR #365, `4d9fea4`), **#327** (checkout-root
+gate and route resolution, PR #366, `8c4324a`), **#278** (one external-tool
+resolver and preflight, PR #367, `4155b68`), **#276** (runtime merge-base D12
+and S5 disposition, PR #369, `f54f8aa`), **#333** (ledger-backed task-ID
+checks, PR #398, `919d2ac`), **#287** (CI cancellation/docs-only path, PR #402,
+`82f9381`), **#279** (doctor preflight, PR #403, `707c017`), and **#282**
+(Playwright smoke and safe browser handoff, PR #405, `ef21e23`). **#339**
+(`76a95f6`) and **#331** (PR #371, `52f51b9`) landed outside the queue. The
 full-surface jev/dogfood sweep (PR #373, `ce3efa0`) then fixed two
 ceiling-forwarding defects in `apply` and dogfood's apply phase; its
 exit-code inventory is
@@ -42,12 +43,13 @@ The [closing report](closing-report-2026-10-25.md) is the 54-open snapshot
 before #276; the current inventory is on #295. No issue is marked complete
 until its changes are merged with green CI.
 
-### Next chain item — #277
+### Closing verification - #277 (reserved for last)
 
 [#277](https://github.com/Sovereign-Communication/harness/issues/277) remains
-**open and not started**; it is the next chain item. Its named prerequisites
-(`#276`, `#331`, `#327`, `#330`) are all closed as completed, and each merge
-commit is an ancestor of `origin/main`:
+**open and not started**; it is reserved for the final cross-surface closing
+round after the other work. Its named prerequisites (#276, #331, #327, #330)
+are all closed as completed, and each merge commit is an ancestor of
+`origin/main`:
 
 | Prerequisite | Receipt | State |
 |---|---|---|
@@ -69,9 +71,11 @@ evidence: the native `pywebview` shell is absent (GUI access is the loopback
 browser path only), the installed MCP runtime identity still needs a real
 client check, and no live model/Jev semantic approvals have been demonstrated.
 
-Explicit holds are unchanged: **#333** is the owner decision on the task/ledger
-boundary and **#306** is operator-gated on the Freebuff laptop key. Neither is
-decided or started by this inventory, and neither is a #277 prerequisite.
+The **#333** ledger-backed task-ID decision landed in PR #398 (`919d2ac`).
+**#306** remains operator-gated: the one-shot Fireworks probe returned HTTP 200
+without the required reply, and its marker prohibits another call; the named
+unblocker is an operator decision on a non-repeating remedy or another
+already-existing valid receipt. Neither is a #277 prerequisite.
 
 ## Harness planner note
 
@@ -91,6 +95,7 @@ The canon's #347 contract was implemented and verified directly:
 - [`276.md`](276.md) — runtime merge-base D12 measurement, real-diff proof
   and the S5 disposition.
 - [`331.md`](331.md) — D12 SKIP status/accounting, text and JSON receipts, and
+- [`282.md`](282.md) — Playwright UI journeys, persistent owner recovery, and the gated merge/disposition receipt.
   the merge record.
 - [`closing-report-2026-10-25.md`](closing-report-2026-10-25.md) — landed
   receipts and the per-issue blocker/unblocker accounting for the 54 open
