@@ -20,7 +20,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 0.99,
+        "confidence": 0.96,
         "evaluated": true
       },
       "R": {
@@ -29,7 +29,7 @@
         "level": "exemplary \u2014 100% defect-free across all checks (10.0)",
         "score": 10.0,
         "bar_met": true,
-        "confidence": 1.0,
+        "confidence": 0.99,
         "evaluated": true
       },
       "SM": {
@@ -256,7 +256,7 @@
         "label": "full suite green hermetically",
         "score": 1.0,
         "status": "pass",
-        "evidence": "unittest: Ran 5122 tests in 333.083s\n\nOK (env clean; empty home)"
+        "evidence": "unittest: Ran 5159 tests in 341.556s\n\nOK (env clean; empty home)"
       },
       {
         "id": "R14",
@@ -307,7 +307,7 @@
         "label": "test tree mirrors product tree",
         "score": 1.0,
         "status": "pass",
-        "evidence": "112/112 modules imported by tests"
+        "evidence": "113/113 modules imported by tests"
       },
       {
         "id": "S7",
@@ -407,7 +407,7 @@
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
         "status": "pass",
-        "evidence": "changed harness lines are suite-executed (changed-line coverage 164/164 = 100% (bar 95%) vs merge-base 874befefb1 (origin/main; traced battery at merge-base 874befefb1))"
+        "evidence": "no executable harness changes vs merge-base 69889792b2 (origin/main)"
       }
     ]
   }

@@ -44,6 +44,56 @@ jobs:
           echo "run_hermetic=$run_hermetic" >> "$GITHUB_OUTPUT"
           echo "Hermetic matrix required: $run_hermetic" >> "$GITHUB_STEP_SUMMARY"
 
+  typecheck-changed:
+    name: changed-file typecheck (pyright)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Type-check changed Python files
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python - <<'PY'
+          import os
+          import shutil
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          changed = subprocess.check_output([
+              "git", "diff", "--name-only", "-z", "--diff-filter=ACMR",
+              os.environ["BASE_SHA"], os.environ["GITHUB_SHA"],
+          ])
+          files = []
+          for entry in changed.split(b"\0"):
+              if entry.endswith(b".py"):
+                  path = Path(os.fsdecode(entry))
+                  if path.is_file():
+                      files.append(str(path.resolve()))
+          if not files:
+              print("No added, modified, copied, or renamed Python files; skipped.")
+              raise SystemExit(0)
+
+          # Baseline: only changed files are diagnostic roots; untouched files
+          # remain grandfathered even when imported for their type information.
+          subprocess.run([
+              sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
+              "pyright==1.1.414",
+          ], check=True)
+          pyright = shutil.which("pyright")
+          if not pyright:
+              raise SystemExit("Pyright executable was not installed")
+          raise SystemExit(subprocess.call([
+              pyright, "--pythonversion", "3.9", *files,
+          ]))
+          PY
+
   # PLAT-parity-tests: line-ending hygiene is a property of the CHECKOUT, so
   # it is checked on a fresh one, before anything else runs. A .gitattributes
   # rule that makes files look modified is invisible to the rest of CI and
