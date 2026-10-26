@@ -8,14 +8,15 @@ register plus the live GitHub open-issue set.
 **Snapshot 2026-10-25:** the queue was generated at 58 open GitHub issues,
 all mapped to a canon row. Six later tracking issues (#377–#382, opened
 2026-10-25) were appended after generation, so the queue now holds 64 rows and
-all **59** live open issues are represented. Seven campaign items have landed with receipts:
+all **56** live open issues are represented. Eight queue items have landed with receipts:
 **#339** (efficiency evidence, `76a95f6`, outside the 58-issue queue),
 **#330** (dogfood `cancel_check`, PR #364, `0737e62`), **#347** (config/Jev
 override precedence, PR #365, `4d9fea4`), **#327** (checkout-root gate and
 route resolution, PR #366, `8c4324a`), **#278** (one external-tool resolver
 and preflight, PR #367, `4155b68`), **#276** (runtime merge-base D12 and
 the S5 disposition, PR #369, `f54f8aa`), and **#331** (D12 SKIP has no
-passed-measurement credit, PR #371, `52f51b9`, outside the queue). The
+passed-measurement credit, PR #371, `52f51b9`, outside the queue), and **#279**
+(doctor preflight, PR #403, `707c017`). The
 full-surface jev/dogfood sweep (PR #373, `ce3efa0`) then fixed two
 ceiling-forwarding defects in `apply` and dogfood's apply phase; its
 exit-code inventory is
@@ -94,7 +95,7 @@ The canon's #347 contract was implemented and verified directly:
 - [`closing-report-2026-10-25.md`](closing-report-2026-10-25.md) — landed
   receipts and the per-issue blocker/unblocker accounting for the 54 open
   issues.
-- [`queue.json`](queue.json) — all 58 generated issues with owner,
+- [`queue.json`](queue.json) — all 64 queue rows with owner,
   prerequisites, acceptance and batch status.
 
 ## Batch rules
