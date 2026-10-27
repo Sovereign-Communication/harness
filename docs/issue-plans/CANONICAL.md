@@ -29,6 +29,9 @@
 
 - `docs/issue-plans/bookkeeping-pr-launch-prompt.md` — open, fully
   verify, and land the #288 bookkeeping PR. Receipt-only; #306 untouched.
+- `docs/issue-plans/bookkeeping-pr-launch-mission.md` — condensed
+  mission version of the launch prompt, under 4,000 chars, for mission
+  inputs with a character cap. Points to the full prompt above.
 
 ## SUPERSEDED (history only — DO NOT FOLLOW)
 
