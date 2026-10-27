@@ -53,20 +53,20 @@ Apply v1, NOT any draft CLI composition that gates on confidence:
 7. Never re-run to shop a verdict; never pad a score. A re-run needs
    new evidence or a changed action, recorded as such.
 
-## SAVE JEV CONTEXT TO MEMORY (every run, no exceptions)
+## SAVE THE POLICY, NOT EVERY RUN (corrected 2026-10-27)
 
-After every Jev run, record in the run receipt AND in memory (the
-lane's memory file, plus a MEMORY.md note where the decision is
-durable):
+Memory holds the POLICY (this document, AGENTS.md, and the MEMORY.md
+standing entry) — not every run's verdict. Saving every run to memory
+is noise; the durable thing is the policy itself.
 
-1. Date, question (action + end-state), model version, disposition,
-   confidence (marked telemetry), is_destructive, advances_goal,
-   cost/latency, v1 verdict + note, and the decision gated.
-2. Key by question: a future identical question CITES the saved
-   verdict instead of re-calling Jev (saves cost, prevents shopping).
-   If the action or evidence changed, record a NEW entry — never
-   overwrite the old one silently.
-3. Memory entries never contain keys, credentials, or key material.
+Per-run verdicts go in the RUN RECEIPT only: date, question (action +
+end-state), model version, disposition, confidence (marked telemetry),
+is_destructive, advances_goal, cost/latency, v1 verdict + note, and the
+decision gated. A future identical question CITES the receipt instead
+of re-calling Jev (saves cost, prevents shopping). If the action or
+evidence changed, record a NEW receipt entry — never overwrite the old
+one silently. Receipts never contain keys, credentials, or key
+material.
 
 ## PROMPT DISCIPLINE (standing rule, restated 2026-10-27)
 
@@ -81,5 +81,6 @@ into the implementation plan before any runner build.
 ## END-STATE
 
 Every driving decision of the kind above carries a Jev verdict read
-under v1, saved to memory by question, and cited — not re-run — on
-repeat. No decision of this kind goes out with its Jev context missing.
+under v1, recorded in its run receipt and cited — not re-run — on
+repeat. No decision of this kind goes out without its receipt.
+Memory holds the policy, not the runs.
