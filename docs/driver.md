@@ -9,6 +9,49 @@ reaches it through one thin adapter,
 contract described below. The adapter speaks plain HTTP, so it works against
 any service that exposes the same contract; `DRIVER_BASE_URL` selects which.
 
+### Current image driver through an isolated service
+
+Use a separate virtual environment for a current driver-core wheel; Harness
+also distributes `driver_core`, so installing both distributions into one
+environment risks overlapping package files. Start the isolated environment's
+`python -I -m driver_core serve --host 127.0.0.1 --port 8791` outside either
+source checkout. The service reads its own `DRIVER_*` environment:
+
+- Set `DRIVER_JEV_API_KEY` from the existing credential loader, without logging
+  it. Set `DRIVER_TOKEN` to an operator-generated bearer secret.
+- Enable `DRIVER_SCREEN=1` and `DRIVER_JEV_IMAGES=1`; authorize a private
+  temporary capture location with `DRIVER_SCREEN_OUT`. Source capture files
+  belong to the operator and must be removed when the session ends.
+- Declare `DRIVER_STEP_CEILING_USD` and `DRIVER_RUN_CEILING_USD`. Each image
+  dispatch currently reserves $0.002752512 before settling actual usage;
+  the default two readers need room for two reservations and the decision.
+- Keep `DRIVER_ALLOW_WRITE=0`; `DRIVER_DRY_RUN=1` provides a bounded observing
+  smoke without enabling execution. Other image switches (`DRIVER_JEV_FRAMES`,
+  `DRIVER_JEV_BOX`, `DRIVER_JEV_LADDER`, `DRIVER_JEV_GUARDRAILS`) remain separate
+  explicit opt-ins and are not enabled by the adapter.
+
+In the Harness process, select `DRIVER_BASE_URL=http://127.0.0.1:8791` and the
+same `DRIVER_TOKEN`. An endpoint file selected by `DRIVER_CONFIG_PATH` takes
+precedence over environment values, so keep it consistent with that service.
+Use `/api/driver/start` to check readiness, then POST `/api/driver/step` with
+`{"target":"Observe without acting","schema":"gui","require_stable":true}`.
+Harness API authentication still applies. The driver credential stays in the
+service process; Harness only needs the REST bearer token.
+
+An explicit `DRIVER_BASE_URL` or `DRIVER_CONFIG_PATH` selects an externally
+managed service: API startup checks readiness but does not launch or silently
+substitute the bundled daemon, even when a bundled daemon already exists.
+Unavailable external services remain unavailable. Without explicit selection,
+the existing bundled autostart behavior is unchanged. Execution, consent and
+refusal policy belong to the selected driver; selecting this mode does not
+update the bundled driver's implementation or grant any action capability.
+
+To identify the actual artifact, run the isolated interpreter with
+`-I -c "import driver_core; print(driver_core.__file__)"`; the path must point
+to that environment's site-packages. Check `/api/driver/verify` and the selected
+service's audit ledger for usage reconciliation. A successful observing refusal
+does not prove successful synthetic-input execution.
+
 Nothing here names a model, provider, or screen-reading library. The driver
 resolves its own extractor pool and Jev model from its settings.
 
