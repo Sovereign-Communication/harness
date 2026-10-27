@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Results — Harness issue program</title>
-  <meta name="description" content="Measured Harness issue-program results: eleven landed items with merge commits, current test totals and the open-issue ledger.">
+  <meta name="description" content="Measured Harness issue-program results: twelve landed items with merge commits, current test totals and the open-issue ledger.">
   <meta property="og:title" content="Results — Harness issue program">
-  <meta property="og:description" content="Eleven landed items, 5,159 tests and 56 open issues — receipts first, no invented metrics.">
+  <meta property="og:description" content="Twelve landed items, 5,159 tests and 55 open issues — receipts first, no invented metrics.">
   <meta property="og:type" content="website">
   <link rel="canonical" href="https://harness.pages.dev/results/">
   <link rel="stylesheet" href="../assets/site.css">
@@ -30,7 +30,7 @@
     <h1>Results: issue program, batch 1</h1>
     <p class="lede">One reviewed slice at a time. An issue counts as complete only after its changes merge with green CI; a queued row is never presented as done.</p>
 
-    <p class="small muted">Main baseline after PR #409: merge commit <code>baf6fe1</code> (2026-10-26) &middot; <a href="https://github.com/Sovereign-Communication/harness/actions/runs/40380776860">main CI 40380776860</a> passed all 14 jobs; PR-head CI <a href="https://github.com/Sovereign-Communication/harness/actions/runs/40379030379">40379030379</a> passed all 14 jobs. The main site workflow <a href="https://github.com/Sovereign-Communication/harness/actions/runs/40380776750">40380776750</a> passed build/tests but skipped deployment because <code>CF_API_TOKEN</code> is absent; no public update is claimed. #306 remains open and blocked; #282 closed by merge; #407 is filed; 56 live open issues remain.</p>
+    <p class="small muted">Main baseline after PR #411: merge commit <code>4ccee99</code> (2026-10-26) &middot; <a href="https://github.com/Sovereign-Communication/harness/actions/runs/40392746434">main CI 40392746434</a> passed 14 jobs; the changed-file typecheck is skipped on <code>main</code> by design. PR-head CI <a href="https://github.com/Sovereign-Communication/harness/actions/runs/40391500923">40391500923</a> passed all 15 jobs. Before this receipt PR, main site workflow <a href="https://github.com/Sovereign-Communication/harness/actions/runs/40384432731">40384432731</a> passed build/tests but skipped deployment because <code>CF_API_TOKEN</code> is absent; no public update is claimed. #306 remains open and blocked; #407 has an operator decision supplied, with the gated issue comment pending; 55 live open issues remain.</p>
 
     <h2>Landed items</h2>
     <table>
@@ -105,10 +105,16 @@
           <td><a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/282.md">plan receipt</a>; five served-UI journeys plus negative control; persistent owner recovery and one-time pairing; 5,159-test local audit suite; PR-head and main CI 14/14</td>
         </tr>
         <tr>
+          <td><a href="https://github.com/Sovereign-Communication/harness/issues/288">#288</a> Changed-file type checking</td>
+          <td>complete</td>
+          <td><code>4ccee99</code></td>
+          <td><a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/288.md">plan receipt</a>; PR-head CI 40391500923 passed all 15 jobs; post-merge main CI 40392746434 passed 14 jobs; Pyright 1.1.414 and the negative control are recorded in the receipt</td>
+        </tr>
+        <tr>
           <td><a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/queue.json">Open issues</a></td>
           <td>open</td>
           <td>—</td>
-          <td>56 live open issues: 65 queue rows minus nine complete queue items; 55 are queued and #306 is blocked; #339 and #331 landed outside the queue</td>
+          <td>55 live open issues: 65 queue rows minus ten complete queue items; 54 are queued and #306 is blocked; #339 and #331 landed outside the queue</td>
         </tr>
       </tbody>
     </table>
@@ -122,7 +128,7 @@
         <tr><td>Audit A / R / SM / SD</td><td>10.00 / 10.00 / 10.00 / 10.00</td><td>Committed audit receipt remains pinned; PR and post-merge main audit jobs passed</td></tr>
         <tr><td>D12 coverage</td><td>PASS in CI</td><td>PR #405 and post-merge main CI runs 40351113572 and 40363250338 passed audit/D12 jobs; local Windows audit recorded D12 as SKIP (fail-open), documented in the #282 receipt</td></tr>
         <tr><td>JEV gate</td><td>PROCEED</td><td>Native Jev 1.14.0 merge gate for PR #409: advances_goal 0.95, disposition lead 0.89, no fallback or destructive escalation signal; merge commit <code>baf6fe1</code>.</td></tr>
-        <tr><td>Queue ledger gate</td><td>PASS</td><td>65 of 65 rows valid; 9 complete, 55 queued and 1 blocked; #306 has a named one-shot blocker and #407 awaits a revocation-semantics decision</td></tr>
+        <tr><td>Queue ledger gate</td><td>PASS</td><td>65 of 65 rows valid; 10 complete, 54 queued and 1 blocked; #306 has a named one-shot blocker and #407 has a supplied revocation decision awaiting its gated issue comment</td></tr>
         <tr><td>Site gate</td><td>PASS</td><td>68 tests</td></tr>
         <tr><td>Ruff</td><td>clean</td><td><code>python -m ruff check harness tests</code></td></tr>
         <tr><td>Merge-result CI</td><td>14/14 jobs</td><td><a href="https://github.com/Sovereign-Communication/harness/actions/runs/40380776860">run 40380776860</a> on <code>baf6fe1</code></td></tr>
@@ -148,7 +154,7 @@
     <p>On a previous live task the apply seat produced a one-character fix for <strong>0.23&cent;</strong>. On the same task, the paid judge returned a post-response parse error plus a <strong>0.38&cent;</strong> protocol retry, so the run cost <strong>0.61&cent;</strong>. The number is unflattering, and it is published for that reason: the judge's retry cost more than the apply it reviewed.</p>
 
     <h2>What remains open</h2>
-    <p>The <a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/closing-report-2026-10-25.md">closing report</a> is the 54-open snapshot before #276; the current 56-issue inventory is on <a href="https://github.com/Sovereign-Communication/harness/issues/295">#295</a>, and the <a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/queue.json">execution queue</a> carries the same state as machine-readable JSON. With #276, #287, #331, #333, #279, and #282 landed, <strong>#277</strong>'s named prerequisites (#276, #331, #327, #330) are complete and #277 remains reserved for the final cross-surface verification round. <strong>#306</strong> is explicitly blocked with evidence in <a href="https://github.com/Sovereign-Communication/harness/issues/306#issuecomment-6410804371">its issue comment</a> and <a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/306.md">the plan receipt</a>: the key resolves, but the one-shot probe returned HTTP 200 with <code>contains_ok=false</code>, so the marker prohibits another call. Its unblocker is an operator decision on a non-repeating remedy or another already-existing valid receipt. The newly filed <a href="https://github.com/Sovereign-Communication/harness/issues/407">#407 visibility-site issue</a> is queued but implementation is stopped until revocation semantics are resolved. No public deployment is claimed. The rest are blocked by named prerequisite issues or are ready and queued.</p>
+    <p>The <a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/closing-report-2026-10-25.md">closing report</a> is the 54-open snapshot before #276; the current 55-issue inventory is on <a href="https://github.com/Sovereign-Communication/harness/issues/295">#295</a>, and the <a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/queue.json">execution queue</a> carries the same state as machine-readable JSON. With #276, #287, #331, #333, #279, and #282 landed, <strong>#277</strong>'s named prerequisites (#276, #331, #327, #330) are complete and #277 remains reserved for the final cross-surface verification round. <strong>#306</strong> is explicitly blocked with evidence in <a href="https://github.com/Sovereign-Communication/harness/issues/306#issuecomment-6410804371">its issue comment</a> and <a href="https://github.com/Sovereign-Communication/harness/blob/main/docs/issue-plans/306.md">the plan receipt</a>: the key resolves, but the one-shot probe returned HTTP 200 with <code>contains_ok=false</code>, so the marker prohibits another call. Its unblocker is an operator decision on a non-repeating remedy or another already-existing valid receipt. The <a href="https://github.com/Sovereign-Communication/harness/issues/407">#407 visibility-site issue</a> is queued; the operator decided revocation stops future submissions while existing published aggregate contributions stay, and the gated issue comment is pending before implementation. No public deployment is claimed. The rest are blocked by named prerequisite issues or are ready and queued.</p>
     <p class="small muted">This is a static results surface. Deployment is performed only by <code>.github/workflows/site.yml</code>, and only when the <code>CF_API_TOKEN</code> repository secret is configured. A merged page is not by itself a deployed page; the workflow run is the deployment record.</p>
   </main>
 

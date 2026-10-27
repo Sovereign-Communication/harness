@@ -44,19 +44,25 @@ before #276; the current inventory is on #295. No issue is marked complete
 until its changes are merged with green CI.
 
 **2026-10-26 tracker update:** PR #406 merged the #282 bookkeeping at
-`84e646e`; the source results page is current at 56 open issues. The visibility
-issue [#407](https://github.com/Sovereign-Communication/harness/issues/407) is
-now in the queue. Its implementation is stopped pending a decision on whether
-revocation is future-only or must retract past aggregate contributions.
+`84e646e`; the source results page reflected 56 open issues at that point. The
+visibility issue [#407](https://github.com/Sovereign-Communication/harness/issues/407)
+is in the queue. Its operator decision was supplied in chat: revocation stops
+future submissions, while contributions already included in published
+aggregates stay. The gated GitHub issue comment is the next action before #407
+reaches implementation.
 
 **2026-10-26 #306 blocker receipt update:** PR #409 merged as `baf6fe1`.
 PR-head CI run `40379030379` and post-merge main CI run `40380776860` both
 passed all 14 jobs. The post-merge site workflow `40380776750` passed
 build/tests and skipped deployment because `CF_API_TOKEN` was not configured;
-no public update is claimed. The inventory remains 65 queue rows, 9 complete,
-55 queued, 1 blocked, and 56 open issues. #306 remains open and blocked with
-its one-shot evidence and named operator-owned unblocker in [`306.md`](306.md).
-The #295 tracker comment records the same counts and deployment status.
+no public update is claimed. PR #411 then merged #288 as
+`4ccee9927b44df21c714de47c542376882529372`; PR-head CI `40391500923` passed
+all 15 jobs and post-merge main CI `40392746434` passed 14 jobs (the
+changed-file typecheck is skipped on `main` by design). The inventory is now
+65 queue rows: 10 complete, 54 queued, 1 blocked, and 55 open GitHub issues.
+#288 has its merge receipt in [`288.md`](288.md). #306 remains open and blocked
+with its one-shot evidence and exact operator-owned unblocker in
+[`306.md`](306.md).
 
 ### Closing verification - #277 (reserved for last)
 
