@@ -644,6 +644,20 @@ class AgentAnswerLoopTests(unittest.TestCase):
         self.assertEqual(result["status"], "deferred")
         defer.assert_called_once_with("Audit this repo", "chat-audit")
 
+    def test_force_conversation_routes_selected_workspace_review_to_hourglass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = AutonomousAgent(settings=load_settings(), root_dir=root,
+                                    history_dir=root)
+            with patch.object(agent, "run_hourglass_request",
+                              return_value={"status": "ok"}) as run:
+                result = agent.run_prompt(
+                    "Audit this repo", force_conversation=True,
+                    session_id="selected-workspace")
+        self.assertEqual(result["status"], "ok")
+        run.assert_called_once()
+        self.assertFalse(run.call_args.kwargs["web"])
+
     def test_workspace_selection_defer_recovers_corrupt_checkpoint_and_stage(self):
         agent = AutonomousAgent(settings=load_settings(), root_dir=None)
         existing = {"route": "hourglass", "status": "running",
@@ -915,6 +929,30 @@ class AgentAnswerLoopTests(unittest.TestCase):
             result = agent.run_hourglass_request(
                 "Explain this project", request_preflight=route)
         self.assertEqual(result["status"], "deferred")
+        defer.assert_called_once()
+
+    def test_route_preflight_cost_is_recorded_before_workspace_deferral(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = AutonomousAgent(settings=load_settings(), root_dir=None,
+                                    history_dir=root)
+            governor = MagicMock()
+            route = {"source": "jev_request_workflow",
+                     "choice": "workspace-inspection", "native": True,
+                     "cost": 0.00001}
+            with patch("harness.hourglass_lifecycle.governor_for",
+                       return_value=(None, governor)), \
+                 patch("harness.hourglass_lifecycle.policy_for",
+                       return_value=MagicMock()), \
+                 patch("harness.hourglass_lifecycle.ledger_for",
+                       return_value=MagicMock()), \
+                 patch.object(agent, "_workspace_context_deferred",
+                              return_value={"status": "deferred"}) as defer:
+                result = agent.run_hourglass_request(
+                    "Explain this project", request_preflight=route)
+        self.assertEqual(result["status"], "deferred")
+        governor.record_actual.assert_called_once_with(
+            0.00001, "chat-route-preflight", lane="answer")
         defer.assert_called_once()
 
     def test_route_policy_cancellation_persists_interruption(self):
