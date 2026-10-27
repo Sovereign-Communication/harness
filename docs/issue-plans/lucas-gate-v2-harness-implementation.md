@@ -148,6 +148,52 @@ merge serially, green CI required). Where lane-specific detail was thin,
 the gate implementation above is the concrete generic form for this lane's
 decision artifacts — it does not invent lane facts.
 
+## LOCKED DEFINITION — GATE AVERAGES (decided 2026-10-27)
+
+The rounding rule (profile §10 rule 2) never defined its averages. This
+definition locks them. The runner verifies from raw rows, never from
+external averages:
+
+- SAMPLE: one scored artifact instance in a gate run (one draft scored
+  across gated categories).
+- RAW ROW: (sample_id, category, score 0–10, scorer model version,
+  timestamp). The run receipt stores every raw row. A run with missing
+  raw rows for any claimed category is rejected.
+- CATEGORY_AVERAGE[c]: arithmetic mean of category c's raw scores
+  across all samples in the run where c was scored. Categories marked
+  not-applicable (17–19, or any category with zero scored samples in the
+  run) have no average and are never failed.
+- OVERALL_AVERAGE: arithmetic mean of the category averages (equal
+  weight per category, not per sample). Rationale: every gated category
+  is an equal bar, so a heavily-sampled category must not dominate.
+  When every sample is scored on every category, this equals the grand
+  mean of all raw scores; the formulas differ only under partial
+  scoring, where equal-category weighting is the principled choice.
+- APPLICATION ORDER: compute both means from raw first (unrounded).
+  Then apply §10 rule 2: a category score of 8.95 counts as 9 iff
+  CATEGORY_AVERAGE ≥ 9.25; 8.9 counts iff CATEGORY_AVERAGE ≥ 9.5; 8.8
+  counts iff OVERALL_AVERAGE ≥ 9.9 (exact unrounded mean; 9.85–9.89 does
+  not trigger). Then PASS iff every gated category (after rounding)
+  ≥ 9, else PASS-with-note / ITERATE per §10 rules 3–4.
+- VERIFICATION: the runner recomputes both means from raw rows and
+  rejects the run if any recomputed mean differs from a claimed mean by
+  more than 0.005 (float display tolerance, not real disagreement).
+- REJECTED ALTERNATIVES: computing overall from category scores while
+  keeping category averages external (cannot recompute — violates B1,
+  allows padded/stale averages); keeping both averages external with
+  receipt references (trusts the external computation — auditability
+  theater, B8). "10 category scores" in the question is not a fixed
+  count: the runner computes over however many categories were actually
+  scored in the run (gated categories 1–16 normally).
+- JEV VERIFICATION (2026-10-27, jev-1.14.0): decision pack on this
+  sourcing choice returned disposition proceed, is_destructive 0.05,
+  advances_goal 0.96, confidence 0.49 (telemetry). Under ratified Jev
+  gate policy v1 (confidence does not gate; advances_goal ≥ 0.95;
+  destructive < 0.5): PROCEED. Note: the draft jev-decide CLI's own
+  composition labels this ESCALATE because it gates on confidence
+  < 0.95 — that composition is superseded by v1; do not treat a
+  confidence-only ESCALATE from that CLI as a block.
+
 ## APPROVED AMENDMENT — HYBRID CI SCOPE (Lucas approved 2026-10-27)
 
 Jev verification (2026-10-27, lead 0.75 over pure KEEP-OUT) confirmed the

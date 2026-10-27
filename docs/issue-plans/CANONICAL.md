@@ -15,6 +15,8 @@
   itself is NEVER published to this public repo. The plan's bars, tracks,
   bias list, and amendment are complete without it.
 
+- `docs/issue-plans/jev-use-instructions.md` — when and how to use Jev for driving decisions, how to read results under v1, and how to save Jev context to memory.
+
 ## SHADOW GATE (staged; advisory first, enforce only when verified)
 
 - `docs/issue-plans/shadow-gate/driving-hygiene.py` — staged scanner
