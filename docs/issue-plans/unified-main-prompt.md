@@ -56,6 +56,17 @@ win. "Fully" is literal — every aspect:
   #295 tracker was behind by #410 + #411. Verify current counts from the
   API before writing any bookkeeping — never copy a stale count forward.
 
+## UPDATE 2026-10-27 - NEW ITEMS (read before starting)
+
+- Open issues now 61 (55 + 6 new GUI audit issues #412-#417 below); main unchanged at 4ccee99; 0 open PRs.
+- JEV POLICY CORRECTION (Lucas 2026-10-27): save the POLICY to memory, NOT every run. Per-run Jev verdicts go in run receipts only, cited from receipts on repeat. The prior steering Step 4 (save every run to memory) is SUPERSEDED. Full instructions: docs/issue-plans/jev-use-instructions.md (branch); AGENTS.md + MEMORY.md carry the standing policy.
+- GATE AVERAGES LOCKED (2026-10-27, Jev-verified jev-1.14.0 proceed / destructive 0.05 / advances_goal 0.96): category_average = arithmetic mean of that category's raw scores across samples where scored; overall_average = arithmetic mean of the category averages (equal weight per category); runner recomputes both from raw per-sample rows and rejects runs with missing rows or recomputed means differing by more than 0.005; apply rounding unrounded first (8.95 counts iff category average >= 9.25; 8.9 iff >= 9.5; 8.8 iff overall >= 9.9 exact). Full definition: implementation plan LOCKED DEFINITION section.
+- GUI AUDIT 2026-10-27 (verdict ESCALATE, report workspace/harness-gui-audit-2026-10-27.md): server serves/guards as coded; server/driver suites 173 passed + 8 subtests; GUI NOT verified end to end. New issues #412-#417 (below) feed #277; work them before the #277 final report; #277 remains LAST as the filed report.
+- CORRECTIONS from the audit (primary sources at 4ccee99): make_server default port is 8765, NOT 8800 (8800 needs explicit --port); /api/status 200 requires auth (unauthenticated 401 by design); driver-core verify 52-record chain is the local HOME store, NOT the harness chain - never cite it as harness evidence.
+- SHADOW GATE: deterministic driving-hygiene job staged at docs/issue-plans/shadow-gate/ (advisory first: Stage A advisory PR, Stage B verification checklist, Stage C enforce only after all Stage B passes + negative control). Do not enforce until verified.
+- BOOKKEEPING LAUNCH: full launch prompt docs/issue-plans/bookkeeping-pr-launch-prompt.md + mission version (under 4,000 chars) docs/issue-plans/bookkeeping-pr-launch-mission.md. STEP 1 uses the launch prompt.
+- ENTIRE-VERIFIED NOTES (2026-10-27, public-docs research; Entire work itself is parked, nothing here depends on it): no standalone entire-mcp forge server exists - the real Entire MCP surface is entire-brain memory tools only (brain_remember, brain_recall, brain_brief, brain_query, brain_status); no intent-drift monitor product exists (intent/drift checks are hackathon ideas, not shipped); no downloadable Entire skill package - the official substitute is GENERATED agent guides (entire brain setup / graph init-agents writing .entire/agent-guide.md + AGENTS.md/CLAUDE.md wiring). Do NOT add .entire files to these repos expecting Entire action on GitHub; do NOT build against intent-drift monitors, Trail-management MCP tools, or a risk dashboard - none exist in the documented surface.
+
 ## STEP 0 — MAKE THE TYPED-TRACK RUNNER CALLABLE (do this FIRST)
 
 The self-audit of brain-talk requires the native Lucas Gate v2
@@ -124,6 +135,7 @@ installed MCP runtime identity via a real-client check, live model/Jev
 semantic approvals, and the GUI first-use auth handoff (no stranded
 browser user). The filed matrix is the receipt. If the self-audit is not
 full, the win is not claimed.
+GUI audit issues feeding this step (filed 2026-10-27, work before the final report): #412 first-use auth handoff live UX; #413 driver loopback-browser round-trip; #414 MCP runtime identity real-client check; #415 live model/Jev semantic approvals via GUI; #416 GUI first-use acceptance doc + serve/auth doc corrections; #417 driver-core verify store identity. Laptop packet (from the audit): owner-authenticated /api/status 200; live-browser fresh-profile first-use incl. recovery with no stranded user; authenticated driver loopback round-trip; MCP stdio count verified (do not trust the prior 30); one live GUI approval with spend recorded; test re-run; then the #277 report.
 
 ## STEP 7 — #407 BUILD, VISIBILITY SITE, DEPLOY
 
@@ -155,6 +167,7 @@ phase to skip — it is the bar for every phase above.
   for prompts) on every driving artifact. Below-bar → auto-investigate per
   policy; only actual risk blocks. Never pad a score, never shop a
   verdict, never fail on a not-applicable category.
+- Memory holds the POLICY, not every run (corrected 2026-10-27): per-run Jev verdicts go in run receipts only, cited from receipts on repeat.
 - Do NOT print, log, or commit any key value. Do NOT loosen any audit/Jev
   bar, baseline, or pinned score. Do NOT raise any ceiling. Do NOT re-run
   paid attestation. Do NOT claim a landing, merge, or deploy that did not
@@ -164,7 +177,7 @@ phase to skip — it is the bar for every phase above.
 
 ## SESSION CLOSEOUT (every session)
 
-GUI (8800 /api/status 200) and MCP (stdio smoke, 30 tools) verified up and
+GUI (serve --port 8800, /api/status 200 WITH the saved owner credential - unauthenticated 401 is by design) and MCP (stdio smoke, tool count verified, not assumed) verified up and
 left running (or the outage named exactly, with its cause); main SHA, CI
 state, issues landed this session, and next issue stated plainly; 0 open
 PRs at session end, or the open PR named with its exact CI state.
