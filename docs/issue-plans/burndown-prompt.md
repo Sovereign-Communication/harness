@@ -1,3 +1,9 @@
+**SUPERSEDED — DO NOT FOLLOW THIS DOC. Canonical: `docs/issue-plans/unified-main-prompt.md` (same branch). See `docs/issue-plans/CANONICAL.md`.**
+
+This doc is kept for history only. Corrected 2026-10-27 for #333 DONE (PR #398), #306 BLOCKED, and #288 DONE (PR #411), but the canonical prompt still wins on any disagreement.
+
+---
+
 # Full burndown prompt — every open issue, all aspects fully flushed out
 
 Objective: complete the ENTIRE harness burndown — all 59 open issues plus
@@ -37,27 +43,16 @@ other lanes depend on them.
 
 ## The full burndown (dependency order — work top to bottom)
 
-Landed already (not open): #339, #330, #347, #327, #278, #276, #331, #324.
+Landed already (not open): #339, #330, #347, #327, #278, #276, #331, #324, #333 (PR #398), #288 (PR #411), #279, #287, #282.
 #295 is the tracker and stays open by design. The visibility-site issue
 (VIS) is filed first in Phase 3 — it is not in the 59 yet.
 
 READY NOW (no unmet prerequisites — start here):
-- #333 ledger existence check — DECIDED (b) ledger-backed (Lucas
-  2026-10-25, Jev unanimous conf 1.0). Build across ALL writers:
-  offer_work records minted IDs; defer_work, log_judgment, every other
-  event writer reject unknown IDs with an explicit error and NO ledger
-  write. `nope` repro must error; per-writer regression tests; consumers
-  clean; phantoms absorbed into #336's never-prune list.
-- #306 Fireworks key — find it on this machine (previous session saved it;
-  search `~/.config/harness/fireworks.env`, `~/.config/scmorc/fireworks.env`,
-  prior session worktrees/artifact dirs, all harness config locations).
-  NEVER print, log, or commit the value; presence-only checks. Install to
-  `~/.config/harness/fireworks.env` (700/0600), verify, probe receipt +
-  EV-8 flip. If unfindable after a thorough search, report the searched
-  locations and move on — do not invent a key.
+- #333 ledger existence check — DONE, CLOSED by PR #398 (merge `919d2acf`, 2026-10-26): (b) ledger-backed validation across ALL writers is LANDED. Do NOT rebuild. Its prerequisites are satisfied for #318, #336, #285.
+- #306 Fireworks key — BLOCKED: one-shot probe returned HTTP 200 with `contains_ok=false`; the marker prohibits another call. NEVER rerun the probe, NEVER delete the marker, NEVER mark #306 complete. Only unblocker: operator decision on a non-repeating remedy or another already-existing valid receipt. NEVER print, log, or commit any key value.
 - #277 dogfood round 2 — prereqs ALL complete; runs LAST as the closing
   verification round (Phase 5), not first.
-- #279 doctor · #287 CI cancel/paths · #288 pyright · #293 edge lines ·
+- #293 edge lines ·
   #301 driver_core ruff · #310 provision split · #311 local-fit CI ·
   #289 uv migration · #290 triage runbook · #325 v1 assessment gate
 - #282 Playwright smoke · #284 tool-description lint · #286 structured
@@ -70,12 +65,12 @@ READY NOW (no unmet prerequisites — start here):
 CHAINS (in order — a link never starts before its prerequisites land):
 - #345 → #346 → #342 → #343 / #344 → #308 (needs #346+#342) · #309
   (needs #342)
-- #345 → #340 → #280 (also needs #302) → #318 (also needs #333) →
+- #345 → #340 → #280 (also needs #302) → #318 (#333 satisfied — landed) →
   #319 · #337 (also needs #336)
 - #340 → #281 (also needs #277) · #294 (also needs #282+#277) · #304 ·
   #313
-- #333 + #345 → #336 → #337
-- #284 + #335 + #333 → #285
+- (#333 satisfied — landed) #345 → #336 → #337
+- #284 + #335 (+ #333 satisfied — landed) → #285
 - #301 → #292 → #270 → #272 → #271 → #273 (also needs #299) → #275
   (also needs #342+#344)
 - #325 → #291 (also needs #340) · #314 (also needs #309)
@@ -100,7 +95,7 @@ working the ready chains while decisions are pending.
 - #282/#283 — rescope decision (served UI, not Electron; Jest IPC
   inapplicable as written)
 - #314 — parity-bars decision
-- #336 — never-prune list decision (after #333 lands)
+- #336 — never-prune list decision (after #333 landed via PR #398)
 - #337 — checklist go/no-go criteria decision
 - #303 — enforce-vs-disclose decision (Jev-escalated, held)
 - #377–382 — tracking/low-priority lane items (build in chain order)
@@ -150,8 +145,8 @@ semantic approvals. The filed matrix is the receipt.
 ## Done looks like
 
 All 60 issues landed with receipts and dispositions (or explicitly blocked
-with a named unblocker); #306 installed + EV-8 receipt; #333 built as (b)
-across all writers; visibility site live at a recorded public URL on
+with a named unblocker); #306 open and blocked with its named unblocker; #333 built as (b)
+across all writers — DONE via PR #398; visibility site live at a recorded public URL on
 sanitized aggregated opt-in stats; #277 round filed with defects fixed or
 filed; main green; 0 open PRs for this push; #295, queue.json, and the
 results page true; a final report naming what landed, what remains, and

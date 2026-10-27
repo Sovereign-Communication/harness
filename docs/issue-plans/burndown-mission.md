@@ -1,3 +1,9 @@
+**SUPERSEDED — DO NOT FOLLOW THIS DOC. Canonical: `docs/issue-plans/unified-main-prompt.md` (same branch). See `docs/issue-plans/CANONICAL.md`.**
+
+This doc is kept for history only. Corrected 2026-10-27 for #333 DONE (PR #398), #306 BLOCKED, and #288 DONE (PR #411), but the canonical prompt still wins on any disagreement.
+
+---
+
 # Mission (condensed): full burndown — keep it on track
 
 Objective: take the full burndown prompt
@@ -24,7 +30,7 @@ half-done, no aspect left open.
 
 ## Order
 
-Ready-now first (#333 (b), #306, and the unblocked list), then the chains
+Ready-now first (#293, #301, and the unblocked list — #333 is DONE via PR #398, #306 is BLOCKED, #288 is DONE via PR #411), then the chains
 in dependency order (#345→#346→#342→#343/#344, #340→#280→#318→#319,
 #301→#292→#270→#272→#271→#273→#275, and the rest), visibility-site issue
 filed + site built + deployed via local Cloudflare woven in, decision
@@ -44,8 +50,8 @@ closing verification round over everything built.
 ## Done looks like
 
 All 60 issues landed with receipts and dispositions (or explicitly blocked
-with a named unblocker); #306 installed + EV-8 receipt; #333 built as (b)
-across all writers; visibility site live at a recorded public URL; #277
+with a named unblocker); #306 open and blocked with its named unblocker; #333 built as (b)
+across all writers — DONE via PR #398; visibility site live at a recorded public URL; #277
 round filed with defects fixed or filed; main green; inventory true; a
 final report naming what landed, what remains, and who owns each remaining
 item. The mission ends only when every issue is landed or explicitly

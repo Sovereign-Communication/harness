@@ -1,3 +1,9 @@
+**SUPERSEDED — DO NOT FOLLOW THIS DOC. Canonical: `docs/issue-plans/unified-main-prompt.md` (same branch). See `docs/issue-plans/CANONICAL.md`.**
+
+This was a point-in-time resume doc (2026-10-26 baseline). Its steps 1–2 live on as canonical Steps 1–2. The canonical prompt's baseline and order supersede this doc.
+
+---
+
 # DRIVING PROMPT — RESUME BURNDOWN (post-#288)
 
 ## VERIFIED GITHUB BASELINE (checked from the API, 2026-10-26)

@@ -1,0 +1,30 @@
+# STAGED JOB SNIPPET — merge into .github/workflows/ci.yml (do not place this
+# file itself under .github/workflows; it is a proposal until the rollout PR).
+# Target location of the script after the rollout PR: scripts/driving-hygiene.py
+# (staged copy: docs/issue-plans/shadow-gate/driving-hygiene.py).
+#
+# ROLLOUT: advisory first. Keep `continue-on-error: true` until the
+# verification checklist in docs/issue-plans/shadow-gate/shadow-gate-rollout-prompt.md
+# passes; then remove it in a follow-up PR to ENFORCE (blocking).
+# Deterministic only: no model calls, no secrets, Ubuntu-only.
+# This job NEVER judges voice, tone, or bias — those stay in the driving loop.
+
+  driving-hygiene:
+    name: driving hygiene (shadow gate, deterministic only)
+    runs-on: ubuntu-latest
+    continue-on-error: true  # ADVISORY until verification passes, then remove
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Gather PR body, diff, and changed files
+        run: |
+          python3 -c "import json, os; body = json.load(open(os.environ['GITHUB_EVENT_PATH']))['pull_request']['body'] or ''; open('/tmp/pr-body.txt', 'w').write(body)"
+          git diff "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" > /tmp/pr.diff
+          git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" > /tmp/changed.txt
+      - name: Run driving-hygiene checks
+        run: |
+          python3 scripts/driving-hygiene.py --body-file /tmp/pr-body.txt --diff-file /tmp/pr.diff --changed-files /tmp/changed.txt

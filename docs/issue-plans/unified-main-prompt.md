@@ -38,7 +38,7 @@ win. "Fully" is literal — every aspect:
   credential-pattern scan on added lines, (4) planning-structure check on
   changed `docs/issue-plans/*.md` (ALL-CAPS headers, numbered steps,
   stated end-state). Implement this job as part of this push. It needs no
-  runner, so the runner gap does NOT block it.
+  runner, so the runner gap does NOT block it. Staged implementation + rollout: `docs/issue-plans/shadow-gate/`. Canonical index: `docs/issue-plans/CANONICAL.md`.
 - OUT OF CI, in the driving-agent loop only: typed-track voice categories
   1–6, 8–11 scoring and the bias pass. The Gate itself never becomes a
   merge-blocking CI gate.
@@ -62,7 +62,7 @@ The self-audit of brain-talk requires the native Lucas Gate v2
 typed-track runner, and its absence is the lane's named unblocker. Check
 the MCP catalog and the repo's gate implementation; if no callable runner
 exists, BUILD the minimal one per
-`lucas-gate-v2-harness-implementation.md` (profile v2, typed track:
+`docs/issue-plans/lucas-gate-v2-harness-implementation.md` (same branch; the v2 profile itself stays private and is not published) (profile v2, typed track:
 categories 1–6, 8–11, bar ≥9 with the operator rounding rule, bias pass
 B1/B3/B4/B5/B8/B9/B10/B11). Until it exists, post NO GitHub text without a
 gate pass — but local builds, tests, and the deterministic CI job proceed,
@@ -100,7 +100,7 @@ before #292 lands.
 ## STEP 4 — CONTINUE IN BURNDOWN ORDER
 
 After #293 and #301, continue from `docs/issue-plans/burndown-prompt.md`
-(all 60 issues, all aspects) with ONE correction: #333 is DONE — skip it.
+(corrected 2026-10-27: #333 DONE, #306 BLOCKED, #288 DONE; this prompt is canonical where they disagree).
 One PR at a time, green CI, merge commits, main green throughout.
 
 ## STEP 5 — #306 STAYS BLOCKED, DO NOT TOUCH THE PROBE

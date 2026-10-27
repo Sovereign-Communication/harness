@@ -1,3 +1,9 @@
+**SUPERSEDED — DO NOT FOLLOW THIS DOC. Canonical: `docs/issue-plans/unified-main-prompt.md` (same branch). See `docs/issue-plans/CANONICAL.md`.**
+
+This doc is kept for history only. It is stale where it disagrees with the canonical prompt — notably it still instructs building #333, which CLOSED via PR #398 (merge `919d2acf`), and its #306 phase predates #306's block (one-shot probe HTTP 200 with `contains_ok=false`; marker prohibits a retry). Follow the canonical prompt; this doc's phases, order, and done-lines do not override it.
+
+---
+
 # Mission: worldwide push — keep it on track
 
 Objective: take the worldwide push plan
