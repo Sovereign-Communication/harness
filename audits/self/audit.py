@@ -1019,19 +1019,19 @@ def sm_lint():
     from harness.errors import HarnessError
     from harness.tools import ruff_argv
     try:
-        argv = list(ruff_argv(strict=True)) + ["check", "harness", "tests"]
+        argv = list(ruff_argv(strict=True)) + ["check", "harness", "tests", "driver_core"]
     except HarnessError as exc:
         # #276's explicit disposition: a missing ruff is an environment
         # failure with a named fix, not an opaque "No module named ruff"
         # red check on an unrelated PR. The shared resolver owns the search
         # order (HARNESS_RUFF, PATH, then `<interpreter> -m ruff`).
-        return _pass(False, "ruff check harness tests: clean via the shared resolver",
+        return _pass(False, "ruff check harness tests driver_core: clean via the shared resolver",
                      f"S5 ruff unresolved: {exc}")
     r = subprocess.run(argv, cwd=str(ROOT), capture_output=True, text=True,
                        timeout=120)
     ok = r.returncode == 0
     command = " ".join(argv)
-    return _pass(ok, f"ruff check harness tests: clean via shared resolver `{command}`",
+    return _pass(ok, f"ruff check harness tests driver_core: clean via shared resolver `{command}`",
                  f"`{command}`:\n" + (r.stdout + r.stderr).strip()[-300:])
 
 

@@ -173,7 +173,7 @@ jobs:
             echo "Docs/site-only change: skipped lint." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          python -m ruff check harness tests examples/oc_handoff
+          python -m ruff check harness tests examples/oc_handoff driver_core
       - name: Compile
         if: env.RUN_HERMETIC == 'true'
         run: python -m compileall -q harness tests examples/oc_handoff

@@ -57,6 +57,14 @@ class GatesCommandTest(unittest.TestCase):
                 # PATH/override binary, or `<interpreter> -m ruff`.
                 self.assertEqual(entry["argv"][:len(tools.ruff_argv())],
                                  list(tools.ruff_argv()))
+                ruff_args = entry["argv"][len(tools.ruff_argv()):]
+                self.assertEqual(ruff_args[0], "check")
+                self.assertEqual(
+                    [os.path.normcase(os.path.normpath(path))
+                     for path in ruff_args[1:]],
+                    [os.path.normcase(os.path.normpath(
+                        os.path.join(REPO_ROOT, directory)))
+                     for directory in ("harness", "tests", "audits", "driver_core")])
             else:
                 self.assertEqual(entry["argv"][0], sys.executable)
             self.assertTrue(entry["command"])

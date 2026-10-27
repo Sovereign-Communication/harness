@@ -207,10 +207,11 @@ class GateSpec:
 #: a doc can no longer drift from what actually runs.
 GATES = {
     spec.name: spec for spec in (
-        GateSpec("ruff", "lint the package, tests and audit script",
+        GateSpec("ruff", "lint the package, tests, audit script and driver-core",
                  ("{ruff}", "check",
-                  "{root}/harness", "{root}/tests", "{root}/audits"),
-                 requires=("harness", "tests", "audits")),
+                  "{root}/harness", "{root}/tests", "{root}/audits",
+                  "{root}/driver_core"),
+                 requires=("harness", "tests", "audits", "driver_core")),
         GateSpec("compileall", "byte-compile every module (syntax gate)",
                  ("{python}", "-m", "compileall", "-q",
                   "{root}/harness", "{root}/tests"),

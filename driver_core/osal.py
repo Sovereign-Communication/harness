@@ -49,7 +49,7 @@ import urllib.parse
 import urllib.request
 
 from .errors import OsalError
-from .png import SIGNATURE as PNG_SIGNATURE, decodable as png_decodable
+from .png import decodable as png_decodable
 from .png import dimensions as png_dimensions
 
 #: How long a child process may run before it is killed.
