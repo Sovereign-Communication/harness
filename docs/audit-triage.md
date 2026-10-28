@@ -20,22 +20,25 @@ Example setup in a fresh PowerShell session:
 
 ```powershell
 $triageHome = Join-Path $env:TEMP ("harness-triage-" + [guid]::NewGuid().ToString("N"))
-New-Item -ItemType Directory -Path $triageHome | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $triageHome ".config\harness") -Force | Out-Null
 $env:HOME = $triageHome
 $env:USERPROFILE = $triageHome
-$env:APPDATA = Join-Path $triageHome "AppData\Roaming"
-$env:XDG_CONFIG_HOME = Join-Path $triageHome ".config"
+$env:APPDATA = $triageHome
+$env:XDG_CONFIG_HOME = $triageHome
 $env:HARNESS_CONFIG_DIR = Join-Path $triageHome ".config\harness"
 $env:HARNESS_JEV_DISABLE = "1"
-Remove-Item Env:HARNESS_JEV_KEY, Env:TYPESAFE_API_KEY, Env:JEV_API_KEY, Env:HARNESS_AUDIT_LIVE -ErrorAction SilentlyContinue
+Remove-Item Env:HARNESS_USE_FREE, Env:HARNESS_ALLOW_ESCALATION, Env:HARNESS_MAX_COST, Env:HARNESS_TASK_MAX_COST, Env:HARNESS_MIN_CONFIDENCE, Env:HARNESS_JEV_KEY, Env:TYPESAFE_API_KEY, Env:JEV_API_KEY, Env:OPENROUTER_API_KEY, Env:OPENROUTER_API_KEY_FILE, Env:HARNESS_AUDIT_LIVE -ErrorAction SilentlyContinue
 ```
 
 In a fresh POSIX shell, use the same isolation:
 
 ```sh
 triage_home="$(mktemp -d)"
-export HOME="$triage_home" HARNESS_CONFIG_DIR="$triage_home/.config/harness" HARNESS_JEV_DISABLE=1
-unset HARNESS_JEV_KEY TYPESAFE_API_KEY JEV_API_KEY HARNESS_AUDIT_LIVE
+mkdir -p "$triage_home/.config/harness"
+export HOME="$triage_home" USERPROFILE="$triage_home" APPDATA="$triage_home" XDG_CONFIG_HOME="$triage_home"
+export HARNESS_CONFIG_DIR="$triage_home/.config/harness" HARNESS_JEV_DISABLE=1
+unset HARNESS_USE_FREE HARNESS_ALLOW_ESCALATION HARNESS_MAX_COST HARNESS_TASK_MAX_COST HARNESS_MIN_CONFIDENCE
+unset HARNESS_JEV_KEY TYPESAFE_API_KEY JEV_API_KEY OPENROUTER_API_KEY OPENROUTER_API_KEY_FILE HARNESS_AUDIT_LIVE
 ```
 
 **Authority:** CI is authoritative. A failure in the CI `audit` job or
@@ -107,6 +110,13 @@ symptom; it is not itself a lint finding.
 **Probe:** `python audits/self/audit.py --dim R`. R13 runs the unit suite with
 `ResourceWarning` treated as an error, removes routing and provider-key
 variables from the child environment, and gives it a fresh empty home.
+The removed names are `HARNESS_USE_FREE`, `HARNESS_ALLOW_ESCALATION`,
+`HARNESS_MAX_COST`, `HARNESS_TASK_MAX_COST`, `HARNESS_MIN_CONFIDENCE`,
+`HARNESS_JEV_KEY`, `TYPESAFE_API_KEY`, `JEV_API_KEY`, `OPENROUTER_API_KEY`,
+and `OPENROUTER_API_KEY_FILE`. It sets `HOME`, `USERPROFILE`, `APPDATA`, and
+`XDG_CONFIG_HOME` to the same fresh directory; any inherited
+`HARNESS_CONFIG_DIR` is preserved, so set it to the fresh config directory as
+in the shell setup above.
 
 - **Environment-broken local reproduction:** a normal local test run is red,
   but R13 reports `unittest: Ran … tests … OK (env clean; empty home)`. The
@@ -119,13 +129,34 @@ variables from the child environment, and gives it a fresh empty home.
   resource-lifecycle defect; CI's hermetic result is authoritative.
 - **Timeout after 900 seconds:** `CHECK ERROR: TimeoutExpired` means R13 did
   not obtain a suite summary; it is neither a pass nor proof of a leak. Run
-  the child suite directly with
-  `python -W error::ResourceWarning -m unittest discover -s tests -v` under the
-  same isolation and compare with CI. If the
-  direct suite finishes but the [audit driver](../audits/self/audit.py) still
-  times out, keep the result red and investigate the `r_suite_green()`
-  subprocess path; do not label it environment-only without explaining the
-  mismatch.
+  a bounded verbose comparison under the same helper-generated environment
+  and inherited (uncaptured) output:
+
+  ```powershell
+  python -c "import atexit,importlib.util,shutil,subprocess,sys; p='audits/self/audit.py'; s=importlib.util.spec_from_file_location('audit_probe',p); a=importlib.util.module_from_spec(s); s.loader.exec_module(a); env,_=a.hermetic_suite_env(); atexit.register(shutil.rmtree,env['HOME'],ignore_errors=True); sys.exit(subprocess.run([sys.executable,'-W','error::ResourceWarning','-m','unittest','discover','-s','tests','-v'],cwd=str(a.ROOT),env=env,timeout=900).returncode)"
+  ```
+
+  To reproduce the exact quiet/captured R13 path without running the outer
+  audit's Jev judgment or writing its scoreboard, call the check function from
+  the repository root:
+
+  ```powershell
+  python -c "import importlib.util; p='audits/self/audit.py'; s=importlib.util.spec_from_file_location('audit_probe',p); a=importlib.util.module_from_spec(s); s.loader.exec_module(a); print(a.r_suite_green())"
+  ```
+
+  The check function invokes the configured `-q` child with
+  `capture_output=True`, `text=True`, and a 900-second timeout. The verbose
+  comparison changes both verbosity and output handling, so it cannot by itself
+  prove which difference causes a timeout. On 2026-10-27 in the Windows #290
+  worktree, the exact `r_suite_green()` call raised `TimeoutExpired` at 900
+  seconds. The direct verbose run used the same helper-generated environment
+  and inherited output, but was stopped after 510.5 seconds without a unittest
+  summary because its output overwhelmed the observing tool stream. An earlier
+  direct verbose pass exited successfully but did not retain its elapsed time.
+  This evidence does not identify the cause; keep R13 red and the disposition
+  unresolved. Do not attribute it to output capture, verbosity, or environment
+  until a completed controlled comparison or CI result supports that
+  conclusion.
 
 The R13 child intentionally scrubs known routing/key variables and overrides
 `HOME`, `USERPROFILE`, `APPDATA`, and `XDG_CONFIG_HOME` with an empty temporary
