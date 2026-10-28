@@ -61,3 +61,5 @@
    govern every action.
 
 - `docs/issue-plans/burndown-verify-polish-prompt.md` + `burndown-verify-polish-mission.md` (2026-10-27, FRESH session prompt): burndown/verify/polish run order - bookkeeping, #407 record, #293/#301, capability fix PR, dependency burndown incl. #418/#419 and #412-417 packet, shadow gate, #306 untouched, #277 LAST, #407 build, polish. Mission 2,897 chars, ASCII, under the 4,000 cap. Supersedes prior session prompts for this run; unified-main-prompt.md remains canonical reference.
+
+- `docs/issue-plans/comprehensive-sweep-prompt.md` + `comprehensive-sweep-mission.md` (2026-10-27, FRESH completion sweep): phased sweep - ledger first, profile+MCP unblock (with degraded mode), land in order (#288, runner, #293, #301, capability fix, #290 runbook, planning reconciliation), packet + R13 comparison + #418/#419 drive-down, #277 last, polish. Mission 3,930 chars, ASCII, under the 4,000 cap. Supersedes the burndown-verify-polish prompt for this run; unified-main-prompt.md remains canonical reference.
