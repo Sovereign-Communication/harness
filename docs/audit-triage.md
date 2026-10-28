@@ -117,6 +117,15 @@ variables from the child environment, and gives it a fresh empty home.
   `ResourceWarning` / `unclosed file` signature. The leak signature fails R13
   even when the unittest summary says `OK`. Treat this as a real test or
   resource-lifecycle defect; CI's hermetic result is authoritative.
+- **Timeout after 900 seconds:** `CHECK ERROR: TimeoutExpired` means R13 did
+  not obtain a suite summary; it is neither a pass nor proof of a leak. Run
+  the child suite directly with
+  `python -W error::ResourceWarning -m unittest discover -s tests -v` under the
+  same isolation and compare with CI. If the
+  direct suite finishes but the [audit driver](../audits/self/audit.py) still
+  times out, keep the result red and investigate the `r_suite_green()`
+  subprocess path; do not label it environment-only without explaining the
+  mismatch.
 
 The R13 child intentionally scrubs known routing/key variables and overrides
 `HOME`, `USERPROFILE`, `APPDATA`, and `XDG_CONFIG_HOME` with an empty temporary
