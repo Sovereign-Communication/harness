@@ -370,8 +370,9 @@ to prepare a fast-path document explicitly:
   python audits/self/refresh_coverage_baseline.py \
     --ref "$(git merge-base HEAD origin/main)" --out /tmp/coverage.json
 
-See [docs/audit-triage.md](docs/audit-triage.md) for the S5 and local-suite
-dispositions.
+See [docs/audit-triage.md](docs/audit-triage.md) for interpreter launch failures,
+S5, R13 hermetic leaks, D12 stale-baseline handling, the `jev_disabled` example,
+and local-suite dispositions.
 
 ## Version bump
 
