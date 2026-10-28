@@ -7,6 +7,7 @@ mutation.
 """
 import math
 import os
+from typing import Literal, Optional, overload
 
 from .errors import HarnessError
 
@@ -86,7 +87,25 @@ def validate_backend(value):
     return result
 
 
-def validate_text(value, name, maximum, *, required=False):
+@overload
+def validate_text(value: object, name: str, maximum: int, *,
+                  required: Literal[True]) -> str:
+    ...
+
+
+@overload
+def validate_text(value: object, name: str, maximum: int, *,
+                  required: Literal[False] = False) -> Optional[str]:
+    ...
+
+
+@overload
+def validate_text(value: object, name: str, maximum: int, *,
+                  required: bool) -> Optional[str]:
+    ...
+
+
+def validate_text(value, name, maximum, *, required=False) -> Optional[str]:
     if value is None:
         if required:
             raise HarnessError(f"{name} is required")

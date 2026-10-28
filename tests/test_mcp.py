@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from email.message import Message
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -822,8 +823,8 @@ class McpProtocolTests(unittest.TestCase):
         release = threading.Event()
         original_call = server._call_tool
 
-        def delayed_call(message):
-            response = original_call(message)
+        def delayed_call(msg):
+            response = original_call(msg)
             ready.set()
             release.wait(2)
             return response
@@ -929,7 +930,8 @@ class McpProtocolTests(unittest.TestCase):
 
         def malformed_error(request, timeout):
             raise urllib.error.HTTPError(
-                request.full_url, 502, "bad gateway", {}, io.BytesIO(b"[]"))
+                request.full_url, 502, "bad gateway", Message(),
+                io.BytesIO(b"[]"))
 
         def make_adapter():
             return PerceptionAdapter(
@@ -1941,6 +1943,8 @@ class ContinueWorkToolTests(unittest.TestCase):
                 "jsonrpc": "2.0", "id": 25, "method": "tools/call",
                 "params": {"name": "spend_status", "arguments": {}},
             })
+        if not isinstance(reply, dict):
+            self.fail("expected a JSON-RPC response dictionary")
         result = reply["result"]
         self.assertTrue(result["isError"])
         self.assertEqual(result["errorKind"], "provider_spend_limit")
