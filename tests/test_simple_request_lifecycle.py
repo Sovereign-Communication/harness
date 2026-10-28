@@ -115,6 +115,9 @@ class RequestKindTests(unittest.TestCase):
         self.assertFalse(is_workspace_inspection_request(prompt))
         self.assertFalse(is_comprehensive_workspace_inspection_request(prompt))
 
+    def test_empty_prompt_is_not_a_workspace_inspection_request(self):
+        self.assertFalse(is_workspace_inspection_request(""))
+
     def test_retry_and_original_request_controls_stay_on_simple_lane(self):
         turns = [
             {"prompt": "What's the longest continuous road in the world?",
