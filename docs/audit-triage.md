@@ -5,9 +5,38 @@ extends the #276 measurement dispositions and #278 tool-resolution contract
 for #290. Capture the command, exit code, and first useful error before
 changing anything.
 
-The audit driver can use a configured Jev key for its final judgment. Run the
-audit probes below from an unkeyed profile with an empty config home; do not
-use a live-key environment for triage.
+The audit driver evaluates its Jev gate after each selected dimension, in the
+parent process. R13 scrubs only its unittest child; it does not isolate that
+final judgment. A resolving Jev key can trigger a provider request and cost.
+For every probe, use a fresh shell with a new empty home/config directory,
+unset `HARNESS_JEV_KEY`, `TYPESAFE_API_KEY`, and `JEV_API_KEY`, set
+`HARNESS_JEV_DISABLE=1`, and unset `HARNESS_AUDIT_LIVE`. The selected check's
+evidence is the probe result; the overall command can still fail its separate
+Jev verdict. Run one audit probe at a time because each writes
+`audits/self/round2_scores.json`; restore that scratch report after triage as
+described in [CONTRIBUTING](../CONTRIBUTING.md#audit-corpus-integrity).
+
+Example setup in a fresh PowerShell session:
+
+```powershell
+$triageHome = Join-Path $env:TEMP ("harness-triage-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $triageHome | Out-Null
+$env:HOME = $triageHome
+$env:USERPROFILE = $triageHome
+$env:APPDATA = Join-Path $triageHome "AppData\Roaming"
+$env:XDG_CONFIG_HOME = Join-Path $triageHome ".config"
+$env:HARNESS_CONFIG_DIR = Join-Path $triageHome ".config\harness"
+$env:HARNESS_JEV_DISABLE = "1"
+Remove-Item Env:HARNESS_JEV_KEY, Env:TYPESAFE_API_KEY, Env:JEV_API_KEY, Env:HARNESS_AUDIT_LIVE -ErrorAction SilentlyContinue
+```
+
+In a fresh POSIX shell, use the same isolation:
+
+```sh
+triage_home="$(mktemp -d)"
+export HOME="$triage_home" HARNESS_CONFIG_DIR="$triage_home/.config/harness" HARNESS_JEV_DISABLE=1
+unset HARNESS_JEV_KEY TYPESAFE_API_KEY JEV_API_KEY HARNESS_AUDIT_LIVE
+```
 
 **Authority:** CI is authoritative. A failure in the CI `audit` job or
 hermetic test matrix is a defect until reproduced and explained. A local-only
@@ -92,7 +121,7 @@ variables from the child environment, and gives it a fresh empty home.
 The R13 child intentionally scrubs known routing/key variables and overrides
 `HOME`, `USERPROFILE`, `APPDATA`, and `XDG_CONFIG_HOME` with an empty temporary
 home. If a provider key or routing override still reaches that child, inspect
-the hermetic environment builder in [`audit.py`](../audits/self/audit.py):
+the hermetic environment builder in [`audits/self/audit.py`](../audits/self/audit.py):
 that is an isolation defect, not a reason to dismiss the red run as ordinary
 machine state.
 
