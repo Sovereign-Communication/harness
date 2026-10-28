@@ -42,6 +42,8 @@ from .log_analysis import analyze_log
 from .perception_client import PerceptionAdapter, PerceptionUnavailable
 from .service import run_verify as _service_run_verify
 from .jev import jev_credit_status
+from .lucas_gate import (LUCAS_GATE_V2_INPUT_FIELDS,
+                         run_typed_track as _run_lucas_gate_v2)
 from .service import run_dogfood as _service_run_dogfood
 from .brief import build_brief, freshness_report, render_brief
 from .session import apply_session
@@ -1061,6 +1063,19 @@ class McpServer:
             mr.write_status(pack)
             mr.write_index(pack)
             return mr.pack_summary(pack)
+        if name == "lucas_gate_v2":
+            if not isinstance(args, dict) or not set(args).issubset(
+                    LUCAS_GATE_V2_INPUT_FIELDS):
+                raise ValueError("lucas_gate_v2 contains unsupported fields")
+            return _run_lucas_gate_v2(
+                track=args.get("track"),
+                artifact_text=args.get("artifact_text"),
+                category_scores=args.get("category_scores"),
+                bias_checks=args.get("bias_checks"),
+                overall_average=args.get("overall_average"),
+                actual_risk=args.get("actual_risk"),
+                investigated_reason=args.get("investigated_reason"),
+            )
         if name == "jev_phase":
             # Thin face over harness.jev_completion (the same engine
             # `harness jev-phase --local-only` runs). Always local-only:
