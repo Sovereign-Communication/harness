@@ -30,11 +30,27 @@ $env:HARNESS_JEV_DISABLE = "1"
 Remove-Item Env:HARNESS_USE_FREE, Env:HARNESS_ALLOW_ESCALATION, Env:HARNESS_MAX_COST, Env:HARNESS_TASK_MAX_COST, Env:HARNESS_MIN_CONFIDENCE, Env:HARNESS_JEV_KEY, Env:TYPESAFE_API_KEY, Env:JEV_API_KEY, Env:OPENROUTER_API_KEY, Env:OPENROUTER_API_KEY_FILE, Env:HARNESS_AUDIT_LIVE -ErrorAction SilentlyContinue
 ```
 
+Run one probe in this fresh PowerShell session, then remove its temporary
+home from that same session:
+
+```powershell
+$tempRoot = [IO.Path]::GetFullPath($env:TEMP).TrimEnd([IO.Path]::DirectorySeparatorChar)
+$target = [IO.Path]::GetFullPath($triageHome)
+if ([IO.Path]::GetDirectoryName($target) -ine $tempRoot -or
+    -not [IO.Path]::GetFileName($target).StartsWith("harness-triage-")) {
+  throw "Refusing to remove a path outside this probe's temp home"
+}
+if (Test-Path -LiteralPath $target) {
+  Remove-Item -LiteralPath $target -Recurse -Force
+}
+```
+
 In a fresh POSIX shell, use the same isolation:
 
 ```sh
 triage_home="$(mktemp -d)"
 mkdir -p "$triage_home/.config/harness"
+trap 'rm -rf -- "$triage_home"' EXIT
 export HOME="$triage_home" USERPROFILE="$triage_home" APPDATA="$triage_home" XDG_CONFIG_HOME="$triage_home"
 export HARNESS_CONFIG_DIR="$triage_home/.config/harness" HARNESS_JEV_DISABLE=1
 unset HARNESS_USE_FREE HARNESS_ALLOW_ESCALATION HARNESS_MAX_COST HARNESS_TASK_MAX_COST HARNESS_MIN_CONFIDENCE
