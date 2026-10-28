@@ -59,3 +59,5 @@
 3. No doc in this directory authorizes a merge, a deploy, a spend, or a
    probe rerun on its own — the canonical prompt's constraints and gates
    govern every action.
+
+- `docs/issue-plans/burndown-verify-polish-prompt.md` + `burndown-verify-polish-mission.md` (2026-10-27, FRESH session prompt): burndown/verify/polish run order - bookkeeping, #407 record, #293/#301, capability fix PR, dependency burndown incl. #418/#419 and #412-417 packet, shadow gate, #306 untouched, #277 LAST, #407 build, polish. Mission 2,897 chars, ASCII, under the 4,000 cap. Supersedes prior session prompts for this run; unified-main-prompt.md remains canonical reference.
