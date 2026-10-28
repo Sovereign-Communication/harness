@@ -7,6 +7,8 @@
 
 This file is the **single source of truth** for Harness mission work (Jev / System One, HUL, hourglass, site, and follow-ups). Every future PR must carry an ID from the tracker below and reference an acceptance test named here. Do not open parallel ad-hoc plans — add or update rows here.
 
+**Current reconciliation:** use the [2026-10-28 canonical reconciliation](#canonical-reconciliation-and-verified-web-research-plan-2026-10-28) for current issue mapping and retrieval requirements. Earlier dated plans, counts, and queues are historical unless explicitly refreshed there.
+
 **Mission prompts:** [jev-mission-prompt.md](jev-mission-prompt.md) (`/isolated-mission --bar <ID>`). Trust `origin/main`; a stale local STATUS is not evidence.
 
 **Worktrees:** one per phase PR, `Harness-<slug>` off `origin/main` (convention in `AGENTS.md`); `git worktree list` is authoritative.
@@ -282,6 +284,395 @@ a claim that #324-#326 have been fixed. The author investigates low aspects;
 Jev independently supplies judgments. No native signal means no plan approval.
 
 <!-- END ISSUE295_IMPLEMENTATION_PLAN -->
+
+### Canonical reconciliation and verified web-research plan: 2026-10-28
+
+This is the current operational reconciliation for the web-search failure trace,
+the complete-source Jev audit already recorded in #420–#429, and the live issue
+board. It supersedes older “current” counts and execution ordering elsewhere in
+historical sections. The frozen `ISSUE295_IMPLEMENTATION_PLAN` above remains
+byte-for-byte historical evidence; this section owns current scope, issue
+mapping, and acceptance. The issue queue and issue-specific briefs are derived
+snapshots or supporting evidence, not competing plans.
+
+**Issue inventory.** The live GitHub snapshot on 2026-10-28 contains 74 open
+issues. The 48 existing canon rows are
+`346, 345, 344, 343, 342, 340, 337, 336, 335, 334, 332, 329, 328, 325, 319,
+318, 314, 313, 311, 310, 309, 308, 306, 304, 303, 302, 301, 300, 299, 295,
+294, 293, 292, 291, 290, 289, 286, 285, 284, 283, 281, 280, 277, 275, 273,
+272, 271, 270`. This reconciliation registers the 25 open issues missing
+from that older plan (`#377–#382`, `#407`, and `#412–#429`) plus newly filed
+`#430`. Together, every live open issue has exactly one canonical owner and an
+acceptance outcome. Refresh the issue set before any later status/count claim;
+the queue JSON remains explicitly dated 2026-10-26.
+
+| Issue | Canonical ownership | Deterministic end state |
+| --- | --- | --- |
+| [#377](https://github.com/Sovereign-Communication/harness/issues/377) | Session model allowlist | Every model selector enforces the explicit session allowlist before any spend or provider call; refusal names the rejected model. |
+| [#378](https://github.com/Sovereign-Communication/harness/issues/378) | Presets and custom model sets | Presets and include/exclude files validate against the live model catalog; invalid, unavailable, or contradictory sets refuse before spend. |
+| [#379](https://github.com/Sovereign-Communication/harness/issues/379) | Direct Meta provider | The provider is optional, has an explicit privacy/allowlist tier, and cannot bypass existing routing or safety policy. |
+| [#380](https://github.com/Sovereign-Communication/harness/issues/380) | Optional Fusion Lite backend | Backend is opt-in, tool-free, spend-bounded, and hard-refuses unsupported or unsafe requests; Jev gates remain authoritative until separately replaced. |
+| [#381](https://github.com/Sovereign-Communication/harness/issues/381) | Fusion Lite calibration | A frozen representative golden set records per-case agreement, error classes, and thresholds before any gate substitution; insufficient or regressed results block promotion. |
+| [#382](https://github.com/Sovereign-Communication/harness/issues/382) | Session-start model picker | The chosen preset/custom set and its effective allowlist are recorded before the first provider reservation; cancellation performs no spend. |
+| [#407](https://github.com/Sovereign-Communication/harness/issues/407) | Public model statistics | Only explicit, revocable, receipt-backed aggregate ingestion can affect public statistics; verification separates received, validated, and published states. |
+| [#412](https://github.com/Sovereign-Communication/harness/issues/412) | GUI first-use auth | A live first-use path records the actual auth handoff, cancellation, and return result; an unverified or failed handoff is visible as such. |
+| [#413](https://github.com/Sovereign-Communication/harness/issues/413) | Loopback browser round-trip | A real authenticated browser/client completes a loopback request and verifies returned state; the receipt records client, origin, and outcome. |
+| [#414](https://github.com/Sovereign-Communication/harness/issues/414) | MCP runtime identity | A real MCP client confirms installed server identity/version, initialize/list/call behavior, and served schema; local source inspection alone cannot pass. |
+| [#415](https://github.com/Sovereign-Communication/harness/issues/415) | GUI Jev semantic approval | GUI approval binds the user decision to Jev's exact typed judgment and exact planned query/action; decline, mismatch, missing Jev, or fallback yields zero protected action. |
+| [#416](https://github.com/Sovereign-Communication/harness/issues/416) | First-use and serve/auth docs | A first-use guide is exercised against the supported serve/auth path; documented commands and callbacks match a verified live result. |
+| [#417](https://github.com/Sovereign-Communication/harness/issues/417) | Audit-store identity | Verify output identifies the exact store/chain and its root/head; it cannot report an unqualified pass when it checked a different or empty store. |
+| [#418](https://github.com/Sovereign-Communication/harness/issues/418) | Durable request recovery | A request ID and checkpoint survive restart; running/interrupted/completed/failed/unknown states are truthful, and resume cannot duplicate provider calls, spend, or side effects. |
+| [#419](https://github.com/Sovereign-Communication/harness/issues/419) | Desktop health | Local-server liveness, remote backend health, and request state are independent fields; one healthy layer cannot mask another failed or unknown layer. |
+| [#420](https://github.com/Sovereign-Communication/harness/issues/420) | Site Worker System One contract | Site routes use the current typed System One request/response, validate judgments and fallback/cache behavior, and fail closed on malformed or unsupported output. |
+| [#421](https://github.com/Sovereign-Communication/harness/issues/421) | Provider rotation ledger | Each unusable model produces exactly one rotation event and one matching ledger row; repeated handling is idempotent and preserves the actual reason. |
+| [#422](https://github.com/Sovereign-Communication/harness/issues/422) | Citation identity/support audit | DOI and source metadata are resolved and compared; every verified claim points to a versioned source and exact passage locator; unresolved support stays unresolved. |
+| [#423](https://github.com/Sovereign-Communication/harness/issues/423) | Resumable full-source audit | Separate code and documentation passes resume by stable file/chunk hashes, retain exclusions and receipts, and produce a deduplicated issue map without claiming uninspected coverage. |
+| [#424](https://github.com/Sovereign-Communication/harness/issues/424) | Shipped/deferred claims | Every public feature claim maps to a merged implementation or is explicitly labeled planned/deferred; stale or unsupported claims fail the documentation gate. |
+| [#425](https://github.com/Sovereign-Communication/harness/issues/425) | Audit-chain append integrity | An append validates the complete existing chain first; invalid history is refused without mutation and reports the exact failing entry. |
+| [#426](https://github.com/Sovereign-Communication/harness/issues/426) | Browser egress security | Every browser connection, redirect, frame, and subresource is constrained to public destinations at connection time; prohibited destinations are blocked before connection. |
+| [#427](https://github.com/Sovereign-Communication/harness/issues/427) | Malformed receipt visibility | Invalid receipt/evaluation records surface an explicit error and cannot imply a successful run or completed gate. |
+| [#428](https://github.com/Sovereign-Communication/harness/issues/428) | Price validity | Negative or invalid endpoint/cache prices are rejected before routing; they cannot make a model appear cheaper or authorize spend. |
+| [#429](https://github.com/Sovereign-Communication/harness/issues/429) | Judgment JSONL integrity | Truncated or corrupt existing JSONL is detected and refused/recovered before append; no partial record is represented as a valid chain. |
+| [#430](https://github.com/Sovereign-Communication/harness/issues/430) | Stop after lifecycle refusal | A validated restart/consent refusal becomes one terminal blocked or reapproval-required state, preserves the checkpoint, and causes zero repeated retry, provider dispatch, file write, or spend until one explicit renewal/resume. |
+
+#### Request-to-deliverable trace
+
+| User requirement | Current verified status | Canonical implementation/evidence owner |
+| --- | --- | --- |
+| Produce a current, source-checked science report suitable for editorial review | Not performed in this harness-audit continuation. The earlier pretraining-only draft is not verified or publication-ready. Future output must disclose its date window/coverage, cite exact passages and versions, and retain unsupported claims as unresolved. | #342 retrieves only after accepted plan; #343 validates relevant evidence; #422 audits citation identity/support. |
+| Search only when a model confirms the exact research need and queries | Harness already has internal Bing-or-override search and allowlisted fetches, but its current route/context seam can invoke them without approval of the exact query. The separate renderer is another network path. | #342 owns the accepted-plan gate across gather and renderer; #415 enforces GUI parity; #426 owns browser egress. |
+| Make web optional and available only when useful/callable | Existing booleans conflate user preference, heuristic route, and retrieval intent; actual Harness internal callables differ from outer coding-agent tools. Keep `off`/`auto`/`prefer` separate from request-local callable capability; no capability or explicit off means zero network. | #342 and #415; observable zero-call cases are listed in the matrix below. |
+| Complete a comprehensive code-and-documentation Jev audit and investigate every lead | Prior completed summary: two passes, 711 files / 2,180 chunks, ten deduplicated findings #420–#429. Its raw coverage/decision receipt is absent locally, so this is not a reproducible proof in this worktree. | #420–#429 own the ten individual leads; #423 owns resumable separate passes and their manifest/receipts. |
+| Stop retries after lifecycle refusal and resume only from validated state | Issue #430 is filed and open; #418 owns durable recovery. Both must be implemented with exactly-once calls, spend, and side-effect evidence. | #344 → #430 → #418, with terminal/refusal controls in the acceptance matrix. |
+| Reconcile every live issue into one operational plan | Live open-issue listing verified at 74 on 2026-10-28: 48 existing contracts plus 25 omitted contracts and #430. This roadmap is the cross-issue source for order/dependencies; every issue body must link to it while preserving that issue's narrow acceptance contract. | #295 owns the tracker; this PR's issue-body synchronization is the explicit completion step. |
+| Meet Jev thresholds for feasibility and plan completeness | Prior plan iteration: 9.03/10 feasibility, 8.18/10 completeness; the threshold is not yet met. Jev's gap diagnostic pointed chiefly to missing reproducible audit receipt, with all-issue synchronization, complete inventory detail, and current paper scope also material. | Continue iterating against the same typed score rubric; retain raw distributions, cost, model, and plan hash; do not claim a pass until both are at least 9.00/10 and the Jev decision gate passes. |
+
+The other 48 live issues listed above keep their existing issue bodies as the
+scoped acceptance contracts; this roadmap owns only the shared cross-issue
+order, dependencies, and system-wide gates. To finish unification, append one
+idempotent canonical-plan link to **every one of the 74 live issue bodies**,
+including #430, while preserving every existing title, body paragraph, label,
+comment, and acceptance test. Use a stable marker so reruns skip already
+linked bodies; never replace an issue body with a generated summary. The link
+points to this roadmap section in the review PR, and each issue remains the
+single acceptance packet for its own bounded change. After writing, fetch all
+74 issues again and verify count, open state, marker, and intended plan URL;
+record any failed update as pending instead of claiming board-wide
+reconciliation. No additional issue is needed for the route-answer/local
+leakage: it belongs to #342 and GUI parity #415. The zero-text implicit-search
+failure belongs to #342/#343; source/citation verification to #422; browser
+network boundaries to #426; restart/refusal loops to #418/#430.
+
+#### Web search: accepted-plan lifecycle and safe, efficient retrieval
+
+**Observed failure.** The supplied conversation trace included an incidental URL
+(`https://entire.io`) and a fetch result with zero readable characters. A later
+search query was derived from unrelated quoted planning/gate prose. The earlier
+answer also presented a pretraining-only synthesis as a publication-oriented
+paper while disclosing that it had no live verification. These are separate
+failures: request/query contamination and insufficient evidence/citation
+verification. The local helper reproduction confirmed that whole-prompt URL
+scanning and fallback query extraction can produce this class of bad query;
+this continuation did not replay the full HTTP request lifecycle or perform
+web retrieval.
+
+**Additional source-confirmed route defect.** `run_hourglass_request` first
+sets `web` from the caller flag and `is_research_question` /
+`is_current_information_request`. After the route judgment it explicitly clears
+`web` for workspace inspection and sets it for `web-research`, but has no
+`answer`/`local` branch that clears a true heuristic/caller value. Context
+gathering later consumes that same boolean. Thus route selection and heuristic
+eligibility can be mistaken for an approved retrieval action. #342 must split
+`web_capable`, `web_requested`, and `research_plan_accepted` (or equivalent
+typed state); only the last may authorize `gather_web_context` or
+`render_site_evidence`. A native `answer` or local-workspace route must always
+end with zero web actions, even when the heuristic matched or the caller's web
+preference is on.
+
+The canonical owners are [#342](https://github.com/Sovereign-Communication/harness/issues/342)
+for a typed, shared ResearchPlan and Jev approval; [#343](https://github.com/Sovereign-Communication/harness/issues/343)
+for candidate/final URL relevance and evidence validation; [#344](https://github.com/Sovereign-Communication/harness/issues/344)
+for request-bound checkpoints and freshness; [#415](https://github.com/Sovereign-Communication/harness/issues/415)
+for GUI approval parity; [#422](https://github.com/Sovereign-Communication/harness/issues/422)
+for citation metadata and claim support; [#426](https://github.com/Sovereign-Communication/harness/issues/426)
+for browser egress boundaries; and [#430](https://github.com/Sovereign-Communication/harness/issues/430)
+for stopping repeated retry after a refusal. #418 owns restart-safe durable
+request recovery. The conversation's other findings already map to #342–#344,
+#415, #418, and #422–#430; do not create duplicate issues for the same failure.
+
+**Required lifecycle and gates.**
+
+1. **Classify before retrieval.** Code separates the user's actual research
+   request from quoted transcripts, logs, URLs, and pasted harness traces.
+   Incidental URLs and control text are context, not search intent. A web
+   request may be fulfilled locally or without search when retrieval is not
+   needed; the user-facing web toggle makes retrieval available but does not
+   itself approve a query.
+2. **Propose a bounded typed ResearchPlan.** The plan records the research
+   question, reason external retrieval is needed, exact query strings, intended
+   domains/source classes, recency window, result cap, evidence needs, and
+   monetary/token/time ceilings. Plan parse/schema errors, malformed DAG output,
+   heuristic decomposition, missing capability, or an unavailable Jev result
+   are explicit non-approved states.
+3. **Require native Jev approval of the exact plan and queries.** Jev evaluates
+   whether each exact query is relevant to the user's stated question and
+   whether the proposed retrieval is warranted. Approval is bound to the
+   canonicalized request hash, exact query hash, source/domain policy, caps,
+   and current consent. A route label such as `web-research`, generic intent,
+   textual mention of “web on,” or a heuristic fallback is not approval.
+   Decline, abstention, malformed output, mismatch, stale consent, or Jev
+   outage produces a typed refusal and **zero search/fetch calls**.
+4. **Execute only approved retrieval.** Run independent approved queries in
+   bounded parallelism and deduplicate by normalized query and canonical URL.
+   Enforce result-count, time, and spend ceilings before dispatch. If a fetch
+   returns zero text, fails, or is blocked, report that outcome; do not silently
+   convert the prompt, URL, result snippet, or gate prose into a fallback query.
+   A different query requires a new typed proposal and Jev approval. Public
+   network/redirect checks remain enforced independently by #426.
+5. **Validate every result before use.** Keep title, canonical/final URL, domain,
+   retrieval timestamp, source class, content hash, and bounded page evidence.
+   Jev judges semantic relevance against the accepted question; deterministic
+   code enforces URL/domain, freshness, fetch status, and evidence presence.
+   Reject irrelevant hits individually. A search snippet alone is not source
+   evidence. A valid page fetch does not prove a claim.
+6. **Verify claims and citations.** Map report claims to retrieved passages;
+   resolve DOI/title/authors/year/venue/version where available. Label each
+   claim as supported, partially supported, contradicted, or not verifiable.
+   Missing or conflicting metadata, paywalls, inaccessible sources, and lack of
+   an exact passage stay visible as unresolved. Do not call a report “verified”
+   or “publication-ready” while required claims remain unsupported.
+   For a broad science survey, the plan also records the requested date window
+   and subject coverage (mathematics, physics/astronomy, biology/medicine,
+   chemistry/materials, earth/climate, and research automation as applicable),
+   with an explicit omission list. If “recent” has no configured, disclosed
+   default, ask for the window before retrieval. “All breakthroughs” is never
+   claimed from a bounded search. Citation support and a Jev relevance judgment
+   do not equal peer review; publication readiness remains an editorial/human
+   decision.
+7. **Checkpoint and stop safely.** Bind each result to request, plan, query,
+   consent, source hash, and freshness. A changed request or declined plan drops
+   incompatible results. Restart resumes only from a validated checkpoint;
+   same/later-stage or expired-consent refusal stops at once, with no repeated
+   retries or duplicate billing. User renewal is a single explicit transition.
+8. **Measure the useful path.** Record approved queries, retrieved/accepted
+   sources, rejected results by reason, source freshness, zero-text/failure
+   rates, latency, spend, and claim-support outcomes. Tune ranking, query
+   fan-out, and stop rules on a labeled golden set; do not optimize for raw hit
+   count or model confidence alone. Keep all exact judgments, provenance, and
+   budget outcomes in a reviewable receipt.
+
+#### Implementation order and code ownership
+
+One issue PR at a time, each from current `origin/main`; do not bundle all
+research features into a monolithic change. The execution order is:
+
+| Order | Issue(s) | Owner and concrete work | Exit before next dependent step |
+| --- | --- | --- | --- |
+| 0 | #324, #345, #346, #309 | #324 is already closed: verify the ratified `investigate` path still works. Land #345 request-scoped actual/outstanding/unknown liability and cancellation accounting under the shared session cap; then #346 counts completed, reserved, and unknown planning calls exactly once and refuses execution whose remaining work is unfunded. Resolve #309 around one shared dispatch/spend/ledger owner before adding a research pack. Do not create a second Jev client. | `tests/test_jev_decision_gate.py`, `tests/test_spend.py`, `tests/test_jev_ledger_spend.py`, `tests/test_hourglass_planning_budget.py`, and `tests/test_jev_policy.py` prove the prerequisite contracts; exact ledger/cost/refusal receipts pass. If any prerequisite is open or red, keep retrieval unavailable. |
+| 1 | #342 | Add one shared `ResearchPlan`/receipt owner (proposed module `harness/research_plan.py`); keep typed Jev questions in `harness/jev_packs.py`, calls in `harness/jev_policy.py`, orchestration in `harness/hourglass_lifecycle.py`, and transport in `harness/web.py`. The existing `web-research` route is only a candidate signal. Move `gather_web_context` callers and the direct `render_site_evidence` path to the accepted-plan API; no caller may independently scan prompt/history or extract a search query. | Versioned plan validates; native Jev accept/revise/decline is request- and plan-bound; max two revisions; decline/unavailable/malformed/fallback produces a typed no-retrieval result. Prove one accepted and one declined plan through CLI and MCP. |
+| 2 | #343 | Apply target-domain checks separately to each candidate and its final fetched URL. Use the shared Jev result reviewer for semantic relevance; deterministic checks own allowlist, redirect/final URL, freshness, fetch status, and evidence presence. | Mixed related/unrelated result case admits only supported individual results; snippets alone cannot enter answer context; zero accepted candidates becomes insufficient evidence, never a new implicit query. |
+| 3 | #344, #430, then #418 | Bind checkpoints to request hash, accepted plan/query hashes, exact Jev receipt, consent epoch, source hashes/freshness, and known/unknown spend. Stop at a validated same/later-stage or stale-consent refusal; only then implement durable restart recovery on the same identity. | Changed/declined/stale plan drops incompatible sources; refusal is terminal with zero retry/dispatch/spend; restart/resume cannot duplicate a call or side effect. |
+| 4 | #415 | Route the GUI through the same core plan/review API and show proposed exact queries, Jev decision, source outcomes, and blocked reason. No GUI-only approval implementation. | Real GUI ask records model, pack, exact reviewed plan/query, decision, spend, and result; decline and unavailable-Jev controls make zero web calls. |
+| 5 | #422 and #426 | Implement claim/DOI provenance and browser egress as separate issue PRs. Citation audit consumes only accepted evidence; the browser renderer enforces public-address policy per connection and redirect. | No report claims “verified” without exact support records; no browser request reaches a prohibited destination. |
+
+**Contract for the core issue.** The model-proposed plan has a versioned schema:
+effective research goal; request ID/hash; bounded query records (stable query ID,
+exact query string, purpose, target domains/source classes, recency, required
+evidence); and explicit maximum query count, results per query, accepted source
+count, timeout, token/spend allowance, and no-silent-fallback policy. The
+orchestrator passes only the normalized user goal and task-relevant context;
+quoted transcripts, code, logs, route labels, and incidental URLs stay
+separately marked as untrusted context. Jev receives the complete exact plan
+and declares per-query relevance plus a closed-set `accept`, `revise`, or
+`decline` judgment. Code requires complete query-ID coverage, validates every
+field, enforces no more than two revisions, and stores the raw typed result,
+model/pack identity, cost, and plan/query hashes. A missing result or an
+unmatched query ID refuses the whole plan. Jev judges semantic relevance; it
+does not certify factual truth, DOI correctness, or citation support.
+
+`harness.web.search_web` and `fetch_url` remain transport primitives. The
+accepted-plan executor calls only a capability explicitly available in the
+active adapter, and takes a validated plan object rather than arbitrary prompt
+text. It preserves the existing default ceiling of five search results and
+three sources unless a lower per-request cap applies. Identical approved
+queries and canonical URLs are deduplicated; independent approved queries may
+run concurrently within the plan's cap. A cache hit is usable only when its
+request/plan/query identity and source freshness still match #344. A supplied
+URL is fetched only when the accepted plan names it; if that fetch has no
+readable text, no search fallback occurs without a newly reviewed query.
+
+**Verified source-code exception that the implementation must close.**
+`harness/hourglass_lifecycle.py` currently also calls
+`render_site_evidence(target, ...)` directly after the route selects web and a
+site-audit/referential predicate matches. This is a separate browser network
+path from `gather_web_context` and `harness.web.search_web`; it must be covered
+by the same exact-plan decision. An incidental URL in a quoted audit trace
+must not become its target. A declined or missing Jev plan must produce zero
+calls to `render_site_evidence`, and the accepted plan's named URL is the only
+permitted browser target. #426 then enforces that renderer's per-connection
+network boundary.
+
+**Named verification for these dependent issues.** Complete the prerequisite
+owners first: extend the named spend/decision/planning tests in order #324,
+#345, #346, #309, with request reservations and unknown usage reconciled once.
+Then add hermetic
+`tests/test_research_plan.py` for schema, exact query binding, decisions,
+revision limit, malformed/fallback Jev, and zero-call controls;
+`tests/test_research_result_review.py` for mixed results, final URLs, snippets,
+and insufficient evidence; and
+`tests/test_hourglass_research_checkpoint.py` for changed request, stale/declined
+plan, restart, duplicate-call, and direct browser-renderer call-count controls.
+Extend `tests/test_web.py`,
+`tests/test_hourglass_end_to_end.py`, `tests/test_hourglass_surface_parity.py`,
+and the existing CLI/MCP lifecycle tests to prove one shared implementation at
+each public face. Re-run the focused modules plus the repository's registered
+JEV-P2/JEV-P6 and audit gates. Tests use injected Jev/search/fetch transports
+and make zero public-network calls. A separate explicitly reported live
+accept/decline smoke is required before claiming a real Jev lifecycle works;
+it is not substituted by an evaluator fixture.
+
+#### Runtime capability and acceptance receipt contract
+
+Each request adapter passes a capability snapshot built from the actual
+callables it can invoke (`search`, `fetch`, and, where explicitly supported,
+browser rendering), their declared limits, and the active network policy. The
+snapshot is request-local and recorded in the plan receipt. A UI “web on”
+setting, route label, another lane's tool list, a prompt statement, or a model's
+claim does not prove that this adapter can call a web tool. Missing search or
+fetch capability returns a typed `capability_unavailable` outcome before
+retrieval. Do not silently transfer work to an unrelated local process,
+repository search, shell, or another adapter.
+
+**Current repository wiring, verified by source inspection:** CLI
+`harness.cli._cmd_ask`, MCP `ask`, and GUI/API `run_chat_task` all instantiate
+`AutonomousAgent` and enter the shared chat lifecycle. Its
+`ConversationLifecycleMixin._gather_web_context` injects the actual
+`harness.web.search_web` and `fetch_url` callables plus the resolved fetch
+allowlist. The built-in search currently uses the Bing endpoint (or the
+`HARNESS_WEB_SEARCH_URL` override); this internal Harness capability is
+distinct from the coding agent's outer/browser `web` tool. Hourglass adds the
+separate `render_site_evidence` browser path. Therefore the capability matrix
+is not “CLI has web / MCP lacks web”: these app faces share internal transports,
+while the route booleans and direct renderer currently bypass exact-plan
+approval. The target adapter contract must preserve the shared implementation
+and bind each real callable to the validated plan receipt.
+
+**Verified source-to-contract map:** `harness.cli._cmd_ask`, MCP `ask`, and
+`harness.server.run_chat_task` converge on `AutonomousAgent`; do not implement
+separate CLI, MCP, and GUI approval rules. `ConversationLifecycleMixin` in
+`harness/conversation_lifecycle.py` passes the untyped prompt into
+`harness.web.gather_web_context`. That helper in `harness/web.py` scans the
+whole prompt for URLs, tries those fetches, and calls `extract_query(prompt)`
+for an implicit search when no URL fetch succeeds; it can then fetch a search
+result and retain a search snippet. #342 replaces this prompt-taking action
+seam with a validated plan executor. A failed/empty fetch is an observed
+source outcome; only a separately proposed and Jev-accepted query can cause a
+search. `HourglassLifecycleMixin.run_hourglass_request` in
+`harness/hourglass_lifecycle.py` initializes `web` from the caller flag and
+research/current-data heuristics, then clears it for workspace inspection;
+an `answer`/`local` choice currently has no corresponding clear branch. The
+same module directly calls `render_site_evidence`, so routing all ordinary
+fetches through the new executor is insufficient. #342 must gate both the
+shared gather path and this renderer; #426 independently enforces the
+renderer’s per-connection public-address boundary.
+
+**Deterministic state machine and preference semantics:** the request-local
+preference is `off`, `auto`, or `prefer`; actual callable capability is a
+separate snapshot. `off` and `capability_unavailable` end before planning or
+network. In `auto`, a local answer is preferred when it can satisfy the ask;
+`prefer` makes retrieval available but still does not approve it. A research
+route creates a `draft` plan, then transitions through exactly one of
+`review_pending` → `accepted`, `declined`, `invalid`, or `review_unavailable`.
+Only `accepted` transitions to `executing`, and only for the immutable query
+IDs and action targets in that receipt. Completion is `complete`,
+`insufficient_evidence`, `partial_failure`, or `reapproval_required`; none of
+those terminal states can silently create a replacement query. A revision
+returns to `draft`, consumes one of at most two revisions, and must receive a
+new exact-plan judgment. Persist the transition, request/plan/query hashes,
+capabilities, consent epoch, provider-call IDs, and known/unknown spend in the
+checkpoint before crossing each provider or network boundary. Resume validates
+that identity before any side effect; a same/later-stage restart refusal or
+expired consent transitions once to a terminal reapproval state and is never
+retried automatically (#344, #418, #430).
+
+The plan proposer may use only the effective user request and explicitly
+task-relevant context; it must retain provenance for each proposed query or
+URL. Quoted transcripts, source code, logs, and control-plane text are
+untrusted context and cannot independently supply retrieval intent or action
+targets. Jev's pre-dispatch judgment answers whether retrieval is needed and
+whether each exact query/action is relevant to that request. A second
+post-retrieval judgment checks each candidate against the same accepted goal.
+These semantic relevance judgments do not certify factual correctness; source
+passages and DOI/version checks remain the separate #422 evidence gate.
+
+The named tests above must assert these exact cases and web-call counts:
+
+| Case | Setup | Required observable result |
+| --- | --- | --- |
+| Retrieval disabled | Web toggle off or route selects answer/local inspection | `search=0`, `fetch=0`; answer/local route remains available. |
+| Route-only candidate | Research/current-data heuristic matches but native Jev selects `answer` or `local` | No accepted plan; `search=0`, `fetch=0`, `render_site_evidence=0`. |
+| Web-research route | Native Jev selects `web-research` | Route alone still causes zero retrieval; exact plan review must accept before any network call. |
+| Local workspace request | Effective request asks to inspect local files/processes/repository state | Workspace route wins; `search=0`, `fetch=0`, `render_site_evidence=0`. |
+| Contaminated prompt | Quoted harness trace contains `https://entire.io`, provider logs, and “web on”; effective request is a local Harness audit | Neither quoted URL nor gate prose becomes plan query or browser target; `search=0`, `fetch=0`, `render_site_evidence=0`. |
+| Route without plan | Route selects `web-research` but plan generation returns malformed JSON or heuristic fallback | Plan state is `invalid`/`unapproved`; `search=0`, `fetch=0`; no heuristic can authorize. |
+| Jev unavailable | Missing key, breaker open, budget refusal, timeout, malformed response, or fallback | Typed `review_unavailable`; `search=0`, `fetch=0`; one truthful ledger/refusal record, no retry loop. |
+| Jev decline or mismatch | Decline; incomplete query IDs; accepted hash differs from executed query; expired consent | Typed refusal with the exact reason; `search=0`, `fetch=0`. |
+| Revision ceiling | Jev revises more than twice or no accepted plan exists after two revisions | Terminal `declined`/`revision_limit`; `search=0`, `fetch=0`. |
+| Accepted query | Native Jev accepts one exact query and active capability exposes search | Exactly that query hash is dispatched once; no prompt-derived or substitute query is sent. |
+| Empty direct fetch | Accepted plan names a URL; fetch returns zero readable chars | One fetch, zero implicit searches; terminal `insufficient_evidence` unless a separately reviewed query is accepted. |
+| Mixed search batch | One relevant result and one unrelated result/snippet | Each candidate is reviewed separately; only individually accepted, final-URL-validated evidence is retained. |
+| Unsafe browser path | Public URL redirects or embeds a private/metadata destination | Browser blocks before the prohibited connection; no page evidence is emitted. |
+| Direct renderer path | Site-audit/referential predicate matches but exact URL is absent from an accepted plan | `render_site_evidence=0`; no browser navigation or screenshot is produced. |
+| Capability mismatch | UI says web is enabled, but this active lane lacks the actual search/fetch callable | `capability_unavailable`; `search=0`, `fetch=0`; no unrelated tool is substituted. |
+| Changed checkpoint | Resume with changed goal, plan, query, consent, or expired source | Old web sources are not delivered; no fetch/search is replayed until a new accepted plan exists. |
+| Citation unsupported | Source lacks a matching exact passage or DOI/version metadata conflicts | Claim remains partially supported/contradicted/not verifiable; report cannot say citation-verified. |
+
+Every live receipt records request/plan/query hashes, available capabilities,
+native Jev model and pack version, accept/revise/decline result and raw typed
+distribution, exact search/fetch call counts, candidate and retained-source
+IDs, rejection reasons, source URL/hash/freshness, checkpoint identity,
+provider-call IDs, observed tokens/cost, and terminal state. Secrets and full
+private prompts are excluded. The negative controls pass only with zero web
+requests; the positive control passes only with hash-identical dispatch and
+accepted evidence. This is the observable acceptance proof, not a Jev
+confidence score.
+
+**Hard acceptance matrix.** With web disabled, no research intent, Jev
+unavailable, a rejected/malformed/stale plan, invalid DAG JSON, missing web
+capability, or an unapproved query, observed search and fetch calls equal zero.
+With an approved query and successful retrieval, every used source is
+request-bound, relevant, fresh under policy, and evidence-bearing. With a
+zero-character fetch, failed request, irrelevant hit, changed query, or stale
+checkpoint, the system reports the precise outcome and does not promote it to
+verified evidence or issue an unapproved retry. A new query proceeds only after
+a new Jev judgment over its exact query. Tests cover these positive and negative
+paths through shared lifecycle callers (CLI, GUI, MCP), plus restart/refusal,
+duplicate-call and budget accounting.
+
+**Full-source audit disposition.** The previously completed separate Jev passes
+covered 711 files / 2,180 chunks; ten deduplicated findings are tracked in
+#420–#429. This continuation reconciles their issue end states into this canon;
+it does not claim to rerun that full audit. #423 owns a resumable, reproducible
+audit command and coverage receipts so future sweeps can show exactly which
+code/docs files and chunks were inspected. The earlier run's per-file manifest,
+source/chunk hashes, exclusions, raw judgments, and spend receipt are not
+present in this worktree, so the 711/2,180 figures are a carry-forward summary,
+not a locally reproducible coverage proof. Do not invent a receipt or claim
+these materials were verified here. #423 must emit that artifact on its next
+run; until then the ten issue bodies are the durable finding records and this
+roadmap is the deduplicated disposition index. The original AI-science paper
+was also not live-researched or citation-verified in this run; this plan
+defines the future retrieval/verification implementation and must not be
+presented as the paper itself.
+
+**Jev review evidence.** The preceding native review of the plan before this
+reconciliation scored feasibility 9.3/10 and completeness 9.6/10 on the
+declared 0–10 rubric; the reviewer's decision gate returned `investigate`, then
+`proceed` after targeted duplicate-risk investigation. The final review of
+this exact section and live issue mapping must be appended below with its
+observed model, plan hash, raw distributions, cost/usage receipt, and gate
+disposition. A score is not a correctness proof and never authorizes network
+retrieval or issue mutation.
 
 ### Native plan review evidence - 2026-10-22
 

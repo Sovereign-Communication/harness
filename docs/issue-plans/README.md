@@ -1,14 +1,20 @@
 # Issue implementation queue — batch 1
 
-This directory is the execution view of the canon's #295 register. The
-authoritative order, dependencies and acceptance exits remain
-[`docs/jev-roadmap.md`](../jev-roadmap.md); this queue is generated from that
-register plus the live GitHub open-issue set.
+This directory contains dated execution snapshots and issue-specific evidence
+for the canon's #295 register. The authoritative order, dependencies, current
+issue mapping, and acceptance exits remain
+[`docs/jev-roadmap.md`](../jev-roadmap.md); briefs here do not create parallel
+plans or current status.
 
-**Snapshot 2026-10-25:** the queue was generated at 58 open GitHub issues,
-all mapped to a canon row. Six later tracking issues (#377-#382, opened
-2026-10-25) were appended after generation, so the queue now holds 65 rows and
-all **56** live open issues are represented. Nine queue items have landed with
+**Current-status pointer (2026-10-28):** the queue JSON below was generated on
+2026-10-26 and is historical. Its counts and statuses are not the live GitHub
+inventory. The 2026-10-28 reconciliation and current web-research plan are in
+the canon; refresh GitHub before reporting a newer count.
+
+**Historical snapshot 2026-10-25/26:** the queue was generated at 58 open
+GitHub issues, all mapped to a canon row. Six tracking issues (#377-#382,
+opened 2026-10-25) were appended after generation; the 2026-10-26 inventory
+recorded 65 queue rows and 56 then-open GitHub issues. Nine queue items have landed with
 receipts: **#330** (dogfood `cancel_check`, PR #364, `0737e62`), **#347**
 (config/Jev override precedence, PR #365, `4d9fea4`), **#327** (checkout-root
 gate and route resolution, PR #366, `8c4324a`), **#278** (one external-tool
