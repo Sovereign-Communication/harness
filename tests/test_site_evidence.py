@@ -130,9 +130,19 @@ class _Page:
         self.status_index = 0
         self.screenshots = []
         self.visited = []
+        self.context = None
+        self.browser_launch_options = None
+        self.context_options = None
+        self.route_results = []
 
     def goto(self, url, wait_until=None, timeout=None):
         self.visited.append((url, wait_until, timeout))
+        if self.context and self.context.route_handler:
+            route = _Route(url)
+            self.context.route_handler(route)
+            self.route_results.append(route)
+            if route.aborted:
+                raise RuntimeError("browser request was blocked")
 
     def wait_for_timeout(self, _milliseconds):
         return None
@@ -188,6 +198,19 @@ class _Page:
         return _Locator([])
 
 
+class _Route:
+    def __init__(self, url):
+        self.request = types.SimpleNamespace(url=url)
+        self.continued = False
+        self.aborted = False
+
+    def continue_(self):
+        self.continued = True
+
+    def abort(self, _reason=None):
+        self.aborted = True
+
+
 class _Browser:
     def __init__(self, page):
         self.page = page
@@ -196,6 +219,7 @@ class _Browser:
 
     def new_context(self, **kwargs):
         self.context_kwargs = kwargs
+        self.page.context_options = kwargs
         return _Context(self.page)
 
     def close(self):
@@ -205,6 +229,17 @@ class _Browser:
 class _Context:
     def __init__(self, page):
         self.page = page
+        self.page.context = self
+        self.route_handler = None
+        self.route_pattern = None
+        self.init_scripts = []
+
+    def route(self, pattern, handler):
+        self.route_pattern = pattern
+        self.route_handler = handler
+
+    def add_init_script(self, script):
+        self.init_scripts.append(script)
 
     def new_page(self):
         return self.page
@@ -215,8 +250,9 @@ class _Chromium:
         self.page = page
         self.headless = None
 
-    def launch(self, headless=False):
+    def launch(self, headless=False, **kwargs):
         self.headless = headless
+        self.page.browser_launch_options = {"headless": headless, **kwargs}
         return _Browser(self.page)
 
 
@@ -282,6 +318,21 @@ class RenderSiteEvidenceTests(unittest.TestCase):
                          {"step": "1. Location", "status": "initial"})
         self.assertEqual(result["steps"][1]["step"], "2. Usage")
         self.assertTrue(screenshot_exists)
+        self.assertTrue(page.route_results[0].continued)
+        self.assertEqual(page.context.route_pattern, "**/*")
+        self.assertEqual(page.context_options["service_workers"], "block")
+        self.assertIn("RTCPeerConnection", page.context.init_scripts[0])
+        launch_options = page.browser_launch_options
+        self.assertEqual(launch_options["proxy"]["server"].split("://", 1)[0],
+                         "http")
+        self.assertTrue(launch_options["proxy"]["server"].startswith(
+            "http://127.0.0.1:"))
+        self.assertIn("--proxy-bypass-list=<-loopback>",
+                      launch_options["args"])
+        self.assertIn("--disable-quic", launch_options["args"])
+        self.assertIn(
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+            launch_options["args"])
         self.assertEqual([call.args[0] for call in events.call_args_list],
                          ["site_evidence", "site_evidence"])
         self.assertTrue(page.screenshots)
@@ -342,6 +393,18 @@ class SiteEvidenceHelperTests(unittest.TestCase):
             resolved.assert_called_once()
         with self.assertRaises(HarnessError):
             site_evidence._public_https("http://example.com/")
+
+    def test_browser_route_rejects_non_https_network_destinations(self):
+        for url in ("http://127.0.0.1/", "file:///etc/passwd",
+                    "ftp://example.test/file", "https://user@host.test/"):
+            with self.subTest(url=url):
+                route = _Route(url)
+                site_evidence._guard_browser_request(route)
+                self.assertTrue(route.aborted)
+
+        route = _Route("https://public.example/path")
+        site_evidence._guard_browser_request(route)
+        self.assertTrue(route.continued)
 
     def test_slug_and_screenshot_paths(self):
         self.assertEqual(

@@ -44,17 +44,21 @@ is unchanged and still no sandbox.
   implicitly; with multiple roots the caller must name one. No MCP file path
   falls back to the server's process directory. Writes continue to require
   the configured or request-level `allow_write` authorization.
-- **Web evidence ladder.** Page fetch is https-only, never follows a redirect,
-  and requires the host — and any post-render URL — to resolve to a globally
-  public address, so relaxing the allowlist for a user-named target can never
-  reach a private, loopback, link-local, or metadata address. When a plain GET
-  is refused by bot protection (403/429) or returns an empty JS shell, the
-  same URL is rendered once in a browser (`HARNESS_FETCH_BROWSER`, on by
-  default). The public-address guard runs before the browser navigates and
-  again on the final URL. Rendering executes that public site's own JavaScript
-  in a separate browser process with a fresh profile — it is evidence
-  gathering, not a sandbox boundary; disable it with
-  `HARNESS_FETCH_BROWSER=0`.
+ - **Web evidence ladder.** Plain page fetches are HTTPS-only, do not follow redirects,
+   and reject DNS answers that include a non-global address. Browser rendering
+   preflights the HTTPS URL, then routes browser HTTP(S) and secure WebSocket
+   tunnels through a loopback CONNECT proxy. For each tunnel, the proxy resolves
+   the host once, rejects the full answer set if any address is not globally
+   routable, and connects to a validated numeric address without resolving it
+   again. Chromium loopback/link-local proxy bypass is removed and there is no
+   direct proxy fallback, so redirects, frames, subresources, fetch/XHR, and
+   WebSockets pass through the same address check. TLS remains end-to-end in
+   Chromium. Non-HTTPS network URLs are blocked; service workers are blocked,
+   and QUIC and non-proxied WebRTC UDP are disabled. This limits browser network
+   egress; it is not an OS or process sandbox. Browser rendering runs once when
+   a plain GET is refused by bot protection (403/429) or returns an empty JS
+   shell (`HARNESS_FETCH_BROWSER`, on by default). Disable it with
+   `HARNESS_FETCH_BROWSER=0`.
 - **Script execution (`harness script`, `harness/script.py`).** Off by default
   (`HARNESS_SCRIPT_ENABLED=1` opts in). Consent is bound to the sha256 of the
   exact source, so an edited script cannot ride an earlier approval; the script

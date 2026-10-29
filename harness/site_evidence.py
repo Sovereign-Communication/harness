@@ -1,19 +1,28 @@
-"""Rendered site evidence for an audit.
+"""Rendered site evidence with a fail-closed browser egress boundary.
 
 A static fetch cannot see a client-rendered progress indicator, an active mode
-button, or the controls a user actually gets.  This module renders one public
-HTTPS page in a headless Chromium, captures the visible text plus targeted DOM
-facts, exercises the on-grid/off-grid mode controls when present, and writes a
-screenshot.  It is bounded to one page and never follows a redirect to a
-private address.
+button, or the controls a user actually gets. This module renders one public
+HTTPS page in headless Chromium, captures visible text and targeted DOM facts,
+exercises the on-grid/off-grid mode controls when present, and writes a
+screenshot. Browser HTTP(S) requests and secure WebSockets must pass through an
+in-process HTTP CONNECT proxy. At each connection the proxy resolves the target
+once, rejects the entire answer set if any address is not globally routable,
+and opens the socket to one of those exact numeric addresses. Chromium's
+implicit loopback and link-local proxy bypass is removed; the proxy has no
+direct fallback. Non-HTTPS URLs, QUIC, service workers, and WebRTC are blocked
+or disabled so the page cannot use those paths to bypass the proxy.
 """
 from __future__ import annotations
 
+import ipaddress
 import re
+import select
 import socket
+import threading
 import time
 import urllib.parse
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -24,6 +33,226 @@ _MODE_RE = re.compile(r"cut my electric bill|off[- ]?grid", re.IGNORECASE)
 _PROGRESS_SELECTOR = (
     "[class*=progress], [id*=progress], [role=progressbar], progress")
 _MAX_TEXT = 7000
+_EGRESS_CONNECT_TIMEOUT = 10.0
+_CHROMIUM_EGRESS_ARGS = (
+    "--proxy-bypass-list=<-loopback>",
+    "--disable-quic",
+    "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+)
+_DISABLE_WEBRTC_SCRIPT = """
+for (const name of ["RTCPeerConnection", "webkitRTCPeerConnection"]) {
+  try {
+    Object.defineProperty(globalThis, name, {
+      value: undefined, configurable: false, writable: false
+    });
+  } catch (_) {}
+}
+"""
+
+
+def _parse_connect_target(authority: str):
+    """Return a normalized ``(host, port)`` from an HTTP CONNECT authority."""
+    if not authority or any(char.isspace() or ord(char) < 0x20
+                            for char in authority):
+        raise ValueError("invalid CONNECT authority")
+    parsed = urllib.parse.urlsplit("//" + authority)
+    if (parsed.netloc != authority or parsed.path or parsed.query
+            or parsed.fragment or parsed.username or parsed.password
+            or "@" in authority or not parsed.hostname):
+        raise ValueError("invalid CONNECT authority")
+    try:
+        port = parsed.port if parsed.port is not None else 443
+    except ValueError:
+        raise ValueError("invalid CONNECT port") from None
+    if not 1 <= port <= 65535:
+        raise ValueError("invalid CONNECT port")
+
+    host = parsed.hostname
+    if "%" in host:
+        raise ValueError("scoped IP literals are not allowed")
+    try:
+        host = str(ipaddress.ip_address(host))
+    except ValueError:
+        try:
+            host = host.rstrip(".").encode("idna").decode("ascii").lower()
+        except UnicodeError:
+            raise ValueError("invalid CONNECT host") from None
+        if not host or len(host) > 253:
+            raise ValueError("invalid CONNECT host") from None
+    return host, port
+
+
+def _connect_pinned_address(address: str, port: int, timeout: float):
+    """Open a socket to a validated numeric address without resolving again."""
+    if "%" in address:
+        raise OSError("scoped IP address refused")
+    parsed = ipaddress.ip_address(address)
+    if not parsed.is_global:
+        raise OSError("non-public IP address refused")
+    family = socket.AF_INET6 if parsed.version == 6 else socket.AF_INET
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(timeout)
+        sockaddr = ((str(parsed), port, 0, 0) if parsed.version == 6
+                    else (str(parsed), port))
+        sock.connect(sockaddr)
+        sock.settimeout(None)
+        return sock
+    except Exception:
+        sock.close()
+        raise
+
+
+class _BrowserEgressProxy:
+    """Loopback-only CONNECT proxy pinning each tunnel to public DNS results."""
+
+    def __init__(self, *, resolve_fn=None, connect_fn=None):
+        self._resolve_fn = resolve_fn or socket.getaddrinfo
+        self._connect_fn = connect_fn or _connect_pinned_address
+        self._server = None
+        self._thread = None
+
+    @property
+    def url(self):
+        if self._server is None:
+            raise RuntimeError("browser egress proxy has not started")
+        host, port = self._server.server_address[:2]
+        return f"http://{host}:{port}"
+
+    def __enter__(self):
+        proxy = self
+
+        class ProxyServer(ThreadingHTTPServer):
+            daemon_threads = True
+            block_on_close = False
+
+        class ProxyHandler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, _format, *_args):
+                return
+
+            def _response(self, status):
+                self.send_response_only(status)
+                self.send_header("Connection", "close")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                self.close_connection = True
+
+            def _reject(self):
+                self._response(403)
+
+            def do_CONNECT(self):
+                try:
+                    host, port = _parse_connect_target(self.path)
+                    from .web import _resolved_addresses_public
+
+                    addresses = _resolved_addresses_public(
+                        host, proxy._resolve_fn)
+                except Exception:
+                    self._reject()
+                    return
+
+                upstream = None
+                for address in addresses:
+                    try:
+                        upstream = proxy._connect_fn(
+                            address, port, _EGRESS_CONNECT_TIMEOUT)
+                        break
+                    except OSError:
+                        continue
+                if upstream is None:
+                    self._response(502)
+                    return
+
+                try:
+                    self.send_response_only(200, "Connection Established")
+                    self.end_headers()
+                    self.wfile.flush()
+                    _relay_tunnel(self.connection, upstream)
+                except OSError:
+                    pass
+                finally:
+                    self.close_connection = True
+                    upstream.close()
+
+            def do_GET(self):
+                self._reject()
+
+            def do_POST(self):
+                self._reject()
+
+            def do_PUT(self):
+                self._reject()
+
+            def do_DELETE(self):
+                self._reject()
+
+            def do_OPTIONS(self):
+                self._reject()
+
+            def do_HEAD(self):
+                self._reject()
+
+            def do_PATCH(self):
+                self._reject()
+
+        self._server = ProxyServer(("127.0.0.1", 0), ProxyHandler)
+        self._thread = threading.Thread(
+            target=self._server.serve_forever,
+            name="harness-site-egress-proxy", daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc):
+        if self._server is not None:
+            self._server.shutdown()
+            self._server.server_close()
+            self._server = None
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+        return False
+
+
+def _relay_tunnel(client: socket.socket, upstream: socket.socket):
+    """Copy bytes in both directions until either side closes the tunnel."""
+    peers = (client, upstream)
+    while True:
+        try:
+            readable, _writable, _exceptional = select.select(peers, [], [], 0.5)
+        except (OSError, ValueError):
+            return
+        for source in readable:
+            destination = upstream if source is client else client
+            try:
+                data = source.recv(65536)
+                if not data:
+                    return
+                destination.sendall(data)
+            except OSError:
+                return
+
+
+def _guard_browser_request(route):
+    """Permit only public-HTTPS-capable URL forms; proxy validates each host."""
+    try:
+        parsed = urllib.parse.urlsplit(route.request.url)
+        scheme = parsed.scheme.lower()
+        if scheme in {"about", "blob", "data"}:
+            route.continue_()
+            return
+        if (scheme not in {"https", "wss"} or not parsed.hostname
+                or parsed.username or parsed.password or "@" in parsed.netloc):
+            route.abort("blockedbyclient")
+            return
+        _ = parsed.port  # Fail closed on malformed ports.
+        route.continue_()
+    except Exception:
+        try:
+            route.abort("blockedbyclient")
+        except Exception:
+            pass
 
 
 def _public_https(url: str) -> str:
@@ -182,14 +411,21 @@ def render_site_evidence(
     title = ""
     text = ""
     screenshot = ""
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+    with sync_playwright() as p, _BrowserEgressProxy() as egress_proxy:
+        browser = p.chromium.launch(
+            headless=True,
+            proxy={"server": egress_proxy.url},
+            args=list(_CHROMIUM_EGRESS_ARGS),
+        )
         try:
             context = browser.new_context(
                 viewport={"width": 1280, "height": 900},
                 geolocation={"latitude": 30.2672, "longitude": -97.7431},
                 permissions=["geolocation"],
+                service_workers="block",
             )
+            context.route("**/*", _guard_browser_request)
+            context.add_init_script(_DISABLE_WEBRTC_SCRIPT)
             page = context.new_page()
             page.goto(url, wait_until="domcontentloaded",
                       timeout=int(timeout * 1000))
