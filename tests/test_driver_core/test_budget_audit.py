@@ -7,14 +7,27 @@ interleavings, because the failure being defended against -- several workers
 each preflighting against the full remainder and collectively overspending
 it -- is precisely a check-then-act race and cannot be observed sequentially.
 """
+import multiprocessing
 import os
 import tempfile
 import threading
 import unittest
 
-from driver_core.audit import AuditError, AuditLog, GENESIS, MemoryAuditLog
+from driver_core.audit import (
+    AuditError, AuditLog, GENESIS, MemoryAuditLog, _canonical, digest,
+)
 from driver_core.budget import Budget
 from driver_core.errors import BudgetRefused
+
+
+def _append_audit_record_in_process(path, start, results, kind):
+    try:
+        start.wait(timeout=10)
+        record = AuditLog(path).append("capture", step_id=kind)
+        results.put(("ok", record["seq"]))
+    except Exception as exc:
+        results.put(("error", type(exc).__name__, str(exc)))
+        raise
 
 
 class ReservationTests(unittest.TestCase):
@@ -158,6 +171,30 @@ class AuditChainTests(unittest.TestCase):
     def tearDown(self):
         self.dir.cleanup()
 
+    @staticmethod
+    def _records(count):
+        log = MemoryAuditLog()
+        for index in range(count):
+            log.append("capture", step_id=f"s{index}", source="test")
+        return log.read_all()
+
+    @staticmethod
+    def _encoded(records, *, final_newline=True):
+        text = "\n".join(_canonical(record) for record in records)
+        if final_newline and records:
+            text += "\n"
+        return text.encode("utf-8")
+
+    @staticmethod
+    def _rehash(record, previous):
+        record["hash"] = digest(
+            {key: value for key, value in record.items() if key != "hash"},
+            previous)
+
+    def _write_bytes(self, value):
+        with open(self.path, "wb") as handle:
+            handle.write(value)
+
     def test_a_chain_verifies_after_appending(self):
         log = AuditLog(self.path)
         log.append("capture", step_id="s1", source="cli")
@@ -176,12 +213,14 @@ class AuditChainTests(unittest.TestCase):
         log = AuditLog(self.path)
         log.append("capture", step_id="s1", source="cli")
         log.append("decision", step_id="s1", action="observe")
+        verifier = AuditLog(self.path)
         with open(self.path, "r+", encoding="utf-8") as handle:
             body = handle.read().replace('"action":"observe"',
                                          '"action":"delete_file"')
             handle.seek(0)
             handle.write(body)
-        verdict = AuditLog(self.path).verify()
+            handle.truncate()
+        verdict = verifier.verify()
         self.assertFalse(verdict.ok)
         self.assertIn("altered", verdict.detail)
 
@@ -213,6 +252,144 @@ class AuditChainTests(unittest.TestCase):
             handle.write("{not json}\n")
         with self.assertRaises(AuditError):
             AuditLog(self.path)
+
+    def test_every_invalid_chain_shape_refuses_reopen_without_changing_bytes(self):
+        wrong_genesis = self._records(1)
+        wrong_genesis[0]["previous"] = "not-the-genesis-hash"
+
+        sequence_gap = self._records(2)
+        sequence_gap[1]["seq"] = 3
+        self._rehash(sequence_gap[1], sequence_gap[0]["hash"])
+
+        changed_payload = self._records(1)
+        changed_payload[0]["source"] = "tampered"
+
+        altered_hash = self._records(1)
+        altered_hash[0]["hash"] = "0" * 64
+
+        broken_middle_link = self._records(3)
+        broken_middle_link[1]["previous"] = "broken-link"
+        self._rehash(broken_middle_link[1], "broken-link")
+
+        cases = (
+            ("wrong genesis", self._encoded(wrong_genesis),
+             "record 0 does not point to the genesis hash"),
+            ("sequence gap", self._encoded(sequence_gap), "record 1 has seq 3"),
+            ("changed payload", self._encoded(changed_payload),
+             "record 0 has been altered"),
+            ("altered hash", self._encoded(altered_hash),
+             "record 0 has been altered"),
+            ("broken middle link", self._encoded(broken_middle_link),
+             "record 1 does not chain"),
+            ("malformed JSON", b"{not-json}\n", "is not valid JSON"),
+            ("truncated final row", self._encoded(self._records(1),
+                                                   final_newline=False),
+             "is truncated"),
+        )
+        for label, content, message in cases:
+            with self.subTest(shape=label):
+                self._write_bytes(content)
+                with open(self.path, "rb") as handle:
+                    before = handle.read()
+                with self.assertRaises(AuditError) as raised:
+                    AuditLog(self.path)
+                self.assertIn(message, str(raised.exception))
+                with open(self.path, "rb") as handle:
+                    self.assertEqual(handle.read(), before)
+
+    def test_append_revalidates_after_open_and_preserves_tampered_bytes(self):
+        log = AuditLog(self.path)
+        log.append("capture", step_id="s1")
+        tampered = self._records(1)
+        tampered[0]["source"] = "changed after the writer opened"
+        self._write_bytes(self._encoded(tampered))
+        with open(self.path, "rb") as handle:
+            before = handle.read()
+
+        with self.assertRaisesRegex(AuditError, "record 0 has been altered"):
+            log.append("decision", step_id="s2")
+
+        with open(self.path, "rb") as handle:
+            self.assertEqual(handle.read(), before)
+
+    def test_verify_reads_and_reports_one_locked_snapshot(self):
+        class CountingAuditLog(AuditLog):
+            def __init__(self, path):
+                self.read_count = 0
+                super().__init__(path)
+
+            def _read_all_unlocked(self):
+                self.read_count += 1
+                return super()._read_all_unlocked()
+
+        log = CountingAuditLog(self.path)
+        log.append("capture", step_id="s1")
+        log.read_count = 0
+        verdict = log.verify()
+
+        self.assertTrue(verdict.ok)
+        self.assertEqual(verdict.records, 1)
+        self.assertEqual(log.read_count, 1)
+
+    def test_separate_instances_serialize_concurrent_appends(self):
+        first = AuditLog(self.path)
+        second = AuditLog(self.path)
+        start = threading.Barrier(3)
+        appended = []
+        errors = []
+        result_lock = threading.Lock()
+
+        def append(log, kind):
+            try:
+                start.wait()
+                record = log.append(kind, step_id=kind)
+                with result_lock:
+                    appended.append(record)
+            except Exception as exc:
+                with result_lock:
+                    errors.append(exc)
+
+        threads = [
+            threading.Thread(target=append, args=(first, "first")),
+            threading.Thread(target=append, args=(second, "second")),
+        ]
+        for thread in threads:
+            thread.start()
+        start.wait()
+        for thread in threads:
+            thread.join(timeout=5)
+
+        self.assertFalse(any(thread.is_alive() for thread in threads))
+        self.assertEqual(errors, [])
+        self.assertCountEqual([record["seq"] for record in appended], [0, 1])
+        reopened = AuditLog(self.path)
+        self.assertTrue(reopened.verify().ok)
+        self.assertEqual(len(reopened.read_all()), 2)
+
+    def test_separate_processes_serialize_concurrent_appends(self):
+        context = multiprocessing.get_context("spawn")
+        start = context.Barrier(4)
+        results = context.Queue()
+        processes = [
+            context.Process(
+                target=_append_audit_record_in_process,
+                args=(self.path, start, results, f"process-{index}"))
+            for index in range(3)
+        ]
+        for process in processes:
+            process.start()
+        start.wait(timeout=10)
+        for process in processes:
+            process.join(timeout=10)
+
+        self.assertFalse(any(process.is_alive() for process in processes))
+        self.assertEqual([process.exitcode for process in processes], [0, 0, 0])
+        outcomes = [results.get(timeout=3) for _ in processes]
+        self.assertEqual([outcome[0] for outcome in outcomes], ["ok"] * 3)
+        self.assertCountEqual([outcome[1] for outcome in outcomes], [0, 1, 2])
+        reopened = AuditLog(self.path)
+        self.assertTrue(reopened.verify().ok)
+        self.assertEqual(len(reopened.read_all()), 3)
 
     def test_an_unaltered_record_is_byte_stable(self):
         """Given the same facts, the serialised bytes and therefore the hash

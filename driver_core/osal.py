@@ -47,6 +47,7 @@ import tempfile
 import threading
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 
 from .errors import OsalError
 from .png import SIGNATURE as PNG_SIGNATURE, decodable as png_decodable
@@ -62,6 +63,9 @@ MAX_CAPTURE_BYTES = 1 << 20
 #: Declared platform support. Anything absent here is refused rather than
 #: attempted, and the refusal says so by name.
 SUPPORTED = ("linux", "darwin", "windows")
+
+_AUDIT_PATH_LOCKS = {}
+_AUDIT_PATH_LOCKS_GUARD = threading.Lock()
 
 # Measured image-request bounds ported from driver-core's current preparation
 # rule: 280..1568 px per side and at least 78,400 total pixels. The longest
@@ -97,6 +101,60 @@ def platform_name():
 
 def is_supported():
     return platform_name() in SUPPORTED
+
+
+@contextmanager
+def audit_path_lock(path):
+    """Lock one audit path across threads and processes.
+
+    All reads that establish an audit snapshot and writes based on that
+    snapshot use the same persistent sidecar lock. The sidecar is not removed
+    after release because another process could then lock a different inode.
+    """
+    if not path:
+        yield
+        return
+
+    canonical = os.path.normcase(
+        os.path.realpath(os.path.abspath(os.fsdecode(path))))
+    with _AUDIT_PATH_LOCKS_GUARD:
+        thread_lock = _AUDIT_PATH_LOCKS.setdefault(
+            canonical, threading.RLock())
+
+    lock_path = canonical + ".lock"
+    directory = os.path.dirname(lock_path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+    with thread_lock:
+        with open(lock_path, "a+b") as handle:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+
+            platform = platform_name()
+            if platform == "windows":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                try:
+                    yield
+                finally:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            elif platform in ("linux", "darwin"):
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            else:
+                raise OsalError(
+                    f"audit path locks are unsupported on {platform}")
 
 
 def run(argv, *, cwd=None, timeout=DEFAULT_TIMEOUT, env=None, input_text=None,
