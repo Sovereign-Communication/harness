@@ -13,6 +13,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any, Dict
 
 from . import __version__
 from . import events as _events
@@ -454,8 +455,10 @@ class McpServer:
         """Shared-secret gate for tools/call when auth_token is configured."""
         if not self.auth_token:
             return None
-        params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
-        meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else {}
+        params: Dict[str, Any] = (msg.get("params")
+                                  if isinstance(msg.get("params"), dict) else {})
+        meta: Dict[str, Any] = (params.get("_meta")
+                                if isinstance(params.get("_meta"), dict) else {})
         token = meta.get("harness_token") or params.get("harness_token")
         if token is None or not isinstance(token, str) or token != self.auth_token:
             return {"jsonrpc": "2.0", "id": msg.get("id"),
@@ -494,8 +497,10 @@ class McpServer:
             # notifications/progress frame per typed run event until the
             # response frame is written. Without the token, zero progress
             # frames -- the historical behavior.
-            meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else {}
-            token = meta.get("progressToken")
+            progress_meta: Dict[str, Any] = (
+                params.get("_meta")
+                if isinstance(params.get("_meta"), dict) else {})
+            token = progress_meta.get("progressToken")
             if _valid_progress_token(token):
                 self._register_progress(request_id, token)
         try:
@@ -603,6 +608,7 @@ class McpServer:
 
         if name == "site_check":
             prompt = validate_mcp_prompt(args.get("prompt"))
+            assert isinstance(prompt, str)  # required=True validated it
             if not is_site_check_prompt(prompt):
                 raise HarnessError(
                     "site_check requires a single current availability "
@@ -1024,6 +1030,7 @@ class McpServer:
             # levels, paths, or actions; unmatched stays honest.
             log_text = validate_text(args.get("log_text"), "log_text", 8_000_000,
                                      required=True)
+            assert isinstance(log_text, str)  # required=True validated it
             raw_pack = args.get("pack")
             if raw_pack is None:
                 raise HarnessError(
@@ -1057,6 +1064,7 @@ class McpServer:
             from . import mission_record as mr
             mission_id = validate_text(args.get("mission_id"), "mission_id", 256,
                                        required=True)
+            assert isinstance(mission_id, str)  # required=True validated it
             root = mr.resolve_missions_root(
                 validate_text(args.get("root"), "root", 4096) or "missions")
             pack = mr.load_mission_pack(root, mission_id)
@@ -1089,6 +1097,7 @@ class McpServer:
                 return score_all_phases(str(repo_root), jev_policy=None,
                                         min_score=min_score)
             phase = validate_text(args.get("phase"), "phase", 256, required=True)
+            assert isinstance(phase, str)  # required=True validated it
             return dogfood_phase(str(repo_root), phase, settings=None,
                                  use_live_jev=False, min_score=min_score)
         if name == "jev_freeze":
@@ -1463,6 +1472,7 @@ class McpServer:
         if name == "host_provision_plan":
             from . import provision as pv
             goal = validate_text(args.get("goal"), "goal", pv.MAX_GOAL_CHARS, required=True)
+            assert isinstance(goal, str)  # required=True validated it
             root = self._workspace_for(args.get("root"))
             probe = pv.probe_host()
             policy = pv.policy_for_probe(probe, [str(root)])
@@ -1633,7 +1643,7 @@ def main(argv=None):  # pragma: no cover - thin wiring; exercised via smoke test
     engine = composition.engine_for(settings, api_key, governor, ledger, router)
     McpServer(
         transport=transport, api_key=api_key, governor=governor, ledger=ledger,
-        router=router, engine=engine, max_panelists=settings.max_panelists,
+        router=router, engine=engine, max_panelists=int(settings.max_panelists),
         use_free=settings.use_free, allow_write=settings.mcp_allow_write,
         allow_verify=settings.mcp_allow_verify,
         allowed_roots=settings.mcp_allowed_roots,

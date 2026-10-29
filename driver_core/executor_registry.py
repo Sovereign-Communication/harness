@@ -295,7 +295,7 @@ PROBE_FORBIDDEN_OPTIONS = ("--output",)
 #: Bound on one probe. A read-only check that has not finished in thirty
 #: seconds is a check whose answer nobody is waiting for, and the action
 #: must not become a way to occupy the driver.
-PROBE_TIMEOUT = 30.0
+PROBE_TIMEOUT = 30
 
 
 def _head(token):

@@ -293,7 +293,7 @@ class Executor:
             f"params {params}; re-confirmation is required")
 
     def execute(self, action_name, params=None, *, consent=NO_CONSENT_NEEDED,
-                step_id="step"):
+                step_id="step") -> ExecutionResult:
         """Perform one declared action, or explain why it was not performed."""
         action, checked = self.resolve(action_name, params or {})
         self.check_consent(action, checked, consent)
@@ -352,6 +352,10 @@ class Executor:
                                 "have occurred and replay remains blocked") from exc
                         raise
 
+        # ``_invoke`` always returns a result: it catches executor failure
+        # and turns it into an unsuccessful record. The assert states that
+        # invariant for the type checker and for a reader.
+        assert result is not None
         if self.audit is not None:
             record = dict(
                 step_id=step_id, action=action.name,
@@ -367,7 +371,7 @@ class Executor:
             self.audit.append(KIND_ACTION, **record)
         return result
 
-    def _invoke(self, handler, action, params):
+    def _invoke(self, handler, action, params) -> ExecutionResult:
         try:
             output = handler(action, params)
         except Exception as exc:

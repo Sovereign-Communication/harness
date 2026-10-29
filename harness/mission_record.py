@@ -76,7 +76,7 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def validate_mission_id(mission_id: str) -> str:
+def validate_mission_id(mission_id: Any) -> str:
     """Mission ids are path-safe single segments (no separators, no '..')."""
     if not isinstance(mission_id, str) or not mission_id.strip():
         raise HarnessError("mission id must be a non-empty string")

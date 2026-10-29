@@ -109,9 +109,11 @@ def build_parser():
     # The v1 assessment gate (harness/jev_assessment.py; parses its own
     # subarguments). It is a lane-workflow disposition, not the audit bar: the
     # help text says so where an operator first meets it.
-    sub.add_parser("assess", help="v1 five-aspect assessment gate over a "
-                                  "JSON judgement (lane workflow; the audit "
-                                  "bar is unchanged)")
+    passess = sub.add_parser(
+        "assess", help="v1 five-aspect assessment gate over a JSON "
+                       "judgement (lane workflow; the audit bar is unchanged)")
+    passess.add_argument("--input", default="-",
+                         help="JSON file with the aspect judgements, or - for stdin")
 
     # Structured so --help lists the UI faces alongside the data commands.
     sub.add_parser("serve", help="Local web UI + JSON API over the core (loopback; "

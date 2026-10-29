@@ -147,8 +147,8 @@ class AspectJudgment:
     @property
     def band(self) -> str:
         """The majority band, ``UNCERTAIN``, or ``IRRELEVANT``."""
-        if not self.relevant:
-            return "IRRELEVANT"
+        if not self.relevant or self.probabilities is None:
+            return "IRRELEVANT" if not self.relevant else "UNCERTAIN"
         for band in BANDS:
             if self.probabilities[band] >= MAJORITY:
                 return band

@@ -199,10 +199,12 @@ def _row_for(element: Dict[str, Any], structural: Dict[str, Any],
     axes = judgment.get("axes") or {}
     attention = judgment.get("attention") or {}
     axis_confidence = dict(judgment.get("axis_confidence") or {})
-    settled = [axis_confidence.get(axis) for axis, value in axes.items()
-               if value is not None
-               and isinstance(axis_confidence.get(axis), (int, float))
-               and not isinstance(axis_confidence.get(axis), bool)]
+    settled = []
+    for axis, value in axes.items():
+        confidence = axis_confidence.get(axis)
+        if (value is not None and isinstance(confidence, (int, float))
+                and not isinstance(confidence, bool)):
+            settled.append(float(confidence))
     ambiguous = bool(settled) and min(settled) < AMBIGUOUS_CONFIDENCE
     return {
         "id": element.get("id"),
@@ -238,7 +240,7 @@ def analyze_repo(root: Any, pack: Any, make_policy: PolicyFactory, *,
                  symbol_limit: int = 200,
                  run_budget: Optional[float] = None,
                  task_id: Optional[str] = None,
-                 exclude: Optional[List[str]] = None,
+                 exclude: Optional[List[Optional[str]]] = None,
                  generated_at: Optional[str] = None,
                  recovery_report: Optional[List[str]] = None
                  ) -> Dict[str, Any]:
