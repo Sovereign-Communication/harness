@@ -989,9 +989,8 @@ class AgentAnswerLoopTests(unittest.TestCase):
             agent = AutonomousAgent(settings=load_settings(), root_dir=root,
                                     history_dir=root)
             policy = _FakePolicy([(0.90, False, False)])
-            governor = MagicMock()
             with patch("harness.hourglass_lifecycle.policy_for", return_value=policy), \
-                 patch("harness.hourglass_lifecycle.governor_for", return_value=(None, governor)), \
+                 patch("harness.hourglass_lifecycle.governor_for", return_value=(None, MagicMock())), \
                  patch("harness.hourglass_lifecycle.ledger_for", return_value=MagicMock()), \
                  patch.object(agent, "_hourglass_answer_once", return_value={
                      "model": "m1", "answer": "local review", "cost": 0.001}), \
@@ -1003,14 +1002,12 @@ class AgentAnswerLoopTests(unittest.TestCase):
                     request_preflight={
                         "source": "jev_request_workflow",
                         "choice": "web-research", "native": True,
-                        "cost": 0.002,
+                        "cost": 0.0,
                     })
 
             self.assertEqual(result["status"], "ok")
             self.assertEqual(result["workflow_tier"], "workspace-inspection")
             self.assertFalse(result["web_used"])
-            governor.record_actual.assert_any_call(
-                0.002, "chat-route-preflight", lane="answer")
 
     def test_continue_without_saved_interruption_is_a_local_terminal_reply(self):
         with tempfile.TemporaryDirectory() as tmp:

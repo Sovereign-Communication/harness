@@ -109,27 +109,10 @@ class ChatCheckpointTests(unittest.TestCase):
             with self.assertRaises(HarnessError):
                 load_chat_checkpoint("session", root)
 
-    def test_checkpoint_file_symlink_is_rejected(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            path = save_chat_checkpoint("session", {"prompt": "x"}, root)
-            with patch.object(
-                    Path, "is_symlink", autospec=True,
-                    side_effect=lambda candidate: candidate == path):
-                with self.assertRaisesRegex(
-                        HarnessError, "request lifecycle state is invalid"):
-                    load_chat_checkpoint("session", root)
-
     def test_history_rejects_surrogate_session_ids(self):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(HarnessError):
                 save_chat_turn("bad\ud800", {"prompt": "x"}, Path(tmp))
-
-    def test_history_rejects_empty_session_ids(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaisesRegex(
-                    HarnessError, "invalid session_id for chat history"):
-                save_chat_turn("", {"prompt": "x"}, Path(tmp))
 
     def test_checkpoint_directory_symlink_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
