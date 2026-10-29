@@ -19,6 +19,7 @@ import inspect
 import os
 import pathlib
 import re
+import sys
 import unittest
 
 import driver_core
@@ -113,13 +114,13 @@ class OsBoundaryTests(unittest.TestCase):
         self.assertEqual(result.reason, "not_found")
 
     def test_a_non_zero_exit_is_an_answer_not_a_failure(self):
-        result = osal.run(["python", "-c", "import sys; sys.exit(3)"])
+        result = osal.run([sys.executable, "-c", "import sys; sys.exit(3)"])
         self.assertEqual(result.returncode, 3)
         self.assertFalse(result.ok)
         self.assertEqual(result.reason, "")
 
     def test_a_command_that_actually_runs_returns_its_output(self):
-        result = osal.run(["python", "-c", "print('hello')"])
+        result = osal.run([sys.executable, "-c", "print('hello')"])
         self.assertTrue(result.ok)
         self.assertIn("hello", result.stdout)
 

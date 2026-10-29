@@ -14,6 +14,7 @@ the shape of a ``for`` loop.
 """
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 
@@ -323,18 +324,19 @@ class OsalInputTests(unittest.TestCase):
             "sys.stdout.write('got:' + data)")
 
     def test_a_child_really_receives_stdin(self):
-        result = osal.run(["python", "-c", self.ECHO], input_text="hello")
+        result = osal.run([sys.executable, "-c", self.ECHO],
+                          input_text="hello")
         self.assertTrue(result.ok, result.error)
         self.assertEqual(result.stdout, "got:hello")
 
     def test_a_child_that_ignores_stdin_still_works(self):
-        result = osal.run(["python", "-c", "print('no stdin needed')"])
+        result = osal.run([sys.executable, "-c", "print('no stdin needed')"])
         self.assertTrue(result.ok)
         self.assertIn("no stdin needed", result.stdout)
 
     def test_a_non_string_input_is_refused_by_type(self):
         with self.assertRaises(TypeError) as ctx:
-            osal.run(["python", "-c", "pass"], input_text=b"bytes")
+            osal.run([sys.executable, "-c", "pass"], input_text=b"bytes")
         self.assertIn("must be str or None", str(ctx.exception))
 
     def test_the_scheme_restriction_holds(self):

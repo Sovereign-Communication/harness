@@ -464,8 +464,18 @@ class OsalUiTest(unittest.TestCase):
         self.assertEqual(osal.python_exe(), sys.executable)
 
     def test_which_finds_the_running_interpreter(self):
-        self.assertIsNotNone(osal.which(os.path.basename(sys.executable))
-                             or osal.which("python"))
+        """PATH is the input, not the environment.
+
+        A bare venv invoked by absolute path has no ``python`` on PATH; the
+        2026-10-29 full-suite run on such a checkout went red here while CI
+        was green, because CI's setup-python always exports one. Pointing
+        PATH at the running interpreter's own directory tests the lookup
+        without inheriting that accident.
+        """
+        interpreter = os.path.basename(sys.executable)
+        with mock.patch.dict(os.environ,
+                             {"PATH": os.path.dirname(sys.executable)}):
+            self.assertIsNotNone(osal.which(interpreter))
         self.assertIsNone(osal.which("harness-definitely-not-a-real-binary-xyz"))
 
 
