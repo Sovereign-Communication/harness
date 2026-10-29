@@ -412,7 +412,7 @@ class McpProtocolTests(unittest.TestCase):
         marker = "Tools (`tools/list` order):"
         inventory = readme.split(marker, 1)[1].split(
             "\n`economics_report` reports", 1)[0]
-        documented = re.findall(r"`([a-z_]+)`", inventory)
+        documented = re.findall(r"`([a-z_][a-z_0-9]*)`", inventory)
         self.assertEqual(documented, names)
 
         mcp_doc = (root / "docs" / "mcp.md").read_text(encoding="utf-8")
@@ -1282,6 +1282,7 @@ class LaneSchedulingTests(unittest.TestCase):
              "driver_health": "observe",
              "driver_vocabulary": "observe",
              "driver_verify": "observe",
+             "lucas_gate_v2": "observe",
              "jev_phase": "observe",
              "host_provision_probe": "observe",
              "host_provision_plan": "spendy",
