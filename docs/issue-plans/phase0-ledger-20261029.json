@@ -698,7 +698,7 @@
       "url": "https://github.com/Sovereign-Communication/harness/issues/420",
       "updated_at": "2026-10-28T10:49:03Z",
       "github_state": "open",
-      "disposition_status": "pending_issue_spec_and_gate_review"
+      "disposition_status": "parked_fail_closed_no_action_specific_jev_signal"
     },
     {
       "number": 421,
@@ -706,7 +706,7 @@
       "url": "https://github.com/Sovereign-Communication/harness/issues/421",
       "updated_at": "2026-10-29T01:39:23Z",
       "github_state": "open",
-      "disposition_status": "pending_issue_spec_and_gate_review"
+      "disposition_status": "parked_pr_head_behind_main_ci_not_current_for_merge"
     },
     {
       "number": 422,
@@ -714,7 +714,7 @@
       "url": "https://github.com/Sovereign-Communication/harness/issues/422",
       "updated_at": "2026-10-28T11:27:05Z",
       "github_state": "open",
-      "disposition_status": "pending_issue_spec_and_gate_review"
+      "disposition_status": "parked_by_design_reserved_claim_decisions"
     },
     {
       "number": 423,
@@ -722,7 +722,7 @@
       "url": "https://github.com/Sovereign-Communication/harness/issues/423",
       "updated_at": "2026-10-28T11:27:05Z",
       "github_state": "open",
-      "disposition_status": "pending_issue_spec_and_gate_review"
+      "disposition_status": "parked_existing_plan_gate_blocked_receipts_missing"
     },
     {
       "number": 424,
@@ -738,7 +738,7 @@
       "url": "https://github.com/Sovereign-Communication/harness/issues/425",
       "updated_at": "2026-10-29T02:07:40Z",
       "github_state": "open",
-      "disposition_status": "pending_issue_spec_and_gate_review"
+      "disposition_status": "local_implementation_committed_remote_action_requires_separate_gate"
     },
     {
       "number": 426,
@@ -765,7 +765,7 @@
       "url": "https://github.com/Sovereign-Communication/harness/issues/428",
       "updated_at": "2026-10-28T10:49:25Z",
       "github_state": "open",
-      "disposition_status": "pending_issue_spec_and_gate_review"
+      "disposition_status": "parked_fail_closed_no_jev_signal_no_paid_audit"
     },
     {
       "number": 429,
@@ -773,7 +773,7 @@
       "url": "https://github.com/Sovereign-Communication/harness/issues/429",
       "updated_at": "2026-10-28T10:49:29Z",
       "github_state": "open",
-      "disposition_status": "pending_issue_spec_and_gate_review"
+      "disposition_status": "parked_fail_closed_no_jev_signal_no_paid_audit"
     },
     {
       "number": 430,
@@ -781,7 +781,7 @@
       "url": "https://github.com/Sovereign-Communication/harness/issues/430",
       "updated_at": "2026-10-28T10:36:37Z",
       "github_state": "open",
-      "disposition_status": "pending_issue_spec_and_gate_review"
+      "disposition_status": "parked_fail_closed_no_jev_signal_no_paid_audit"
     },
     {
       "number": 432,
@@ -807,7 +807,7 @@
       "url": "https://github.com/Sovereign-Communication/harness/issues/434",
       "updated_at": "2026-10-28T13:19:43Z",
       "github_state": "open",
-      "disposition_status": "pending_issue_spec_and_gate_review"
+      "disposition_status": "parked_spec_conflict_existing_stage_gate"
     }
   ],
   "local_reconciliation": {
@@ -974,6 +974,25 @@
       "current_ledger_open_issue_count": 76,
       "current_ledger_source": "count_source in this artifact, REST pagination cross-checked against open PR listing and repository open_issues_count",
       "reconciliation_status": "historical planning count is stale relative to the current REST ledger; no roadmap write made pending an action-specific gate"
+    },
+    "issue420_api_reference_check": {
+      "issue_url": "https://github.com/Sovereign-Communication/harness/issues/420",
+      "current_reference": "https://docs.typesafe.ai/api/system-one",
+      "observed_contract": "System One request uses model, state, and named questions; response returns named typed answers and usage.",
+      "scope": "Evidence only; no Jev implementation gate or code change."
+    },
+    "issue434_stage_gate_check": {
+      "issue_url": "https://github.com/Sovereign-Communication/harness/issues/434",
+      "main_sha": "ffeb4d2aa05f3153d052aa64ceb141fd7c7fd255",
+      "matches": [
+        "README.md:384-385",
+        "harness/cli.py:1361-1373",
+        "docs/hourglass-micro-requests.md:333-334",
+        "tests/test_hg_final_gate.py",
+        "tests/test_planning_surface.py"
+      ],
+      "finding": "A named stage-gate exists and executes after a parallel stage; whether it is the exact requested overlay capability remains unresolved.",
+      "disposition": "parked pending action-specific gate; no claim of equivalence and no change made."
     }
   },
   "gate_evidence": [
@@ -1100,7 +1119,63 @@
       "status": "parked_by_design_reserved_claims",
       "evidence_url": "https://github.com/Sovereign-Communication/harness/issues/424",
       "source": "Issue scope is correction of public System One shipped/deferred feature claims. Mission prompt v2 reserves claims: park the claim decision for Lucas escalation. No wording or ship-status claim changed."
+    },
+    {
+      "issue": 420,
+      "status": "parked_fail_closed_no_action_specific_jev_signal",
+      "evidence_url": "https://github.com/Sovereign-Communication/harness/issues/420",
+      "source": "Issue body requires the typed System One request/answer contract. Current official System One API docs were retrieved at https://docs.typesafe.ai/api/system-one and show named typed questions over model/state with typed answers; this updates the issue follow-up which said the official docs were inaccessible. No Jev v1 disposition signals for implementation were available, no code or tests changed, and no TypeSafe call was made. Fail closed pending an action-specific gate."
+    },
+    {
+      "issue": 421,
+      "status": "parked_pr_head_behind_main_ci_not_current_for_merge",
+      "evidence_url": "https://github.com/Sovereign-Communication/harness/pull/437",
+      "source": "Fresh GitHub REST read: PR #437 open, head 2959590a8bd35bb40db1b8efe85a45b204c4a23b, base/current main ffeb4d2aa05f3153d052aa64ceb141fd7c7fd255; exact-head check-runs are 15/15 success. Compare main...PR is diverged (ahead 2, behind 1), GitHub mergeable_state=behind. No merge or branch update performed; updating would trigger another audit run, which is barred when it would repeat paid attestation. The PR body contains implementation-specific Jev/Lucas records and claims no voice-suite/private-profile pass."
+    },
+    {
+      "issue": 422,
+      "status": "parked_by_design_reserved_claim_decisions",
+      "evidence_url": "https://github.com/Sovereign-Communication/harness/issues/422#issuecomment-6467762772",
+      "source": "Mission prompt v2 reserves claims. The issue comments describe a manually checked review draft and explicitly say it is not an automated bibliography audit, exhaustive review, or publication-ready manuscript. Park claim-status decisions; no new claim, code, or test was produced."
+    },
+    {
+      "issue": 423,
+      "status": "parked_existing_plan_gate_blocked_receipts_missing",
+      "evidence_url": "https://github.com/Sovereign-Communication/harness/issues/423#issuecomment-6467762813",
+      "source": "Existing issue comment reports the final exact-plan Jev gate below threshold and blocked, and says the historical full-source manifest/raw usage receipt is missing. Do not rerun the completed sweep or paid attestation; keep coverage unclaimed and park."
+    },
+    {
+      "issue": 425,
+      "status": "local_implementation_committed_remote_action_requires_separate_gate",
+      "evidence_url": "https://github.com/Sovereign-Communication/harness/issues/425#issuecomment-6485763760",
+      "local_commit": "5447bf7624dad43c614356c60baa58efea6dea3e",
+      "local_branch": "freebuff/425-audit-chain-integrity-20261029",
+      "source": "Existing Jev v1 record: jev-1.14.0, no fallback, 837 input/86 output tokens, cost unavailable; proceed lead .75, confidence .77 telemetry, destructive .06, advances_goal .96 at threshold .95. Lucas semantic applicable scores 1=9.1, 2=9.2, 3=9.2, 4=9.0, 5=9.3, 6=9.2, 8=9.1, 10=9.0, 11=9.2 (mean 9.14); category 9/profile N/A; no voice-suite/private-profile pass. Gate authorizes local implementation and focused verification only; issue comment explicitly requires separate gates for push, PR, merge, and issue disposition. The commit object and local branch containing it were confirmed; 107 focused tests plus 14 final integrity tests and 85 self-audit support tests are carried from the issue comment, not rerun."
+    },
+    {
+      "issue": 428,
+      "status": "parked_fail_closed_no_jev_signal_no_paid_audit",
+      "evidence_url": "https://github.com/Sovereign-Communication/harness/issues/428",
+      "source": "The issue requires focused economics tests plus Jev JEV-P2/P6 receipts. Its current comment list is empty; no action-specific gate exists in the inspected issue record. The prior pass recorded no configured TypeSafe credential (carried, not rechecked). No paid audit, call, code change, or test was run; fail closed."
+    },
+    {
+      "issue": 429,
+      "status": "parked_fail_closed_no_jev_signal_no_paid_audit",
+      "evidence_url": "https://github.com/Sovereign-Communication/harness/issues/429",
+      "source": "The issue requires focused resume tests plus Jev JEV-P2/P6 receipts and coordination with #423. Its current comment list is empty; no action-specific gate exists in the inspected issue record. The prior pass recorded no configured TypeSafe credential (carried, not rechecked). No paid audit, call, code change, or test was run; fail closed."
+    },
+    {
+      "issue": 430,
+      "status": "parked_fail_closed_no_jev_signal_no_paid_audit",
+      "evidence_url": "https://github.com/Sovereign-Communication/harness/issues/430",
+      "source": "The issue body preserves fail-closed stage ordering, consent scope, and zero-side-effect refusal behavior; the mission separately requires stopping retries after a validated refusal. Its current comment list is empty; no action-specific Jev signal exists. Credential absence is carried from the prior pass, not rechecked. No paid audit, call, code change, or test was run; fail closed."
+    },
+    {
+      "issue": 434,
+      "status": "parked_spec_conflict_existing_stage_gate",
+      "evidence_url": "https://github.com/Sovereign-Communication/harness/issues/434",
+      "source": "Issue body says no overlay-style composed-tree surface exists. Fresh tracked-main search at ffeb4d2aa05f3153d052aa64ceb141fd7c7fd255 found README.md --stage-gate at lines 384-385, harness/cli.py run_gate after each parallel stage at lines 1361-1373, docs/hourglass-micro-requests.md lines 333-334, and related tests. This may provide the requested behavior, but exact equivalence is unresolved. No code, test, issue comment, or close action; park the contradiction pending an action-specific disposition gate."
     }
   ],
-  "next_item": "Planning reconciliation is next: docs/jev-roadmap.md still records the 2026-10-22 61-issue snapshot (lines 22-25 and 334-337), while the current REST ledger has a different count. PR #431 is already closed unmerged; do not rebuild it or trust the stale local plans worktree. Keep the reconciliation local until an action-specific Jev v1/Lucas Gate v2 signal exists. Then continue to #420?#430 in order, respecting the single open PR #437 for #421. Keep #295 open until every disposition is complete and main is green."
+  "next_item": "The ordered #420-#434 review is recorded. #425 has a local implementation only; #426 remains local only; #421 is the sole open PR and is behind current main despite green checks on its prior head. Continue the remaining chain/single/full-tail backlog from the mission order; do not run the paid JEV audit without receipts/authorization, do not move #418/#419 ahead of the specified sequence, and keep #295 open last."
 }
