@@ -38,7 +38,7 @@ import subprocess
 import sys
 import tempfile
 import threading
-from typing import Optional
+from typing import Any, Dict, Optional
 import time
 from dataclasses import dataclass
 
@@ -86,6 +86,15 @@ class CommandResult:
     @property
     def combined(self):
         return self.stdout + self.stderr
+
+
+@dataclass(frozen=True)
+class ByteCommandResult:
+    """Outcome of a shell-free command whose bytes must not be decoded."""
+
+    returncode: int
+    stdout: bytes = b""
+    stderr: bytes = b""
 
 
 def run(argv, cwd=None, timeout=None, input_text=None, env=None):
@@ -141,6 +150,49 @@ def run(argv, cwd=None, timeout=None, input_text=None, env=None):
     except OSError as exc:
         return CommandResult(126, f"cannot run {argv[0]}: {exc}")
     return CommandResult(proc.returncode, proc.stdout or "", proc.stderr or "")
+
+
+def run_bytes(argv, cwd=None, timeout=None, input_bytes=None):
+    """Run an argv list shell-free and keep stdout/stderr as raw bytes.
+
+    :func:`run` decodes UTF-8 with replacement, which is right for gate
+    evidence and wrong for a query whose answer is a path or a NUL-separated
+    list: a non-UTF-8 filename would come back corrupted and a later resume
+    receipt would name a file that does not exist. Exit-code conventions match
+    :func:`run` (124 timeout, 126 not executable, 127 not found).
+    """
+    if isinstance(argv, str):
+        raise OsalError(
+            "osal.run_bytes takes an argv list, not a command string "
+            "(a string is a shell waiting to happen)")
+    argv = [str(a) for a in argv]
+    if not argv:
+        raise OsalError("osal.run_bytes: empty argv")
+    kwargs: Dict[str, Any] = {"capture_output": True, "shell": False}
+    if cwd is not None:
+        kwargs["cwd"] = cwd
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+    if input_bytes is not None:
+        kwargs["input"] = input_bytes
+    else:
+        kwargs["stdin"] = subprocess.DEVNULL
+    try:
+        proc = subprocess.run(argv, **kwargs)
+    except subprocess.TimeoutExpired:
+        return ByteCommandResult(
+            124, b"", "command timed out after {}s".format(timeout).encode())
+    except FileNotFoundError:
+        return ByteCommandResult(
+            127, b"", "executable not found: {}".format(argv[0]).encode())
+    except PermissionError:
+        return ByteCommandResult(
+            126, b"", "not executable: {}".format(argv[0]).encode())
+    except OSError as exc:
+        return ByteCommandResult(
+            126, b"", "cannot run {}: {}".format(argv[0], exc).encode())
+    return ByteCommandResult(proc.returncode, proc.stdout or b"",
+                             proc.stderr or b"")
 
 
 def spawn_piped_process(argv, *, cwd=None, env=None):

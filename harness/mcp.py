@@ -46,6 +46,8 @@ from .jev import jev_credit_status
 from .lucas_gate import (LUCAS_GATE_V2_INPUT_FIELDS,
                          run_typed_track as _run_lucas_gate_v2)
 from .service import run_dogfood as _service_run_dogfood
+from .source_audit import (run_source_audit, source_audit_policy_factory,
+                           write_report)
 from .brief import build_brief, freshness_report, render_brief
 from .session import apply_session
 from .workspace import (choose_allowed_workspace, resolve_allowed_path,
@@ -1513,11 +1515,6 @@ class McpServer:
             changed, unchanged = rc.generate(root, cards, repo=repo_filter)
             return {"status": "written", "changed": changed, "unchanged": unchanged}
         if name == "source_audit":
-            from .source_audit import (
-                run_source_audit,
-                source_audit_policy_factory,
-                write_report,
-            )
             allow_write = validate_mcp_bool(args.get("allow_write", False),
                                             "allow_write")
             if not (self.allow_write or allow_write):

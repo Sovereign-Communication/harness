@@ -1323,9 +1323,9 @@ class SourceAuditMcpTests(unittest.TestCase):
 
     def test_source_audit_uses_allowed_root_and_shared_policy_factory(self):
         report = {"schema": "source-audit-v1", "leads": []}
-        with (mock.patch("harness.source_audit.source_audit_policy_factory",
+        with (mock.patch("harness.mcp.source_audit_policy_factory",
                          return_value=lambda _spent: object()) as factory,
-              mock.patch("harness.source_audit.run_source_audit",
+              mock.patch("harness.mcp.run_source_audit",
                          return_value=report) as audit):
             result = self.server._invoke("source_audit", self.args)
         self.assertEqual(result["schema"], "source-audit-v1")

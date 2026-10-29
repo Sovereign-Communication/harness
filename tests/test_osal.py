@@ -41,6 +41,18 @@ class OsalRunTest(TempTree):
         self.assertEqual(result.returncode, 3)
         self.assertIn("warn", result.combined)
 
+    def test_run_bytes_keeps_non_text_output_intact(self):
+        """Git path lists are NUL-separated and may carry non-UTF-8 bytes.
+        Decoding with replacement would name a file that does not exist."""
+        result = osal.run_bytes([sys.executable, "-c",
+                                 "import sys; sys.stdout.buffer.write(b'a\\x00b\\xff')"])
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, b"a\x00b\xff")
+
+    def test_run_bytes_reports_missing_executable_as_127(self):
+        result = osal.run_bytes(["harness-no-such-executable"])
+        self.assertEqual(result.returncode, 127)
+
     def test_a_command_string_is_refused(self):
         """The whole point: gates are data. A string is a shell waiting."""
         with self.assertRaises(osal.OsalError):

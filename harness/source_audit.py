@@ -11,11 +11,11 @@ import os
 import re
 import sqlite3
 import stat
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+from . import osal
 from .errors import HarnessError
 from .jev import jev_cost
 from .jev_packs import validate_repo_summary_pack
@@ -28,6 +28,10 @@ DEFAULT_CHUNK_CHARS = 4000
 MIN_CHUNK_CHARS = 512
 MAX_CHUNK_CHARS = 8000
 MAX_FILE_BYTES = 64 * 1024 * 1024
+# Git queries here are local plumbing (rev-parse, ls-files, check-ignore). A
+# hung subprocess would stall the whole audit, so cap it the way gates are
+# capped rather than inheriting an unbounded wait.
+GIT_TIMEOUT_SECONDS = 120
 DISPOSITIONS = frozenset(("verified", "false_positive",
                           "historical_fixture", "unresolved"))
 
@@ -84,14 +88,14 @@ def _canonical_hash(value: Any) -> str:
 
 
 def _git(root: Path, *args: str, input_bytes: Optional[bytes] = None) -> bytes:
-    try:
-        proc = subprocess.run(
-            ["git", *args], cwd=str(root), input=input_bytes,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-    except OSError as exc:
-        raise SourceAuditError("source audit requires an available Git executable") from exc
+    proc = osal.run_bytes(["git", *args], cwd=str(root),
+                          input_bytes=input_bytes, timeout=GIT_TIMEOUT_SECONDS)
+    if proc.returncode in (126, 127):
+        raise SourceAuditError(
+            "source audit requires an available Git executable")
     if proc.returncode != 0:
-        raise SourceAuditError("source audit requires a valid Git repository snapshot")
+        raise SourceAuditError(
+            "source audit requires a valid Git repository snapshot")
     return proc.stdout
 
 
@@ -125,14 +129,14 @@ def _repo_snapshot(root: Path) -> Tuple[str, List[str], set]:
         root, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")))
     if tracked_and_unignored:
         payload = b"\0".join(os.fsencode(path) for path in tracked_and_unignored) + b"\0"
-        try:
-            proc = subprocess.run(
-                ["git", "check-ignore", "--no-index", "--stdin", "-z"],
-                cwd=str(root), input=payload, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, check=False)
-        except OSError as exc:
+        proc = osal.run_bytes(
+            ["git", "check-ignore", "--no-index", "--stdin", "-z"],
+            cwd=str(root), input_bytes=payload, timeout=GIT_TIMEOUT_SECONDS)
+        if proc.returncode in (126, 127):
             raise SourceAuditError(
-                "source audit requires an available Git executable") from exc
+                "source audit requires an available Git executable")
+        # ``git check-ignore`` exits 1 when no path matches, which is an
+        # answer, not a failure.
         if proc.returncode not in (0, 1):
             raise SourceAuditError("cannot read Git ignored-path rules")
         ignored_tracked = set(_nul_paths(proc.stdout))
