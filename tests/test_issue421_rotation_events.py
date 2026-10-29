@@ -5,9 +5,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from harness.consent import probe_consent
+from harness.consent import consent_renew, probe_consent
 from harness.ledger import AutonomyLedger
 from harness.spend import SpendGovernor
+from harness.token_budget import TokenBudget, USAGE_UNAVAILABLE
 from tests._fake import JUDGE, P2, FakeTransport, comp, consent, m
 
 FALLBACK = P2
@@ -100,6 +101,45 @@ class ConsentRotationEventTests(unittest.TestCase):
                 self.assertEqual(result["decision"], decision)
                 self.assertEqual(self._rotation_events(emit), [])
                 self.assertEqual(rows, [])
+
+    def test_transport_exception_settles_reserved_tokens_as_unavailable(self):
+        transport = FakeTransport(models=self.models, posts=[])
+        budget = TokenBudget(max_input_tokens=1000, max_output_tokens=1000)
+        governor = SpendGovernor(transport, "sk-test")
+
+        with patch("harness.consent.chat",
+                   side_effect=RuntimeError("transport unavailable")):
+            with self.assertRaisesRegex(RuntimeError, "transport unavailable"):
+                probe_consent(
+                    transport=transport,
+                    api_key="k",
+                    governor=governor,
+                    task_id="issue-421-token-budget-exception",
+                    task="Review the scoped change",
+                    model=JUDGE,
+                    token_budget=budget,
+                )
+
+        snapshot = budget.snapshot()
+        self.assertEqual(snapshot["usage_sources"][USAGE_UNAVAILABLE], 1)
+        self.assertGreater(snapshot["used_input_tokens"], 0)
+        self.assertEqual(snapshot["open_allowances"], 0)
+
+    def test_renew_preserves_truthy_string_staleness_reason(self):
+        transport = FakeTransport(
+            models=self.models, posts=[consent("accept", "still fits")])
+        result = consent_renew(
+            transport=transport,
+            api_key="k",
+            governor=SpendGovernor(transport, "sk-test"),
+            task_id="issue-421-string-staleness",
+            task="Review the scoped change",
+            model=JUDGE,
+            staleness_reason="legacy stale reason",
+        )
+
+        self.assertEqual(result["decision"], "accept")
+        self.assertEqual(result["staleness_reason"], "legacy stale reason")
 
 
 if __name__ == "__main__":
