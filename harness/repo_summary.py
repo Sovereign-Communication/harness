@@ -44,27 +44,113 @@ AMBIGUOUS_CONFIDENCE = 0.5
 PolicyFactory = Callable[[float], Any]
 
 
-def load_judgment_rows(path: Optional[str]) -> List[Dict[str, Any]]:
-    """Read append-only resume rows; a truncated tail line is tolerated."""
+class JudgmentStateError(HarnessError):
+    """The resume stream is not a stream: corruption or an interrupted write."""
+
+
+def _inspect_judgment_state(path: str):
+    """Parse the resume stream, naming corruption instead of hiding it.
+
+    Returns ``(rows, error)`` where ``error`` is ``None`` or a dict with the
+    one-based ``line``, a ``message``, whether the damage is a recoverable
+    truncated final append (``truncated``), and the byte offset at which the
+    last complete valid record ends (``valid_end``).
+
+    The previous loader stopped at the first malformed line and returned the
+    prefix, so a middle-file corruption was indistinguishable from a normal
+    short run, and the 2026-10-28 reproduction showed an append landing
+    behind the damaged bytes and disappearing on the next load.
+    """
+    with open(path, "rb") as handle:
+        raw = handle.read()
+    lines = raw.splitlines(keepends=True)
+    rows: List[Dict[str, Any]] = []
+    offset = 0
+    for number, raw_line in enumerate(lines, start=1):
+        stripped = raw_line.strip()
+        if stripped:
+            try:
+                row = json.loads(stripped.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError) as exc:
+                truncated = (number == len(lines)
+                             and not raw.endswith(b"\n"))
+                return rows, {
+                    "line": number,
+                    "message": f"malformed judgment row: {exc}",
+                    "truncated": truncated,
+                    "valid_end": offset,
+                }
+            if not isinstance(row, dict) or not row.get("id"):
+                return rows, {
+                    "line": number,
+                    "message": "judgment row is not an object with an id",
+                    "truncated": False,
+                    "valid_end": offset,
+                }
+            rows.append(row)
+        offset += len(raw_line)
+    return rows, None
+
+
+def _recover_truncated_tail(path: str, error: Dict[str, Any], report) -> None:
+    """Drop bytes after the last complete record and say so.
+
+    Only a final, unterminated append is recoverable. Everything else has
+    already been refused by the caller; this function is never the decision
+    point, which keeps "recover" and "fail closed" from blurring together.
+    """
+    with open(path, "r+b") as handle:
+        handle.truncate(error["valid_end"])
+        handle.flush()
+        os.fsync(handle.fileno())
+    if report is not None:
+        report.append(
+            f"recovered a truncated final judgment at {path} line "
+            f"{error['line']} (kept {error['valid_end']} bytes)")
+
+
+def load_judgment_rows(path: Optional[str], *, recover_truncated: bool = False,
+                       report: Optional[List[str]] = None
+                       ) -> List[Dict[str, Any]]:
+    """Read resume rows; a complete stream, or an explicit refusal.
+
+    ``recover_truncated`` is the only way a damaged tail is tolerated, and
+    recovery is reported: an interrupted final append is normal after a
+    kill, but silently returning the prefix made a middle-file corruption
+    look identical to a short run.
+    """
     if not path or not os.path.isfile(path):
         return []
-    rows: List[Dict[str, Any]] = []
-    with open(path, encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except ValueError:
-                break  # interrupted append; the valid prefix is the state
-            if isinstance(row, dict) and row.get("id"):
-                rows.append(row)
-    return rows
+    rows, error = _inspect_judgment_state(path)
+    if error is None:
+        return rows
+    if error["truncated"] and recover_truncated:
+        _recover_truncated_tail(path, error, report)
+        return rows
+    kind = ("truncated final judgment" if error["truncated"]
+            else "malformed judgment record")
+    raise JudgmentStateError(
+        f"{kind} at {path} line {error['line']}: {error['message']}. "
+        f"The resume stream is not trustworthy; a complete valid stream is "
+        f"required before another judgment is appended")
 
 
-def append_judgment_row(path: str, row: Dict[str, Any]) -> None:
-    """Persist one judged element (flushed: interrupt-safe resume)."""
+def append_judgment_row(path: str, row: Dict[str, Any], *,
+                        recover_truncated: bool = False,
+                        report: Optional[List[str]] = None) -> None:
+    """Append one judged element after proving the stream is intact.
+
+    The 2026-10-28 reproduction appended a valid row directly behind a
+    truncated tail; the next load returned only the prefix, so the new
+    judgment was silently lost. The stream is validated first, and a
+    truncated tail is either recovered explicitly or refused without a
+    single byte written.
+    """
+    if not isinstance(row, dict) or not row.get("id"):
+        raise JudgmentStateError("a judgment row needs an id")
+    if os.path.isfile(path):
+        load_judgment_rows(path, recover_truncated=recover_truncated,
+                           report=report)
     directory = os.path.dirname(os.path.abspath(path))
     if directory:
         os.makedirs(directory, exist_ok=True)
@@ -153,7 +239,9 @@ def analyze_repo(root: Any, pack: Any, make_policy: PolicyFactory, *,
                  run_budget: Optional[float] = None,
                  task_id: Optional[str] = None,
                  exclude: Optional[List[str]] = None,
-                 generated_at: Optional[str] = None) -> Dict[str, Any]:
+                 generated_at: Optional[str] = None,
+                 recovery_report: Optional[List[str]] = None
+                 ) -> Dict[str, Any]:
     """Inventory the tree ($0), judge pending elements, aggregate.
 
     Files are judged first; centrality-ranked symbols consume whatever the
@@ -180,7 +268,11 @@ def analyze_repo(root: Any, pack: Any, make_policy: PolicyFactory, *,
     symbols = rank_symbol_elements(elements, symbol_limit)
 
     candidates: List[Dict[str, Any]] = list(elements) + list(symbols)
-    prior_rows = load_judgment_rows(state_path)
+    # A resumed run after a kill is the normal case; recover the unterminated
+    # final append at a verified boundary and report it. Mid-stream
+    # corruption still refuses (JudgmentStateError) rather than resuming.
+    prior_rows = load_judgment_rows(state_path, recover_truncated=True,
+                                    report=recovery_report)
     judged: Dict[str, Dict[str, Any]] = {row["id"]: row for row in prior_rows}
     prior_count = len(judged)
     cumulative = sum(float(row.get("cost") or 0.0) for row in judged.values())
@@ -216,7 +308,8 @@ def analyze_repo(root: Any, pack: Any, make_policy: PolicyFactory, *,
             break
         row = _row_for(element, structural, judgment)
         if state_path:
-            append_judgment_row(state_path, row)
+            append_judgment_row(state_path, row, recover_truncated=True,
+                                report=recovery_report)
         judged[element["id"]] = row
         cumulative += row["cost"]
         this_run += 1

@@ -535,14 +535,17 @@ class DefensiveAggregateTests(unittest.TestCase):
         self.addCleanup(self.state_dir.cleanup)
         self.state_path = os.path.join(self.state_dir.name, "judged.jsonl")
 
-    def test_resume_state_tolerates_blank_lines_and_a_broken_tail(self):
-        from harness.repo_summary import load_judgment_rows
+    def test_resume_state_refuses_a_broken_tail_unless_recovery_is_explicit(self):
+        from harness.repo_summary import JudgmentStateError, load_judgment_rows
         with open(self.state_path, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(json.dumps({"id": "file:a"}) + "\n")
             fh.write("\n")
             fh.write(json.dumps({"id": "file:b"}) + "\n")
             fh.write('{"id": "file:c", "trunc')  # interrupted append
-        rows = load_judgment_rows(self.state_path)
+        # #429: the default is a refusal, not a silently shorter stream.
+        with self.assertRaises(JudgmentStateError):
+            load_judgment_rows(self.state_path)
+        rows = load_judgment_rows(self.state_path, recover_truncated=True)
         self.assertEqual([r["id"] for r in rows], ["file:a", "file:b"])
         # nonexistent path -> no rows
         self.assertEqual(load_judgment_rows(None), [])
