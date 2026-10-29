@@ -271,9 +271,11 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
                                 reasoning_effort="none", governor=governor)
         except Exception:
             if allowance is not None:
+                assert token_budget is not None
                 token_budget.settle(allowance, source=USAGE_UNAVAILABLE)
             raise
         if allowance is not None:
+            assert token_budget is not None
             usage = resp.get("usage") if isinstance(resp, dict) else None
             if (isinstance(usage, dict) and "prompt_tokens" in usage
                     and "completion_tokens" in usage):
@@ -301,9 +303,8 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
         if len(usable) > 1:
             eprint(f"[consent] {m_}: {fail_reason}; rotating.")
         _events.emit("rotation", task_id=task_id, model=m_, lane="consent",
-                     reason="consent_unusable", detail=fail_reason)
-        _events.emit("rotation", task_id=task_id, model=m_, lane="consent",
-                     reason="consent_unusable", detail=fail_reason)
+                     reason="consent_unusable", detail=fail_reason,
+                     cost=tracked_cost)
         if ledger:
             ledger.append("consent_rotate", task_id=task_id, model=m_,
                           reason=fail_reason, cost=tracked_cost)
@@ -343,6 +344,7 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
                      reason=reason, cost=tracked_total)
         return result
 
+    assert parsed is not None
     answered = m_
     reason = parsed.get("reason") or ""
     confidence = parsed.get("confidence")
@@ -409,7 +411,12 @@ def consent_renew(*, transport, api_key, governor, task_id, task, model,
                           fallback_pool=fallback_pool, min_confidence=min_confidence,
                           assignment_context=assignment_context,
                           token_budget=token_budget)
-    stale_str = staleness_reason.value if hasattr(staleness_reason, "value") else (str(staleness_reason) if staleness_reason else None)
+    if staleness_reason is not None and hasattr(staleness_reason, "value"):
+        stale_str = staleness_reason.value
+    elif staleness_reason:
+        stale_str = str(staleness_reason)
+    else:
+        stale_str = None
     if stale_str:
         base["staleness_reason"] = stale_str
     if ledger:
