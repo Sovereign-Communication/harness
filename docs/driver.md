@@ -110,13 +110,32 @@ What the executor actually implements (the vocabulary declares 14 actions;
 only these have an executor behind them, and anything else is refused as
 unregistered):
 
-- Always: three read-only executors, `no_action`, `observe` and `read_value`.
-  The other declared read-only actions (`read_dom`, `call_read_tool`,
-  `run_probe`) have no executor in this build and are refused.
+- Always: four read-only executors, `no_action`, `observe`, `read_value` and
+  `run_probe`. A probe is an observation with an exit code, so it must not
+  wait for write authority; the other declared read-only actions (`read_dom`,
+  `call_read_tool`) have no executor in this build and are refused.
 - Only when `DRIVER_ALLOW_WRITE` is set: `write_file` (back up, then atomic
   replace) and `delete_file` (irreversible). Input executors also require a
   registered backend; the native Windows backend makes only exact-title
   `focus` executable when `DRIVER_NATIVE_INPUT=1`.
+
+### Read-only probes
+
+`run_probe` takes `command` as an **argv list**, never a string: a string
+would need tokenising, and a second tokeniser is a second, weaker argv
+parser. The shape must be declared read-only before a process starts:
+
+- built in: `git status`, `log`, `diff`, `show`, `rev-parse`, `ls-files`,
+  `describe`, `blame`, `grep`;
+- operator-declared, in `DRIVER_PROBE_ALLOWLIST`, as `;`-separated argv
+  prefixes (for example `DRIVER_PROBE_ALLOWLIST="python scripts/check.py"`).
+
+A prefix match allows trailing arguments, so the declared shape covers the
+arguments a check script needs. `--output` is refused even under a reading
+subcommand because it writes a file. A probe's argv, exit code, stdout and
+stderr are written to the action record in the driver's audit chain; that
+record is the evidence. A non-zero exit is an answer, a missing program is a
+refusal, and a timeout is reported as exit code 124.
 
 ## Consent is never invented
 

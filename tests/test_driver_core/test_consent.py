@@ -253,10 +253,17 @@ class GateTests(unittest.TestCase):
         self.assertNotIn("click", registry)
         self.assertIn("observe", registry)
 
-    def test_the_read_only_registry_still_exists_unchanged(self):
+    def test_the_read_only_registry_is_exactly_the_observing_actions(self):
+        """Read-only by capability, not by label.
+
+        ``run_probe`` belongs here: it is declared read-only and, since
+        issue #439, it is registered without DRIVER_ALLOW_WRITE. Every
+        entry in this list must be an action that cannot change the machine
+        even when it runs to completion.
+        """
         registry = build_read_only_registry()
         self.assertEqual(sorted(registry.names()),
-                         ["no_action", "observe", "read_value"])
+                         ["no_action", "observe", "read_value", "run_probe"])
 
     def test_the_default_no_consent_grant_observes_only(self):
         self.assertTrue(NO_CONSENT_NEEDED.covers("observe", "read_only", {}))

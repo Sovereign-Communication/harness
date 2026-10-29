@@ -353,11 +353,18 @@ class Executor:
                         raise
 
         if self.audit is not None:
-            self.audit.append(
-                KIND_ACTION, step_id=step_id, action=action.name,
+            record = dict(
+                step_id=step_id, action=action.name,
                 action_class=action.action_class, ok=result.ok,
                 detail=result.detail, dry_run=result.dry_run,
                 consent=consent.to_dict() if consent else None)
+            # Declared per action, not inferred from the name: a probe's
+            # stdout/stderr/exit code *are* its evidence, and the action
+            # record is the only place they survive. Adding the key changes
+            # no existing record -- a probe record did not exist before.
+            if action.records_output and result.output is not None:
+                record["output"] = result.output
+            self.audit.append(KIND_ACTION, **record)
         return result
 
     def _invoke(self, handler, action, params):
