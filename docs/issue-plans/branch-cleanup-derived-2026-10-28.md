@@ -1,0 +1,73 @@
+BRANCH CLEANUP - DERIVED LIST (2026-10-28)
+Companion to docs/issue-plans/branch-hygiene-addendum-2026-10-28.md.
+Method: paginated closed-PR records; a branch is listed iff it is the head ref of at least one merged PR (merged_at set), still exists, and is not main, not the plans branch, not an open PR head, and not a closed-unmerged head. Derived 2026-10-28 from the tracking sandbox; count 67 = the oversight census exactly.
+Instruction: re-derive by the same method before deleting; delete only branches that still match, at the lane's pace; the head SHA recorded here makes every deletion recoverable.
+
+BRANCH | HEAD SHA | MERGED PR(S)
+audit/full-surface-sweep-2026-10-25 | 770552558017ef5aadca1bf9e13b67241c6e875e | #373
+chat-lane-fix | 164595cc52ff91d587192ffda53fdf4468971da4 | #170
+codex/canon-reconcile-20261005 | bedd432257733c1b2d647b6c6f51aaef6420f8f6 | #178
+codex/df-cli-3-verify-defer | cd53a7e4006e96f80f51d11743ef338426a4686c | #180
+codex/final-burndown-plan | 1a4c2254673fecc601a12dc160bb8de151dc8ce9 | #220
+codex/issue-297-shared-lifecycle-phase | 9f1558f6692c95347c27c6f7b9485253752967a5 | #307
+codex/oc-handoff-jev-gate | 87a672e8ad753f925a3a9a975f083fd9e58d9b95 | #92
+docs/276-receipt-2026-10-25 | 92d263af4e7f425363cb879aa41b5caec766477c | #370
+docs/331-receipt-2026-10-25 | 5365e97fbdb4c232ca4687658d87b6c69d6c6a1a | #372
+docs/bench-budget-counts-2026-10-25 | 63066ff2a0cba053433c49b79a7aeb06911d6ae2 | #376
+docs/closing-report-2026-10-25 | 484663054b7544dc558fcd45d56576d383d56ed3 | #368
+docs/fireworks-canon | 8c7e25061d790f39e0e14023435d86582f8c07fa | #208
+docs/paid-attestation-release-facts-2026-10-25 | 51111c73f5dc21838f0fbf9da378ccb6b55eaeae | #389
+docs/parallel-dag-receipt-2026-10-25 | 9a8378f6dc22cf87b94bcb96023440eacf537e4f | #388
+docs/plan-execute-counts-2026-10-25 | e533609440125c8044c66a07a16376b6eebb9880 | #387
+docs/protection-277-inventory | 69816780b62c7db995736b0dbcc7e0d21c0e8d47 | #395
+docs/protection-review-count | baeac9cea586918ede7f775a002041c66acacf7f | #396
+docs/published-0.5.1 | 8217a9be677e95168e16df98eeef4d3d0ee90982 | #394
+docs/seam-sweep-counts-2026-10-25 | c0ba9ffb3723491a42bc0309429101328cad4438 | #384
+docs/sweep-counts-2026-10-25 | d76f1accb4a7fc06e2206fbc1b346d590492bd22 | #374
+docs/tracking-queue-2026-10-25 | f1beddb1134fc5f3a153f83883041cccec2c3814 | #385
+evidence/efficiency-2026-10-21 | 6b40a79c55ca7a197981ec163188f75273cda922 | #339
+feat/ev0-economics-evidence | 03b3621548279d9072e8b4603c4bf11a420ab466 | #163
+feat/hv1-redundancy-guard | e8538f9de712d62345dc6139c69a9130dd7253d7 | #126
+feat/refine-loop-p0 | 66b9bed62fbb627be2a1aa9a9585545672cdf3a5 | #240
+feat/repo-cards | 697165db3ceac546677dd370af46211949600bb9 | #164
+feat/scr-2-chat-lane | 9eb870cb105c12d31659c4f84de86d2731a0394a | #360
+fix/276-d12-merge-base | 963b6dbcbe1a5ad28142bf7cb8d82a75fce8c28b | #369
+fix/278-tool-resolution | a0065926ee153e639a1abfc80a2fa7eaa0f9b419 | #367
+fix/327-gate-root | 1f640abc75133525597e04da9db263c6be912c42 | #366
+fix/331-d12-skip-accounting | e862447de0d8baf5996ac6c6f7123345f20146bc | #371
+fix/bench-budget-2026-10-25 | 9459c03724e477508df6489209bb4a4458c483fb | #375
+fix/dogfood-cancel-check | 5ad67deb252ac2c1c8fbd8ba9927a41d287bf9be | #364
+fix/jev-calibration-analysis | e33a727e736b185abfa6140ec1932b4b636fe0ef | #171
+fix/phase-registry-honesty | 69382a091ff2fb86d68542fec77b54c4d04a31fb | #175
+fix/plan-execute-2026-10-25 | 06d2f6b35a891cec24f2e3d2a401c4331791fefb | #386
+fix/script-refusal-evidence | 1c59b62c3f3ef5d1354794c7e861819ae0071d8f | #361
+fix/seam-sweep-2026-10-25 | 000aeef006d852af920453e59a16fe11f7aa6255 | #383
+fix/status-vocabulary-single-owner | 5d1262a6af9601a93a20db482f2080bc37db176c | #176
+freebuff/293-edge-coverage-main-20261028 | 07f5008ea38eb6fb0d70a50bf34aa67a47eda2b9 | #436
+freebuff/audit-the-verify-repo-and-mcp-status-341ec003-sess-7a5cf39f-a0f6-44bf-aba8-4c7983a7f506 | f3e258bdeb58eda66ec1be8db4281e796a6a067b | #365
+freebuff/bookkeeping-333-merge-receipt | f4d871aa11630b297fc6b0ea17033bbb258f0e3e | #399
+freebuff/despite-all-work-being-completed-it-s-still-not-ne-7bc1a8fc-257f-4cce-b34e-8d5db81842e8 | 75f598c843f1d1109b984474b6dc8056a9248f34 | #274
+freebuff/drv2-deletion-pass | a8a205ebf060ca078816806405a302e1e5420c08 | #231
+freebuff/full-burndown-prompt-every-open-issue-all-aspects--e208075a-3ac4-4a7c-8f3f-f5f7a204b411 | 826c4ac2d5c2724d36fbbe2932a4fe541f981f99 | #398
+freebuff/issue-279-doctor-20261026 | 55b1394b4435684c8be94024e4d6411ae07407b7 | #403
+freebuff/issue-279-receipts-20261026 | 0f505eb8b81fdf3ef4e718ab650537680a4b2a04 | #404
+freebuff/issue-282-auth-pairing-20261026 | 58b7c5d2a0b6d042475a21786539d64f43e2cb60 | #405
+freebuff/issue-282-bookkeeping-20261026 | 816e22439f5aaae837c5cde31edf065c55333378 | #406
+freebuff/issue-287-ci-paths | c25b810a8ab2f57f5147f8756fca897bc5f52218 | #400
+freebuff/issue-287-docs-probe | eb3c8cd818efa90a4f29da31b40f1b65e3e00c88 | #401
+freebuff/issue-287-final-receipt | bcc11977490bb61bf1b872b663ef9ff9baf5e2a4 | #402
+freebuff/issue-288-typecheck | d630fe9e9be66ea89c779dd2487218fdd3005970 | #411
+freebuff/issue-306-blocker-receipt-20261026 | abb8d60e38fc4a7f11f4253cc0920cfac308c538 | #409
+freebuff/issue-306-postmerge-receipt-20261026 | 5f87de5ee53d3d911b867f6624b09f84834f22df | #410
+freebuff/issue-407-bookkeeping-20261026 | 2a6eab300c31241d730b4a0ed23fab36bc11616f | #408
+freebuff/scr-3-model-proposals | 5ce98e7c51b8ef5bfde44ec15a09c1438d50456c | #362
+gui-driver-fix | c1c6a7f1382a78f1fa05d314b5e352797836e04a | #161
+p1-fixups | d7409231ded5b2e9af30430ecd479eb359a33710 | #160
+p2-strict-dogfood | e0600d6d5ae2520f3b774daf62ddc6be08740d7a | #162
+p3-jev-core | 8a357b3693f9a6a4077e80812ba4541af2ab7692 | #165
+p5-provision | 1978ee47156d8b6bf7e0e3c130cc69b8b99b6d30 | #166
+release/v0.5.0-metadata-note | 34d77244c5ab10bb1f07a3dbbc2cd71e6eb9c906 | #392
+release/v0.5.0-notes | d8125b18eef5f8b169e1a608ac5e901bd948dd2a | #390
+release/v0.5.0-receipt | ea269465b9c1ddcd5ba7cca96d17c9837cfda109 | #391
+release/v0.5.1-description-fix | 78cd7e82ac738c7fddd6b48d2c006215655c37f0 | #393
+security/explicit-workspace-default | b918abd5f46088efc176d28e121679c97e51add3 | #269
