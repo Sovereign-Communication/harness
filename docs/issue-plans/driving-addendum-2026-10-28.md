@@ -1,0 +1,7 @@
+DRIVING ADDENDUM - CANON CITATION + CONVERSION (2026-10-28)
+Companion to docs/issue-plans/full-driving-burndown-prompt.md (pair v2). Oversight tasking confirmation, 2026-10-28.
+
+1. TASKING CONFIRMED: every open issue dispositioned (fixed via PR / closed with a recorded reason / parked with a gate note); #295 closes last with final numbers; main green. The count class of error is closed - the pinned counting method (pair v2 step 16) is the only method.
+2. CANON CITATION RULE (applies to every comment on an issue or PR): cite the canonical item the work executes - the repo canon is docs/jev-roadmap.md on main, plus the pair v2 step being executed - AND fresh evidence: the head SHA and check-runs read from the check-runs API. Never the combined status.
+3. CONVERSION DISCIPLINE: with the PR queue near zero, the constraint is conversion. Issues become PRs one at a time; each PR small, verified, and landed before the next starts. A blocker parks one item with evidence; it never stops the lane.
+4. BRANCH CLEANUP (companion file docs/issue-plans/branch-cleanup-derived-2026-10-28.md): the 67 provably-landed heads are staged there with head SHAs and merged-PR numbers. Re-derive by the same method, compare, then delete at the lane's pace - Lucas ruled the cleanup stays with the lanes. The judgment classes (closed-unmerged heads, no-PR branches) stay individual, gate-first, never bulk-deleted.
