@@ -119,6 +119,9 @@ class Service:
             "status": "up",
             "version": __version__,
             "keyed": self.driver.settings.keyed,
+            # The actionable half of the keyed flag: names the provisioning
+            # step, never the value. See Settings.key_provisioning().
+            "key_provisioning": self.driver.settings.key_provisioning(),
             "settings": self.driver.settings.redacted(),
             "vocabulary": self._vocabulary_view(),
             "sources": [s.name for s in self.driver.sources],

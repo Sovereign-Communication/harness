@@ -30,6 +30,16 @@ from pathlib import Path
 #: The one prefix this package is allowed to read.
 ENV_PREFIX = "DRIVER_"
 
+#: The named provisioning step for a headless install. Read-only surfaces
+#: (health, verify, vocabulary) work without it; extraction and Jev decisions
+#: do not. Naming the variable here is what lets health say *how* to become
+#: keyed without ever reading the value back to a caller.
+KEY_ENV = ENV_PREFIX + "JEV_API_KEY"
+
+#: Where the provisioning path is documented. Kept as a relative path rather
+#: than a URL so it stays true in a clone, a wheel and a checkout alike.
+KEY_DOCS = "docs/driver.md#headless-key-provisioning"
+
 #: Variables belonging to the host application this package ships inside
 #: (Harness) and to its provider tooling. driver-core is a self-contained,
 #: segmented module -- wire-compatible with the standalone driver-core project
@@ -195,6 +205,26 @@ class Settings:
         """Honest key state. A missing key is a name, not an empty string."""
         return bool(self.jev_api_key)
 
+    def key_provisioning(self):
+        """How a headless install becomes keyed, without echoing the key.
+
+        The 2026-10-28 oversight audit found ``keyed=false`` reported by
+        health with nothing anywhere saying what to set. A state a caller
+        cannot act on is half a report; this is the other half. The value is
+        never included -- not even truncated -- because this dict reaches
+        logs and a loopback endpoint.
+        """
+        return {
+            "state": "keyed" if self.keyed else "unkeyed",
+            "variable": KEY_ENV,
+            "docs": KEY_DOCS,
+            "detail": ("model-backed extraction and Jev decisions are "
+                       "available" if self.keyed else
+                       f"set {KEY_ENV} in the process environment to enable "
+                       "model-backed extraction and Jev decisions; health, "
+                       "verify and vocabulary are intentionally keyless"),
+        }
+
     def redacted(self):
         """The settings as they may be printed or logged.
 
@@ -246,7 +276,7 @@ def load_settings(env=None, **overrides):
         base_url=env.get(ENV_PREFIX + "BASE_URL", DEFAULT_BASE_URL).rstrip("/"),
         host=env.get(ENV_PREFIX + "HOST", DEFAULT_HOST),
         port=_env_int(env, "PORT", DEFAULT_PORT),
-        jev_api_key=env.get(ENV_PREFIX + "JEV_API_KEY", ""),
+        jev_api_key=env.get(KEY_ENV, ""),
         token=token,
         jev_model=env.get(ENV_PREFIX + "JEV_MODEL", "jev-latest"),
         extractor_pool=pool,

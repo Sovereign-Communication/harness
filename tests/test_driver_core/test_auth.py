@@ -426,9 +426,11 @@ class TokenProvisioningTests(unittest.TestCase):
         env = {"DRIVER_TOKEN": self.DECLARED}
         service = Service(self.driver_for(env))
         health = service.health()
+        # ``key_provisioning`` is the deliberate addition from #438: the
+        # keyed flag alone told a headless verifier nothing it could act on.
         self.assertEqual(sorted(health),
-                         ["keyed", "ok", "settings", "sources", "status",
-                          "version", "vocabulary"])
+                         ["key_provisioning", "keyed", "ok", "settings",
+                          "sources", "status", "version", "vocabulary"])
         self.assertEqual(len(STOP_REASONS), 9)
 
 

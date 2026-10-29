@@ -278,6 +278,7 @@ loopback default**. No Harness state file is written on the driver's behalf.
 |---|---|---|
 | Endpoint | `DRIVER_BASE_URL` | `http://127.0.0.1:8791` |
 | Token | `DRIVER_TOKEN` | generated per start when unset |
+| TypeSafe key | `DRIVER_JEV_API_KEY` | unset (keyless; see below) |
 | Config file | `DRIVER_CONFIG_PATH` | `$HARNESS_CONFIG_DIR/driver.json` (`~/.config/harness/driver.json` by default) |
 | Audit log | `DRIVER_AUDIT_PATH` | per-user state directory |
 | Allow side-effect executors | `DRIVER_ALLOW_WRITE` | off |
@@ -292,6 +293,34 @@ endpoint that can act on a machine should never be reachable by accident from
 another host. That is a floor, not a security claim: any local process that
 holds the token can drive it. The driver is configured entirely under
 `DRIVER_*` and reads nothing from Harness's environment.
+
+### Headless key provisioning
+
+A headless install (a sandbox, CI runner or oversight verifier with no
+desktop session) becomes keyed through one named environment variable:
+
+```bash
+export DRIVER_JEV_API_KEY="..."   # process environment only; never a file
+```
+
+There is no config-file key entry and no prompt: the value is read from the
+environment by `load_settings`, kept out of `repr`, and never printed,
+logged or returned. `DRIVER_JEV_API_KEY` is the whole path.
+
+Which surfaces are keyless is deliberate, not an accident of configuration:
+
+| Surface | Keyed? | Why |
+|---|---|---|
+| `health`, `verify`, `vocabulary` | keyless | A verifier must be able to check liveness, the audit chain and the declared action set with no credential at all. |
+| extraction (`observe`, vision) | keyed | Model-backed extraction is a provider call that costs money and needs a credential. |
+| Jev decisions | keyed | The decision tier is the credentialed model; an unkeyed client refuses rather than inventing a decision. |
+
+`health` reports `keyed` and, when unkeyed, a `key_provisioning` object naming
+`DRIVER_JEV_API_KEY` and this section. The CLI prints the same sentence. A
+keyed step records its spend in the ledger and `verify` reports it under
+`budget.spent_usd`.
+
+## Status
 
 ## Status
 

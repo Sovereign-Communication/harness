@@ -7,15 +7,18 @@ response ever carries what was on a screen.
 """
 import unittest
 
+from driver_core.actions import DEFAULT_VOCABULARY
 from driver_core.audit import MemoryAuditLog
 from driver_core.budget import Budget
 from driver_core.config import load_settings
 from driver_core.driver import Driver
-from driver_core.ev import FakeJev, action_answer
+from driver_core.ev import FakeJev, FakeTransport, action_answer, ok_response
 from driver_core.executor_registry import build_read_only_registry
 from driver_core.extractors import ExtractorPool, StructuredExtractor
-from driver_core.perception import StructuredSource
+from driver_core.jev_client import JevClient
+from driver_core.perception import CLI, StructuredSource, Target
 from driver_core.server import STOP_REASONS, Service
+from driver_core.states import CLI_SCHEMA
 
 STATE = {"window_title": "report - editor", "foreground_app": "editor",
          "error_dialog_present": False}
@@ -71,6 +74,63 @@ class RouteTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertFalse(payload["keyed"])
         self.assertNotIn("jev_api_key", str(payload))
+
+    def test_health_names_the_provisioning_step_when_unkeyed(self):
+        """Issue #438: ``keyed=false`` must come with the fix, not alone."""
+        payload = _service().handle("health", {})["body"]
+        provisioning = payload["key_provisioning"]
+        self.assertEqual(provisioning["state"], "unkeyed")
+        self.assertEqual(provisioning["variable"], "DRIVER_JEV_API_KEY")
+        self.assertIn("DRIVER_JEV_API_KEY", provisioning["detail"])
+        self.assertIn("docs/driver.md", provisioning["docs"])
+
+    def test_a_keyed_headless_step_spends_and_verify_reports_it(self):
+        """The headless path end to end: env key, real Jev client, spend.
+
+        Nothing here touches the network -- the transport is a double -- but
+        every other link is the shipped one: ``load_settings`` reads the
+        named variable, ``JevClient`` refuses when it is absent and settles
+        when it is present, and ``verify`` reports the budget the step used.
+        """
+        settings = load_settings(
+            env={"DRIVER_JEV_API_KEY": "sk-test-only"},
+            quorum=2, min_agreement=1.0, confidence_threshold=0.7,
+            run_ceiling_usd=1.0, step_ceiling_usd=1.0)
+        self.assertTrue(settings.keyed)
+        chain = MemoryAuditLog()
+        budget = Budget(1.0, step_ceiling_usd=1.0)
+        options = DEFAULT_VOCABULARY.names()
+        answers = {
+            "action": {"type": "choice", "choice": "observe",
+                       "probabilities": {name: (0.99 if name == "observe"
+                                                else 0.01 / (len(options) - 1))
+                                          for name in options},
+                       "confidence": 0.99},
+            "state_is_stable": {"type": "noul", "noul": 0.95},
+            "a_blocking_choice_is_required": {"type": "noul", "noul": 0.2},
+        }
+        driver = Driver(
+            settings=settings, budget=budget, audit=chain,
+            pool=ExtractorPool([
+                StructuredExtractor(f"cli-{i}",
+                                    lambda capture, schema: dict(capture.payload))
+                for i in range(2)]),
+            jev=JevClient(settings, budget=budget, audit=chain,
+                          transport_module=FakeTransport(ok_response(answers))),
+            sources=[StructuredSource(
+                "cli", lambda target: {"exit_code": 0,
+                                       "stdout": "observed",
+                                       "stderr": ""})],
+        )
+        result = driver.step(Target("observed", CLI), schema=CLI_SCHEMA)
+        self.assertTrue(result.ok, result.detail)
+        self.assertEqual(result.execution.action, "observe")
+        verified = Service(driver).verify()
+        self.assertTrue(verified["audit"]["ok"])
+        self.assertGreater(verified["budget"]["spent_usd"], 0)
+        # The credential itself never reaches a payload or an audit record.
+        self.assertNotIn("sk-test-only", str(verified))
+        self.assertNotIn("sk-test-only", str(chain.read_all()))
 
     def test_an_unknown_route_is_a_404(self):
         outcome = _service().handle("delete_everything", {})

@@ -46,6 +46,9 @@ def cmd_health(args, driver):
     if not args.json:
         settings = driver.settings
         print(f"driver-core: ok (keyed={settings.keyed})")
+        # A flag an operator cannot act on is half a report. Name the
+        # provisioning step, never the value.
+        print(f"  key        : {payload['key_provisioning']['detail']}")
         print(f"  vocabulary : {driver.vocabulary.identity()} "
               f"({len(driver.vocabulary)} actions)")
         print(f"  sources    : {', '.join(payload['sources']) or 'none declared'}")
