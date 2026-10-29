@@ -1,0 +1,987 @@
+{
+  "artifact": "Phase 0 full-backlog issue disposition ledger snapshot",
+  "captured_at_utc": "2026-10-29T02:39:19Z",
+  "repository": "Sovereign-Communication/harness",
+  "count_source": {
+    "method": "GitHub REST GET issues?state=open&per_page=100, paginated to exhaustion; exclude every item carrying pull_request; cross-check open PRs separately and repository open_issues_count",
+    "issues_endpoint": "https://api.github.com/repos/Sovereign-Communication/harness/issues?state=open&per_page=100",
+    "pulls_endpoint": "https://api.github.com/repos/Sovereign-Communication/harness/pulls?state=open&per_page=100",
+    "returned_open_items": 77,
+    "open_issue_count": 76,
+    "pull_request_items_excluded_from_issue_list": 1,
+    "separately_listed_open_pr_count": 1,
+    "repository_open_issues_count": 77,
+    "reconciles": true
+  },
+  "main": {
+    "sha": "ffeb4d2aa05f3153d052aa64ceb141fd7c7fd255",
+    "check_runs": {
+      "total_count": 15,
+      "by_conclusion_or_status": {
+        "success": 14,
+        "skipped": 1
+      },
+      "runs": [
+        {
+          "name": "audit",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "installed package (macos-latest)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "installed package (ubuntu-latest)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "installed package (windows-latest)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "hermetic suite (windows-latest, py3.11)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "hermetic suite (ubuntu-22.04, py3.9)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "hermetic suite (ubuntu-latest, py3.13)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "hermetic suite (ubuntu-latest, py3.11)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "hermetic suite (macos-latest, py3.11)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "changed-file typecheck (pyright)",
+          "status": "completed",
+          "conclusion": "skipped"
+        },
+        {
+          "name": "Checkout hygiene",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Change scope",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "package",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "UI Playwright smoke (single worker)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "handoff scope (advisory)",
+          "status": "completed",
+          "conclusion": "success"
+        }
+      ]
+    }
+  },
+  "open_pull_requests": [
+    {
+      "number": 437,
+      "title": "[consent] Emit one rotation event per unusable model",
+      "url": "https://github.com/Sovereign-Communication/harness/pull/437",
+      "state": "open",
+      "draft": false,
+      "head_sha": "2959590a8bd35bb40db1b8efe85a45b204c4a23b",
+      "check_runs": {
+        "total_count": 15,
+        "by_conclusion_or_status": {
+          "success": 15
+        },
+        "runs": [
+          {
+            "name": "audit",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "installed package (macos-latest)",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "installed package (windows-latest)",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "installed package (ubuntu-latest)",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "hermetic suite (windows-latest, py3.11)",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "hermetic suite (ubuntu-latest, py3.13)",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "hermetic suite (ubuntu-latest, py3.11)",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "hermetic suite (macos-latest, py3.11)",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "hermetic suite (ubuntu-22.04, py3.9)",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "package",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "handoff scope (advisory)",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "Checkout hygiene",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "Change scope",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "changed-file typecheck (pyright)",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "UI Playwright smoke (single worker)",
+            "status": "completed",
+            "conclusion": "success"
+          }
+        ]
+      }
+    }
+  ],
+  "issues": [
+    {
+      "number": 270,
+      "title": "[driver] Add launch_app action to vocabulary",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/270",
+      "updated_at": "2026-10-28T10:33:37Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 271,
+      "title": "[driver] NL planner: natural language to action plan",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/271",
+      "updated_at": "2026-10-28T10:33:40Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 272,
+      "title": "[driver] Vision verification for computer control",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/272",
+      "updated_at": "2026-10-28T10:33:42Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 273,
+      "title": "[driver] GUI wiring: /driver/nl endpoint + confirmation card",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/273",
+      "updated_at": "2026-10-28T10:33:45Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 275,
+      "title": "Hourglass/HUL: integrate Freebuff mission-mode findings (full dossier)",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/275",
+      "updated_at": "2026-10-28T10:33:48Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 277,
+      "title": "dogfood: structured round 2 - checklist pass with filed report (GUI/MCP/website weighted)",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/277",
+      "updated_at": "2026-10-28T10:33:51Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 280,
+      "title": "[efficiency] Calibration-driven first-rung selection + earlier rotation",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/280",
+      "updated_at": "2026-10-28T10:33:53Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 281,
+      "title": "[bench] Published benchmark evidence via Proof Bench pipeline",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/281",
+      "updated_at": "2026-10-28T10:33:56Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 283,
+      "title": "[gui-tests] Jest tests for IPC handlers / main-process logic",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/283",
+      "updated_at": "2026-10-28T10:33:59Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 284,
+      "title": "[mcp] Tool-description lint: When/What-in/What-out formula, wired into driver_core audit",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/284",
+      "updated_at": "2026-10-28T10:34:01Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 285,
+      "title": "[mcp] Agent-eval layer: tool selection/chaining scored by pass-rate",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/285",
+      "updated_at": "2026-10-28T10:34:03Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 286,
+      "title": "[mcp] Structured file logging + additive-only tool versioning policy",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/286",
+      "updated_at": "2026-10-28T10:34:06Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 289,
+      "title": "[build] Migrate dependency management to uv (old requirements stay until uv CI is green)",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/289",
+      "updated_at": "2026-10-28T10:34:08Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 290,
+      "title": "[docs] Hermetic/audit triage runbook: environment failures vs real failures",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/290",
+      "updated_at": "2026-10-28T10:34:11Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 291,
+      "title": "[refine] Execute the Phase 0 pilot: 20 cycles (TIER 2 only, no auto-merge)",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/291",
+      "updated_at": "2026-10-28T10:34:13Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 292,
+      "title": "[driver-core] Sync vendored driver_core v3.4.0 to standalone v3.5.0 + CI drift check",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/292",
+      "updated_at": "2026-10-28T10:34:16Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 294,
+      "title": "[provider-onboarding] Completion: pane browser test, 50 live key validations, verifier sweep, final Jev gate",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/294",
+      "updated_at": "2026-10-28T10:34:20Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 295,
+      "title": "[burndown] TRACKER: full completion burndown — all remaining work, waved and ordered",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/295",
+      "updated_at": "2026-10-29T02:08:20Z",
+      "github_state": "open",
+      "disposition_status": "open_tracker_close_last"
+    },
+    {
+      "number": 299,
+      "title": "fix(server): cap POST body size before reading — return 413 over the limit",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/299",
+      "updated_at": "2026-10-28T10:34:26Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 300,
+      "title": "fix(driver_core): check_batch docstring overstates the irreversible-mix guarantee it enforces",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/300",
+      "updated_at": "2026-10-28T10:34:28Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 301,
+      "title": "ci: driver_core is outside the ruff scope — dead import (F401) sits unseen on main",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/301",
+      "updated_at": "2026-10-28T23:16:07Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 302,
+      "title": "harden(apply): screen refusal/non-code model output at intake; stop crediting model health for missing-marker responses",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/302",
+      "updated_at": "2026-10-28T10:34:33Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 303,
+      "title": "fix(site-check): non-http(s) schemes in prose prompts bypass the scheme gate via extractor normalization (minor)",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/303",
+      "updated_at": "2026-10-28T10:34:36Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 304,
+      "title": "feat(economics): include Fireworks in automatic cheapest-capable routing with dynamic price checking — completes EV-8",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/304",
+      "updated_at": "2026-10-28T10:34:38Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 306,
+      "title": "ops(fireworks): place the Fireworks key into the harness config environment and complete EV-8 verification",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/306",
+      "updated_at": "2026-10-28T10:34:40Z",
+      "github_state": "open",
+      "disposition_status": "parked_by_design",
+      "gate_note": "Mission instruction: leave untouched; never rerun the probe, delete the marker, or mark complete; only an operator-approved non-repeating remedy or an already-existing valid receipt can unblock it."
+    },
+    {
+      "number": 308,
+      "title": "[planning] Split waist.py by planning responsibility",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/308",
+      "updated_at": "2026-10-28T10:34:43Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 309,
+      "title": "[jev] Separate domain evaluators from shared policy dispatch",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/309",
+      "updated_at": "2026-10-28T10:34:46Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 310,
+      "title": "[provision] Split admission, approval, and execution by trust boundary",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/310",
+      "updated_at": "2026-10-28T10:34:48Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 311,
+      "title": "[local-fit] Exercise training and export extra in hermetic CI",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/311",
+      "updated_at": "2026-10-28T10:34:51Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 313,
+      "title": "eval(models): evaluate Inception Mercury 3 (diffusion LLM) for cheapest-capable routing",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/313",
+      "updated_at": "2026-10-28T10:34:53Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 314,
+      "title": "feat(jev): offline Jev-like judge modules (local inference backends)",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/314",
+      "updated_at": "2026-10-28T10:34:55Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 318,
+      "title": "route(selection): continuous recursive self-improving model selection — always-on auditing, dynamic as needed",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/318",
+      "updated_at": "2026-10-28T10:34:58Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 319,
+      "title": "route(models): automated model intake pipeline — all OpenRouter models auto-screened into pools",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/319",
+      "updated_at": "2026-10-28T10:35:00Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 325,
+      "title": "[jev][MED] v1 assessment gate (5-aspect suite + flexibility rule) has no code counterpart",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/325",
+      "updated_at": "2026-10-28T10:35:02Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 328,
+      "title": "[cli][MINOR] no version surface: --version / -v / version all exit 2",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/328",
+      "updated_at": "2026-10-28T10:35:05Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 329,
+      "title": "[cli] polish: desktop usage line + shared --out/--quiet/--events/--no-color flags missing on defer/media/driver",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/329",
+      "updated_at": "2026-10-28T10:35:07Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 332,
+      "title": "[audit] inconsistent fallback model labeling: is_fallback=True with model=jev-latest vs model=local-heuristic",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/332",
+      "updated_at": "2026-10-28T10:35:10Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 334,
+      "title": "[mcp][LOW] log_judgment reports ok when zero items were live-judged",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/334",
+      "updated_at": "2026-10-28T10:35:12Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 335,
+      "title": "[mcp][LOW] tool annotations inaccurate: read_only_hint missing on read-only tools, absent on mutating ones",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/335",
+      "updated_at": "2026-10-28T10:35:14Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 336,
+      "title": "ledger: self-pruning via anchored compaction + automatic canary updates",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/336",
+      "updated_at": "2026-10-28T10:35:17Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 337,
+      "title": "ledger: validated criteria-prompt library for interrogating the ledger across models",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/337",
+      "updated_at": "2026-10-28T10:35:19Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 340,
+      "title": "[economics][MEDIUM] harness-reported costs drift \\u00b115\\u201340% off measured spend; #318 metric must use measured",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/340",
+      "updated_at": "2026-10-28T10:35:21Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 342,
+      "title": "[research] Implement the missing shared model-proposed ResearchPlan and native Jev review lifecycle",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/342",
+      "updated_at": "2026-10-28T11:26:27Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 343,
+      "title": "[web] Reject unrelated hits individually instead of accepting a mixed target-site result batch",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/343",
+      "updated_at": "2026-10-28T10:35:26Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 344,
+      "title": "[lifecycle] Bind resumed web context to the current request and retrieval decision",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/344",
+      "updated_at": "2026-10-28T10:35:29Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 345,
+      "title": "[spend] Attribute request caps independently of unrelated concurrent session spending",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/345",
+      "updated_at": "2026-10-28T10:35:31Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 346,
+      "title": "[planning] Exclude completed planning calls from the remaining execution allowance",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/346",
+      "updated_at": "2026-10-28T10:35:33Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 377,
+      "title": "[tracking, low priority] Session model allowlist: restrict a session to an explicit model set (e.g. Meta-only)",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/377",
+      "updated_at": "2026-10-28T10:35:36Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 378,
+      "title": "[tracking, low priority] Model presets + custom include/exclude sets (JSON/text file)",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/378",
+      "updated_at": "2026-10-28T10:35:38Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 379,
+      "title": "[tracking, low priority] Direct Meta Model API provider (api.meta.ai) alongside OpenRouter/Fireworks",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/379",
+      "updated_at": "2026-10-28T10:35:40Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 380,
+      "title": "[tracking, low priority] Jev-free judgment backend: Fusion Lite panels replacing Jev gates",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/380",
+      "updated_at": "2026-10-28T10:35:43Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 381,
+      "title": "[tracking, low priority] Calibrate Fusion Lite panels against Jev on golden sets before any gate swap",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/381",
+      "updated_at": "2026-10-28T10:35:45Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 382,
+      "title": "[tracking, low priority] Session-start model picker: choose preset/custom set easily at launch",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/382",
+      "updated_at": "2026-10-28T10:35:47Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 407,
+      "title": "[visibility-site] public receipt-backed model statistics with opt-in ingestion",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/407",
+      "updated_at": "2026-10-28T10:35:50Z",
+      "github_state": "open",
+      "disposition_status": "queued_with_predecided_semantics",
+      "operator_constraints": "Mission instruction: revoking opt-in stops future submissions; published aggregates remain. Build opt-in-only, aggregate-only, document sanitization and hermetic-test it. Deploy remains parked on named CF_API_TOKEN and D1/KV IDs."
+    },
+    {
+      "number": 412,
+      "title": "[gui] Verify first-use auth handoff live UX (audit: OPEN)",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/412",
+      "updated_at": "2026-10-28T10:35:52Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 413,
+      "title": "[driver] Verify loopback-browser round-trip end to end (audit: NOT VERIFIED)",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/413",
+      "updated_at": "2026-10-28T10:35:55Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 414,
+      "title": "[mcp] Verify installed MCP runtime identity via real-client check (audit: NOT VERIFIED)",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/414",
+      "updated_at": "2026-10-28T10:35:57Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 415,
+      "title": "[gui] Live model/Jev semantic approvals via GUI (audit: NOT RUN)",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/415",
+      "updated_at": "2026-10-28T10:35:59Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 416,
+      "title": "[docs] GUI first-use acceptance doc + serve/auth doc corrections",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/416",
+      "updated_at": "2026-10-28T10:36:02Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 417,
+      "title": "[driver-core] Verify must identify which audit store/chain it verified",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/417",
+      "updated_at": "2026-10-28T10:36:04Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 418,
+      "title": "[desktop] Preserve and recover long-running requests after restarts",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/418",
+      "updated_at": "2026-10-28T10:36:07Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 419,
+      "title": "[desktop] Separate local server health from backend and request status",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/419",
+      "updated_at": "2026-10-28T10:36:09Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 420,
+      "title": "[site] Use the TypeSafe System One contract for route judgments",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/420",
+      "updated_at": "2026-10-28T10:49:03Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 421,
+      "title": "[consent] Emit one rotation event for each unusable model",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/421",
+      "updated_at": "2026-10-29T01:39:23Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 422,
+      "title": "[research] Verify citation metadata and claim-to-source support",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/422",
+      "updated_at": "2026-10-28T11:27:05Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 423,
+      "title": "[audit] Add a resumable full-source Jev audit command",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/423",
+      "updated_at": "2026-10-28T11:27:05Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 424,
+      "title": "[docs] Align System One feature claims with shipped status",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/424",
+      "updated_at": "2026-10-29T01:54:39Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 425,
+      "title": "[driver-core] Refuse append when an existing audit chain is invalid",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/425",
+      "updated_at": "2026-10-29T02:07:40Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 426,
+      "title": "[security] Enforce public-network policy for browser evidence rendering",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/426",
+      "updated_at": "2026-10-29T02:13:40Z",
+      "github_state": "open",
+      "disposition_status": "local_implementation_committed_remote_action_not_authorized",
+      "gate_note_url": "https://github.com/Sovereign-Communication/harness/issues/426#issuecomment-6485998423",
+      "local_commit": "0530970280f5087730f8e944ecf4b12f02edd46a"
+    },
+    {
+      "number": 427,
+      "title": "[mission] Surface malformed receipt and Jev-evaluation records",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/427",
+      "updated_at": "2026-10-28T10:49:23Z",
+      "github_state": "open",
+      "disposition_status": "parked_fail_closed_no_jev_signal",
+      "gate_note": "No structured Jev v1 response was produced: the configured API credential was absent from process environment and common local env files, so no API request was sent. Lucas Gate v2 was not run. No code or issue state changed."
+    },
+    {
+      "number": 428,
+      "title": "[economics] Reject negative endpoint override and cache prices",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/428",
+      "updated_at": "2026-10-28T10:49:25Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 429,
+      "title": "[audit] Refuse or recover truncated JEV judgment state before append",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/429",
+      "updated_at": "2026-10-28T10:49:29Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 430,
+      "title": "[lifecycle] Stop repeated retries after validated restart or consent refusal",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/430",
+      "updated_at": "2026-10-28T10:36:37Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    },
+    {
+      "number": 432,
+      "title": "[proposal] Voice workstream for Harness: reusable transcription core (PROPOSAL ONLY - deferral decision pending)",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/432",
+      "updated_at": "2026-10-28T13:19:40Z",
+      "github_state": "open",
+      "disposition_status": "parked_by_design_reserved_scope_of_ship",
+      "gate_note": "Mission instruction: evaluation brief may be prepared; implementation is out of scope for this run."
+    },
+    {
+      "number": 433,
+      "title": "[gate] Lucas Gate v2 in the driving-agent loop is not on main (runner unlanded, profile absent, MCP catalog gap)",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/433",
+      "updated_at": "2026-10-28T23:59:04Z",
+      "github_state": "open",
+      "disposition_status": "parked_after_red_ci_attempt_bound",
+      "gate_note_url": "https://github.com/Sovereign-Communication/harness/issues/433#issuecomment-6483926200"
+    },
+    {
+      "number": 434,
+      "title": "[verification] Overlay-style verification (run a suite against a composed tree) has no named surface on main",
+      "url": "https://github.com/Sovereign-Communication/harness/issues/434",
+      "updated_at": "2026-10-28T13:19:43Z",
+      "github_state": "open",
+      "disposition_status": "pending_issue_spec_and_gate_review"
+    }
+  ],
+  "local_reconciliation": {
+    "queue_json": {
+      "path": "docs\\issue-plans\\queue.json",
+      "generated": "2026-10-26",
+      "declared_open_issue_count": 56,
+      "entry_count": 65,
+      "missing_current_open_issue_numbers": [
+        412,
+        413,
+        414,
+        415,
+        416,
+        417,
+        418,
+        419,
+        420,
+        421,
+        422,
+        423,
+        424,
+        425,
+        426,
+        427,
+        428,
+        429,
+        430,
+        432,
+        433,
+        434
+      ],
+      "queue_numbers_not_currently_open": [
+        276,
+        278,
+        279,
+        282,
+        287,
+        288,
+        293,
+        327,
+        330,
+        333,
+        347
+      ],
+      "note": "Historical planning hypothesis only; not used as issue-count evidence."
+    },
+    "planning_pr_397": {
+      "state": "closed",
+      "merged_at": null,
+      "head_sha": "9e0782699b26d2f686f1274ec1a0a6d179830de1",
+      "url": "https://github.com/Sovereign-Communication/harness/pull/397",
+      "head_queue_snapshot": {
+        "fetched_head": "9e0782699b26d2f686f1274ec1a0a6d179830de1",
+        "generated": "2026-10-25",
+        "declared_open_issue_count": 59,
+        "entry_count": 64
+      },
+      "stale_local_planning_worktree": {
+        "path_label": "gate-v2-implementation/Harness",
+        "head_sha": "67bf24b0ee6a46b74087096c1bab0272b957dc58",
+        "branch": "plans/worldwide-push-2026-10-25"
+      }
+    },
+    "roadmap_pr_431": {
+      "state": "closed",
+      "draft": true,
+      "merged_at": null,
+      "head_sha": "114e8101660066618369addfa6a3e8b8ba6a996f",
+      "url": "https://github.com/Sovereign-Communication/harness/pull/431"
+    },
+    "rigged_checker_hypothesis": {
+      "path": "check_tools.py",
+      "exists_in_lane_root": false,
+      "tracked_by_git": false,
+      "github_issue_search_matches": 0,
+      "note": "No current checkout file or matching issue spec was found; no checker was recreated or cited."
+    },
+    "jev_gate_access": {
+      "typesafe_api_key_in_process_environment": false,
+      "typesafe_api_key_name_present_in_common_local_env_files": {
+        ".env": false,
+        ".env.local": false,
+        ".env.development": false,
+        ".env.development.local": false,
+        ".env.test": false,
+        ".dev.vars": false
+      },
+      "secret_values_read_or_emitted": false
+    },
+    "issue_433_parked_record": {
+      "comment_url": "https://github.com/Sovereign-Communication/harness/issues/433#issuecomment-6483926200",
+      "comment_created_at": "2026-10-28T23:59:04Z"
+    },
+    "verified_closed_items": [
+      {
+        "issue": 282,
+        "issue_state": "closed",
+        "issue_url": "https://github.com/Sovereign-Communication/harness/issues/282",
+        "implementation_pr": 405,
+        "pr_url": "https://github.com/Sovereign-Communication/harness/pull/405",
+        "merged_at": "2026-10-26T15:37:13Z",
+        "merge_sha": "ef21e2323f050e9c6c9f50bbc88492e8489849d3",
+        "disposition": "completed; do not rebuild"
+      },
+      {
+        "issue": 288,
+        "issue_state": "closed",
+        "issue_url": "https://github.com/Sovereign-Communication/harness/issues/288",
+        "implementation_pr": 411,
+        "pr_url": "https://github.com/Sovereign-Communication/harness/pull/411",
+        "merged_at": "2026-10-26T20:06:54Z",
+        "merge_sha": "4ccee9927b44df21c714de47c542376882529372",
+        "disposition": "implementation merged; separate bookkeeping receipt remains owed per mission order"
+      },
+      {
+        "issue": 293,
+        "issue_state": "closed",
+        "issue_url": "https://github.com/Sovereign-Communication/harness/issues/293",
+        "implementation_pr": 436,
+        "pr_url": "https://github.com/Sovereign-Communication/harness/pull/436",
+        "merged_at": "2026-10-29T00:42:23Z",
+        "merge_sha": "ffeb4d2aa05f3153d052aa64ceb141fd7c7fd255",
+        "disposition": "completed on current main; do not rebuild"
+      },
+      {
+        "issue": 333,
+        "issue_state": "closed",
+        "issue_url": "https://github.com/Sovereign-Communication/harness/issues/333",
+        "implementation_pr": 398,
+        "pr_url": "https://github.com/Sovereign-Communication/harness/pull/398",
+        "merged_at": "2026-10-26T05:40:43Z",
+        "merge_sha": "919d2acf1329b02d66d8cf00e0a4965e62f038e8",
+        "disposition": "completed; do not rebuild"
+      }
+    ],
+    "operator_constraints": {
+      "issue_306": {
+        "issue_url": "https://github.com/Sovereign-Communication/harness/issues/306",
+        "marker_path": "audits/self/dogfood/FIREWORKS_VERIFY_RECEIPT.json",
+        "marker_exists": true,
+        "marker_size_bytes": 271,
+        "action": "leave untouched; do not rerun the probe, delete the marker, or mark complete"
+      },
+      "issue_407": {
+        "issue_url": "https://github.com/Sovereign-Communication/harness/issues/407",
+        "issue_state": "open",
+        "issue_comment_count": 0,
+        "source_for_semantics": "Operator mission instruction dated 2026-10-28; issue comments do not contain the decision.",
+        "semantics": "Revoking opt-in stops future submissions; contributions already in published aggregates remain.",
+        "implementation_constraints": "Opt-in only, aggregate only, sanitization documented and hermetic-tested; deploy parked on CF_API_TOKEN and D1/KV IDs."
+      }
+    }
+  },
+  "gate_evidence": [
+    {
+      "issue": 426,
+      "status": "Jev v1 proceed; Lucas Gate v2 semantic pass for local implementation only",
+      "evidence_url": "https://github.com/Sovereign-Communication/harness/issues/426#issuecomment-6485998423",
+      "voice_suite_pass_claimed": false,
+      "remote_actions_authorized_by_that_note": false,
+      "local_verification_carried": "The focused command python -m unittest tests.test_site_evidence tests.test_site_evidence_security tests.test_web -q reported 98 tests OK before the docs-only correction and exception-chaining lint fix; final Ruff and git diff --check passed afterward."
+    },
+    {
+      "issue": 427,
+      "status": "escalated_fail_closed_no_signal",
+      "evidence": "No configured TypeSafe API credential was available; no Jev request was sent, no disposition signal exists, and Lucas Gate v2 was not run. Do not retry to shop a verdict."
+    },
+    {
+      "issue": 433,
+      "status": "carried_parked_after_second_ci_attempt",
+      "evidence_url": "https://github.com/Sovereign-Communication/harness/issues/433#issuecomment-6483926200",
+      "instruction": "Do not retry CI in this pass."
+    }
+  ],
+  "next_item": "Continue with #288 bookkeeping after its per-action gate is available. #433 stays parked after its documented CI attempt bound; #293 is already completed by PR #436; #301 remains open for its ordered step. Keep #295 open until the final verified disposition count and green main."
+}

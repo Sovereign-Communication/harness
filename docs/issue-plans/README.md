@@ -2,8 +2,15 @@
 
 This directory is the execution view of the canon's #295 register. The
 authoritative order, dependencies and acceptance exits remain
-[`docs/jev-roadmap.md`](../jev-roadmap.md); this queue is generated from that
-register plus the live GitHub open-issue set.
+[`docs/jev-roadmap.md`](../jev-roadmap.md); `queue.json` is a historical plan
+snapshot and is not regenerated automatically.
+
+**Phase 0 snapshot (captured 2026-10-29 UTC):** See
+[phase0-ledger-20261029.json](phase0-ledger-20261029.json) for the live GitHub
+REST census and evidence. The 76 open issues and 1 open PR reconcile to
+repository `open_issues_count` 77. The checked-in `queue.json` is historical:
+its 65 rows declare 56 open issues, omit 22 currently open issues, and retain
+11 entries that are not currently open. It is not count evidence.
 
 **Snapshot 2026-10-25:** the queue was generated at 58 open GitHub issues,
 all mapped to a canon row. Six later tracking issues (#377-#382, opened
