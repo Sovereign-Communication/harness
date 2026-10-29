@@ -10,6 +10,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any, cast
 
 from harness import cli, mission_record as mr
 from harness.errors import HarnessError
@@ -654,7 +655,7 @@ class MissionErrorPathTests(unittest.TestCase):
                 "terminal_reserve": {"cost_usd": 0.0},
             })
         with self.assertRaises(HarnessError):
-            mr.working_remaining("bad", 0.0, 0.0)
+            mr.working_remaining(cast(Any, "bad"), 0.0, 0.0)
         with self.assertRaises(HarnessError):
             mr.build_mission_spec(
                 mission_id="m-neg",

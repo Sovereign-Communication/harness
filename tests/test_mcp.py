@@ -8,6 +8,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest import mock
 
 from harness.apply import ApplyEngine
@@ -845,7 +846,7 @@ class McpProtocolTests(unittest.TestCase):
                 release.set()
                 return ""
 
-        server._call_tool = delayed_call
+        setattr(server, "_call_tool", delayed_call)
         responses = _serve(server, Feed())
         self.assertEqual(len(responses), 2)
         self.assertEqual(sum("error" in response for response in responses), 1)
@@ -929,7 +930,8 @@ class McpProtocolTests(unittest.TestCase):
 
         def malformed_error(request, timeout):
             raise urllib.error.HTTPError(
-                request.full_url, 502, "bad gateway", {}, io.BytesIO(b"[]"))
+                request.full_url, 502, "bad gateway",
+                cast(Any, {}), io.BytesIO(b"[]"))
 
         def make_adapter():
             return PerceptionAdapter(
@@ -1941,7 +1943,9 @@ class ContinueWorkToolTests(unittest.TestCase):
                 "jsonrpc": "2.0", "id": 25, "method": "tools/call",
                 "params": {"name": "spend_status", "arguments": {}},
             })
+        assert reply is not None
         result = reply["result"]
+        assert result is not None
         self.assertTrue(result["isError"])
         self.assertEqual(result["errorKind"], "provider_spend_limit")
         self.assertEqual(result["error_kind"], "provider_spend_limit")

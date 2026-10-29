@@ -13,6 +13,7 @@ is evidence in the audit chain, while every mutating action stays refused.
 import os
 import sys
 import unittest
+from typing import Any, cast
 from unittest import mock
 
 from driver_core.actions import DEFAULT_VOCABULARY
@@ -41,6 +42,7 @@ class ReadOnlyProbeTests(unittest.TestCase):
             "run_probe",
             {"command": [sys.executable, "-c", "print('state-ok')"]})
         self.assertTrue(result.ok, result.detail)
+        assert result.output is not None
         self.assertEqual(result.output["exit_code"], 0)
         self.assertIn("state-ok", result.output["stdout"])
         self.assertEqual(result.output["stderr"], "")
@@ -60,6 +62,7 @@ class ReadOnlyProbeTests(unittest.TestCase):
             "run_probe",
             {"command": [sys.executable, "-c", "raise SystemExit(3)"]})
         self.assertTrue(result.ok, result.detail)
+        assert result.output is not None
         self.assertEqual(result.output["exit_code"], 3)
         self.assertEqual(self.audit.read_all()[0]["output"]["exit_code"], 3)
 
@@ -105,7 +108,8 @@ class ReadOnlyProbeTests(unittest.TestCase):
         # Even a correctly scoped consent cannot conjure an executor the
         # build did not register; the refusal is the registry, not consent.
         with self.assertRaises(ConsentError):
-            self.executor.execute("click", {"target": "OK"}, consent=None)
+            self.executor.execute("click", {"target": "OK"},
+                                  consent=cast(Any, None))
         consent = Consent(True, "click", {"target": "OK"})
         with self.assertRaises(ExecutorError) as ctx:
             self.executor.execute("click", {"target": "OK"}, consent=consent)

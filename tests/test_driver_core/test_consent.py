@@ -314,6 +314,8 @@ class InputBackendTests(unittest.TestCase):
         api = WindowApi()
         backend = osal.native_input_backend(
             platform="windows", window_api=api)
+        self.assertIsNotNone(backend)
+        assert backend is not None
         ok, detail = osal.send_input(
             "focus", target="Harness smoke target", backend=backend)
         self.assertTrue(ok, detail)
@@ -586,6 +588,7 @@ class PipelineOkMeansActedTests(unittest.TestCase):
         self.assertIn("no registered backend", result.detail)
         # The record still travels, so the failure is inspectable.
         self.assertIsNotNone(result.execution)
+        assert result.execution is not None
         self.assertFalse(result.execution.ok)
 
     def test_a_successful_executor_is_still_ok(self):
@@ -596,6 +599,7 @@ class PipelineOkMeansActedTests(unittest.TestCase):
         consent = Consent(True, "write_file", params=dict(params), by="test")
         result = self._step("write_file", params, consent)
         self.assertTrue(result.ok, result.detail)
+        assert result.execution is not None
         self.assertTrue(result.execution.ok)
         self.assertTrue(os.path.isfile(target))
 

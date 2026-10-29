@@ -77,6 +77,9 @@ class OsalRunTest(TempTree):
         proc = subprocess.Popen(
             [sys.executable, "-c", script], stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=root)
+        assert proc.stdin is not None
+        assert proc.stdout is not None
+        assert proc.stderr is not None
         try:
             proc.wait(timeout=20)
             stderr = proc.stderr.read()
@@ -222,6 +225,8 @@ class OsalBoundedRunTest(TempTree):
         out = osal.run_bounded([sys.executable, "-c",
                                 "import os,sys; sys.stdout.write(os.getcwd())"],
                                max_bytes=4096, cwd=self.root)
+        self.assertIsNotNone(out)
+        assert out is not None
         self.assertEqual(osal.norm_path(out.decode("utf-8")),
                          osal.norm_path(self.root))
 
@@ -237,7 +242,7 @@ class OsalBoundedRunTest(TempTree):
                 super().__init__(value)
                 self.bytes_read = 0
 
-            def read1(self, size=-1):
+            def read1(self, size=-1, /):
                 value = super().read(size)
                 self.bytes_read += len(value)
                 return value

@@ -38,6 +38,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from typing import Optional
 import time
 from dataclasses import dataclass
 
@@ -237,7 +238,10 @@ def _kill_tree(process):
             pass
     else:
         try:
-            os.killpg(os.getpgid(process.pid), getattr(signal, "SIGKILL", signal.SIGTERM))
+            killpg = getattr(os, "killpg")
+            getpgid = getattr(os, "getpgid")
+            killpg(getpgid(process.pid),
+                   getattr(signal, "SIGKILL", signal.SIGTERM))
         except OSError:
             pass
     try:
@@ -309,6 +313,8 @@ def run_tree(argv, cwd=None, timeout=None, env=None, cancel_check=None):
             # immediate and remains the right cleanup.
             if not IS_WINDOWS:
                 for pipe in (process.stdout, process.stderr):
+                    if pipe is None:
+                        continue
                     try:
                         pipe.close()
                     except OSError:
@@ -320,6 +326,7 @@ def run_tree(argv, cwd=None, timeout=None, env=None, cancel_check=None):
 
     cancelled = False
     timed_out = False
+    out = err = b""
     if cancel_check is None and timeout is None:
         out, err = process.communicate()
     else:
@@ -351,9 +358,15 @@ def run_tree(argv, cwd=None, timeout=None, env=None, cancel_check=None):
         drain_after_kill()
         return CommandResult(
             124, f"command timed out after {timeout}s: {' '.join(argv)}")
+    final_out = out if out is not None else b""
+    final_err = err if err is not None else b""
+    if isinstance(final_out, str):
+        final_out = final_out.encode(ENCODING)
+    if isinstance(final_err, str):
+        final_err = final_err.encode(ENCODING)
     return CommandResult(process.returncode,
-                         (out or b"").decode(ENCODING, errors="replace"),
-                         (err or b"").decode(ENCODING, errors="replace"))
+                         final_out.decode(ENCODING, errors="replace"),
+                         final_err.decode(ENCODING, errors="replace"))
 
 
 def run_bounded(argv, max_bytes, timeout=10, cwd=None):
@@ -388,11 +401,13 @@ def run_bounded(argv, max_bytes, timeout=10, cwd=None):
 
     captured = bytearray()
     oversized = threading.Event()
+    stream = process.stdout
+    assert stream is not None
 
     def drain_stdout():
         while True:
             remaining = max_bytes + 1 - len(captured)
-            reader = getattr(process.stdout, "read1", None) or process.stdout.read
+            reader = getattr(stream, "read1", None) or stream.read
             chunk = reader(min(65536, remaining))
             if not chunk:
                 return
@@ -475,7 +490,8 @@ def detect_newline(path):
     return None
 
 
-def atomic_write_text(path, content, follow=False, newline="preserve"):
+def atomic_write_text(path, content, follow=False,
+                      newline: Optional[str] = "preserve"):
     """Atomically replace `path` with `content`, refusing unsafe targets.
 
     Without ``follow=True`` a pre-existing symlink is never followed (the

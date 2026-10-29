@@ -21,6 +21,7 @@ import pathlib
 import re
 import sys
 import unittest
+from typing import Any, cast
 
 import driver_core
 from driver_core import osal
@@ -88,7 +89,8 @@ class OsBoundaryTests(unittest.TestCase):
             for node in ast.walk(tree):
                 for label, predicate in BANNED:
                     if predicate(node):
-                        findings.append(f"{name}:{node.lineno} {label}")
+                        findings.append(
+                            f"{name}:{getattr(node, 'lineno', 0)} {label}")
         self.assertEqual(findings, [],
                          "OS contact escaped the boundary: " + "; ".join(findings))
 
@@ -355,12 +357,15 @@ class AuditIsRequiredTests(unittest.TestCase):
             ["Driver", "Executor", "JevClient", "VisionExtractor"])
 
     def test_an_executor_cannot_be_built_without_a_chain(self):
+        # Deliberately omit the required ``audit`` argument; the cast keeps
+        # the static checker from demanding the very argument under test.
         with self.assertRaises(TypeError):
-            Executor(vocabulary=DEFAULT_VOCABULARY, registry={})
+            Executor(**cast(Any, {"vocabulary": DEFAULT_VOCABULARY,
+                                  "registry": {}}))
 
     def test_a_driver_cannot_be_built_without_a_chain(self):
         with self.assertRaises(TypeError):
-            Driver()
+            Driver(**cast(Any, {}))
 
     def test_none_is_refused_by_name(self):
         """Passing ``audit=None`` explicitly is the same mistake with more

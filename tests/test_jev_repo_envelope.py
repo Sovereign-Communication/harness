@@ -669,7 +669,9 @@ class PolicyFactoryTests(unittest.TestCase):
         # below the budget a governor-backed policy composes (no network)...
         policy = factory(0.0)
         self.assertIsNotNone(policy)
+        assert policy is not None
         self.assertIsNotNone(policy.governor)
+        assert policy.governor is not None
         self.assertLessEqual(policy.governor.max_cost, 0.10)
         # ...and cumulative + worst-case beyond the run budget refuses.
         from harness.jev_policy import jev_cost_ceiling
@@ -682,6 +684,7 @@ class PolicyFactoryTests(unittest.TestCase):
         factory = _repo_summary_policy_factory(settings, None, 0.0, None)
         policy = factory(999.0)
         self.assertIsNotNone(policy)
+        assert policy is not None
         self.assertFalse(policy.keyed)
 
 

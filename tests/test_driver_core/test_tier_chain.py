@@ -17,6 +17,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from typing import Any, cast
 
 from driver_core import osal
 from driver_core.config import load_settings
@@ -112,8 +113,9 @@ class ReachabilityTests(unittest.TestCase):
     def test_the_screen_tier_is_reachable_for_a_gui_target(self):
         """Otherwise the guarantee would be achieved by simply removing it."""
         source = ExplodingScreen()
-        source.capture = lambda target=None: Capture(  # noqa: E731
-            GUI, target, "pixels", fingerprint="abc")
+        setattr(source, "capture",
+                cast(Any, lambda target=None: Capture(
+                    GUI, target, "pixels", fingerprint="abc")))
         capture = select_capture(Target("app", GUI), [source])
         self.assertEqual(capture.source, GUI)
         self.assertEqual(capture.payload, "pixels")
@@ -121,8 +123,9 @@ class ReachabilityTests(unittest.TestCase):
     def test_an_undeclared_target_still_falls_back_to_pixels(self):
         """The compatibility path is unchanged: bare string, pixels last."""
         screen = ExplodingScreen()
-        screen.capture = lambda target=None: Capture(  # noqa: E731
-            GUI, target, "pixels", fingerprint="abc")
+        setattr(screen, "capture",
+                cast(Any, lambda target=None: Capture(
+                    GUI, target, "pixels", fingerprint="abc")))
         capture = select_capture("app", [_source(DOM, None),
                                          _source(CLI, None), screen])
         self.assertEqual(capture.source, GUI)
@@ -199,8 +202,8 @@ class FallThroughTests(unittest.TestCase):
             return reader
 
         screen = ExplodingScreen()
-        screen.capture = lambda target=None: Capture(  # noqa: E731
-            GUI, target, "pixels")
+        setattr(screen, "capture",
+                cast(Any, lambda target=None: Capture(GUI, target, "pixels")))
         sources = [
             StructuredSource(CLI, recorder(CLI, None)),
             StructuredSource(DOM, recorder(DOM, {"window_title": "x"})),
@@ -213,8 +216,8 @@ class FallThroughTests(unittest.TestCase):
     def test_prefer_cannot_promote_pixels_past_a_structured_source(self):
         """The ordering's one non-negotiable, tested directly."""
         screen = ExplodingScreen()
-        screen.capture = lambda target=None: Capture(  # noqa: E731
-            GUI, target, "pixels")
+        setattr(screen, "capture",
+                cast(Any, lambda target=None: Capture(GUI, target, "pixels")))
         sources = [_source(CLI, {"exit_code": 0}), screen]
         capture = select_capture("app", sources, prefer=(GUI,))
         self.assertEqual(capture.source, CLI)
@@ -360,7 +363,10 @@ class McpParsingTests(unittest.TestCase):
         stream = ("server ready on stdio\n"
                   '{"jsonrpc":"2.0","id":1,"result":{"ok":true}}\n'
                   '{"jsonrpc":"2.0","id":2,"result":{"ok":false}}\n')
-        self.assertEqual(_last_reply(stream)["id"], 2)
+        reply = _last_reply(stream)
+        self.assertIsNotNone(reply)
+        assert reply is not None
+        self.assertEqual(reply["id"], 2)
 
     def test_a_banner_only_stream_yields_no_reply(self):
         from driver_core.perception import _last_reply

@@ -15,6 +15,7 @@ import json
 import os
 import tempfile
 import unittest
+from typing import Any, Dict
 from contextlib import redirect_stdout
 from unittest import mock
 
@@ -175,13 +176,14 @@ class ComposerSeparationTests(unittest.TestCase):
 class CliTests(unittest.TestCase):
 
     def _payload(self):
-        return {
+        payload: Dict[str, Any] = {
             "aspects": {
                 name: {"probabilities": {">=90": 0.9, "85-89": 0.05,
                                          "<85": 0.05}}
                 for name in ASPECTS
             }
         }
+        return payload
 
     def test_a_passing_payload_exits_zero_and_prints_the_verdict(self):
         with tempfile.TemporaryDirectory() as workdir:

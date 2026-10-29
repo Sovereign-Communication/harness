@@ -29,6 +29,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, cast
 from . import jev_calibration as _jcal
+from .jev_assessment import AssessmentError, verdict_for_payload
 from . import provision as _pv
 from . import refine as _refine
 from . import repo_cards as _rc
@@ -1911,8 +1912,6 @@ def _cmd_assess(opts, settings):
     that cannot be read. The gate is lane-workflow authority, not the audit
     bar -- the verdict carries both facts so a caller cannot confuse them.
     """
-    from .jev_assessment import AssessmentError, verdict_for_payload
-
     try:
         raw = (sys.stdin.read() if getattr(opts, "input", "-") == "-"
                else _read_text(opts.input, "assessment payload"))

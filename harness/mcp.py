@@ -13,7 +13,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, cast
 
 from . import __version__
 from . import events as _events
@@ -455,10 +455,12 @@ class McpServer:
         """Shared-secret gate for tools/call when auth_token is configured."""
         if not self.auth_token:
             return None
-        params: Dict[str, Any] = (msg.get("params")
-                                  if isinstance(msg.get("params"), dict) else {})
-        meta: Dict[str, Any] = (params.get("_meta")
-                                if isinstance(params.get("_meta"), dict) else {})
+        raw_params = msg.get("params")
+        params: Dict[str, Any] = (dict(raw_params)
+                                  if isinstance(raw_params, dict) else {})
+        raw_meta = params.get("_meta")
+        meta: Dict[str, Any] = (dict(raw_meta)
+                                if isinstance(raw_meta, dict) else {})
         token = meta.get("harness_token") or params.get("harness_token")
         if token is None or not isinstance(token, str) or token != self.auth_token:
             return {"jsonrpc": "2.0", "id": msg.get("id"),
@@ -497,9 +499,10 @@ class McpServer:
             # notifications/progress frame per typed run event until the
             # response frame is written. Without the token, zero progress
             # frames -- the historical behavior.
+            raw_progress_meta = params.get("_meta")
             progress_meta: Dict[str, Any] = (
-                params.get("_meta")
-                if isinstance(params.get("_meta"), dict) else {})
+                dict(raw_progress_meta)
+                if isinstance(raw_progress_meta, dict) else {})
             token = progress_meta.get("progressToken")
             if _valid_progress_token(token):
                 self._register_progress(request_id, token)
@@ -597,6 +600,7 @@ class McpServer:
 
         if name == "ask":
             prompt = validate_mcp_prompt(args.get("prompt"))
+            assert isinstance(prompt, str)  # required=True validated it
             settings = self.settings or load_settings()
             session_id = (validate_mcp_task_id(args.get("session_id"))
                           if args.get("session_id") is not None else None)
@@ -1643,7 +1647,8 @@ def main(argv=None):  # pragma: no cover - thin wiring; exercised via smoke test
     engine = composition.engine_for(settings, api_key, governor, ledger, router)
     McpServer(
         transport=transport, api_key=api_key, governor=governor, ledger=ledger,
-        router=router, engine=engine, max_panelists=int(settings.max_panelists),
+        router=router, engine=engine,
+        max_panelists=cast(int, settings.max_panelists),
         use_free=settings.use_free, allow_write=settings.mcp_allow_write,
         allow_verify=settings.mcp_allow_verify,
         allowed_roots=settings.mcp_allowed_roots,

@@ -124,6 +124,7 @@ class RouteTests(unittest.TestCase):
         )
         result = driver.step(Target("observed", CLI), schema=CLI_SCHEMA)
         self.assertTrue(result.ok, result.detail)
+        assert result.execution is not None
         self.assertEqual(result.execution.action, "observe")
         verified = Service(driver).verify()
         self.assertTrue(verified["audit"]["ok"])
