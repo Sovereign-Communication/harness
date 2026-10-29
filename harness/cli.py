@@ -2072,6 +2072,12 @@ def main(argv=None):
         # subarguments; mirrors the serve/desktop early-intercept pattern).
         from .media_client import run_cli as _media_cli
         return _media_cli(args[1:])
+    if args[:1] == ["assess"]:
+        # The v1 assessment gate is a lane-workflow disposition and reads no
+        # credentials or ledger state: JSON in, verdict out. Handled before
+        # settings setup so a lane can gate a judgement on a bare runner.
+        from .jev_assessment import run_cli as _assess_cli
+        return _assess_cli(args[1:])
     if args[:1] == ["driver"]:
         # Verified extraction -> Jev decision -> deterministic action via
         # driver-core. The driver owns the ordering, the extraction

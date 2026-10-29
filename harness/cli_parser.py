@@ -106,6 +106,13 @@ def build_parser():
                                   "step via driver-core (closed action "
                                   "vocabulary, consent bound to action+params)")
 
+    # The v1 assessment gate (harness/jev_assessment.py; parses its own
+    # subarguments). It is a lane-workflow disposition, not the audit bar: the
+    # help text says so where an operator first meets it.
+    sub.add_parser("assess", help="v1 five-aspect assessment gate over a "
+                                  "JSON judgement (lane workflow; the audit "
+                                  "bar is unchanged)")
+
     # Structured so --help lists the UI faces alongside the data commands.
     sub.add_parser("serve", help="Local web UI + JSON API over the core (loopback; "
                                  "--auth-token optional, HARNESS_UI_AUTH_TOKEN)")
