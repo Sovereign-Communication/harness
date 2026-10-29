@@ -1,11 +1,11 @@
 # Jev Full-Functionality Roadmap
 
-**Status:** active tracking doc  
+**Status:** active dependency and acceptance roadmap. The current full open-issue inventory and dispositions are in the [Phase 0 ledger](issue-plans/phase0-ledger-2026-10-28.md).
 **Implementer lanes:** Claude Code (`CLAUDE.md`, `/isolated-mission`), Codex, and Freebuff share this canon; use lane-specific handoffs as seat state, not parallel plans.
 **Historical audit date:** 2026-09-22 (Claude dogfood audit: 9 components, 31 confirmed findings — see `DF-*` below); current repository sweep: 2026-10-14.
 **Live probe:** TypeSafe `POST https://api.typesafe.ai/v1/systemone` succeeded with key at `~/.config/harness/jev.env`
 
-This file is the **single source of truth** for Harness mission work (Jev / System One, HUL, hourglass, site, and follow-ups). Every future PR must carry an ID from the tracker below and reference an acceptance test named here. Do not open parallel ad-hoc plans — add or update rows here.
+This file remains the canonical source for long-lived acceptance criteria and dependency planning. The dated Phase 0 ledger records the full live issue inventory and current dispositions. Every future PR must carry an ID from the tracker below and reference an acceptance test named here. Do not create parallel roadmaps; update acceptance and dependency detail here and live disposition status in the dated ledger.
 
 **Mission prompts:** [jev-mission-prompt.md](jev-mission-prompt.md) (`/isolated-mission --bar <ID>`). Trust `origin/main`; a stale local STATUS is not evidence.
 
@@ -16,10 +16,11 @@ Related design context (not the tracker): [system-one-integration.md](system-one
 ---
 
 <!-- BEGIN ISSUE295_IMPLEMENTATION_PLAN -->
+> **Historical snapshot:** the implementation-preparation block below records the 2026-10-22 plan and its 61-issue snapshot. It is preserved as historical evidence, not current backlog scope. The full current inventory and disposition snapshot is in the [2026-10-28 Phase 0 ledger](issue-plans/phase0-ledger-2026-10-28.md); the active mission defines this run's execution order.
+
 ## Implementation preparation - 2026-10-22 (#295)
 
-**State: proposed plan; no product issue is declared complete here.** This is
-the current plan for the 61 open issues (60 work items plus tracker #295) in
+**State: historical proposed plan; no product issue is declared complete here.** This plan recorded the 61 open issues (60 work items plus tracker #295) in
 the 2026-10-22 snapshot. Older STATUS, next-slice lists and CI/test receipts
 below are historical evidence. They do not reopen shipped/deferred work or
 certify the present tree. #295 carries execution receipts; this file owns order.

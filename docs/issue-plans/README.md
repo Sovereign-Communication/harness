@@ -1,9 +1,11 @@
 # Issue implementation queue — batch 1
 
-This directory is the execution view of the canon's #295 register. The
-authoritative order, dependencies and acceptance exits remain
-[`docs/jev-roadmap.md`](../jev-roadmap.md); this queue is generated from that
-register plus the live GitHub open-issue set.
+**Status: historical execution snapshot.** The counts and rows below describe
+the 2026-10-25 queue generation and its later historical updates; they are not
+the current live issue inventory. The current full inventory and dispositions
+are in the [2026-10-28 Phase 0 ledger](phase0-ledger-2026-10-28.md). The roadmap
+retains long-lived acceptance and dependency context; the mission defines the
+active queue for this run. Do not use `queue.json` as current count evidence.
 
 **Snapshot 2026-10-25:** the queue was generated at 58 open GitHub issues,
 all mapped to a canon row. Six later tracking issues (#377-#382, opened
