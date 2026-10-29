@@ -561,23 +561,45 @@ def _append_jsonl(path: Path, record: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
+    """Read a receipt/evaluation stream, or refuse it by path and line.
+
+    The 2026-10-28 reproduction (issue #427) fed valid, malformed, valid and
+    got both valid rows back: a corrupted middle line was indistinguishable
+    from records that never existed, while resume counters, STATUS and
+    ``pack_summary`` all presented the stream as complete. Skipping is not a
+    recovery policy, so a malformed or non-object row now raises. A final
+    row without a terminating newline is reported as an interrupted append
+    and fails closed too: nothing claims a complete receipt sequence over
+    bytes nobody can parse.
+    """
     if not Path(path).exists():
         return []
     out: List[Dict[str, Any]] = []
     try:
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(entry, dict):
-                    out.append(entry)
+        with open(path, encoding="utf-8", newline="") as f:
+            text = f.read()
     except OSError as e:
         raise HarnessError(f"cannot read JSONL: {path} ({e})") from e
+    lines = text.splitlines(keepends=True)
+    for number, raw in enumerate(lines, start=1):
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError as exc:
+            interrupted = (number == len(lines)
+                           and not raw.endswith(("\n", "\r")))
+            kind = ("interrupted final record" if interrupted
+                    else "malformed record")
+            raise HarnessError(
+                f"{path}:{number}: {kind} ({exc.msg}); the stream is not "
+                f"complete and no receipt count may be derived from it") from exc
+        if not isinstance(entry, dict):
+            raise HarnessError(
+                f"{path}:{number}: record is not a JSON object "
+                f"({type(entry).__name__}); the stream is not complete")
+        out.append(entry)
     return out
 
 
