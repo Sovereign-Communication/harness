@@ -576,7 +576,7 @@ Wire into any MCP host (Claude Code, Cursor, your own agents):
 
 Tools (`tools/list` order): `ask`, `site_check`, `panel_verify`, `apply_edit`, `offer_work`, `defer_work`,
 `ledger_status`, `participation_report`, `spend_status`, `trust_status`, `plan_and_execute`,
-`issue_sort`, `route_query`, `mission_status`, `continue_work`, `script_run`, `log_judgment`,
+`issue_sort`, `source_audit`, `route_query`, `mission_status`, `continue_work`, `script_run`, `log_judgment`,
 `lucas_gate_v2`, `jev_phase`, `jev_freeze`, `dogfood`, `generate_brief`, `driver_step`, `driver_health`, `driver_vocabulary`,
 `driver_verify`, `host_provision_probe`, `host_provision_plan`, `repo_cards`, `jev_calibration`,
 `economics_report`.

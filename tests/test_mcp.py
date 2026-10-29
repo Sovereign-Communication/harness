@@ -1264,6 +1264,7 @@ class LaneSchedulingTests(unittest.TestCase):
              "plan_and_execute": "mutation",
              "continue_work": "mutation",
              "script_run": "mutation",
+             "source_audit": "mutation",
              "jev_freeze": "mutation",
              "dogfood": "mutation",
              "ask": "spendy",
@@ -1291,6 +1292,50 @@ class LaneSchedulingTests(unittest.TestCase):
              "repo_cards": "observe",
              "jev_calibration": "observe",
              "economics_report": "observe"})
+
+
+class SourceAuditMcpTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name) / "workspace"
+        self.root.mkdir()
+        self._transport, self.server = make_server(
+            allow_write=False, allowed_roots=[self.root])
+        self.server.settings = SimpleNamespace(max_cost=0.1, jev_api_key=None)
+        self.args = {
+            "root": str(self.root),
+            "code_pack": {"id": "code"},
+            "docs_pack": {"id": "docs"},
+            "evidence_pack": {"id": "evidence"},
+            "run_budget": 0.01,
+            "state_path": ".harness/source-audit.sqlite3",
+            "allow_write": True,
+        }
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_source_audit_requires_explicit_write_permission(self):
+        self.args["allow_write"] = False
+        with self.assertRaisesRegex(HarnessError, "source_audit writes resume state"):
+            self.server._invoke("source_audit", self.args)
+        self.assertFalse((self.root / ".harness").exists())
+
+    def test_source_audit_uses_allowed_root_and_shared_policy_factory(self):
+        report = {"schema": "source-audit-v1", "leads": []}
+        with (mock.patch("harness.source_audit.source_audit_policy_factory",
+                         return_value=lambda _spent: object()) as factory,
+              mock.patch("harness.source_audit.run_source_audit",
+                         return_value=report) as audit):
+            result = self.server._invoke("source_audit", self.args)
+        self.assertEqual(result["schema"], "source-audit-v1")
+        self.assertEqual(result["state_path"],
+                         str(self.root / ".harness" / "source-audit.sqlite3"))
+        factory.assert_called_once()
+        audit.assert_called_once()
+        self.assertTrue(os.path.samefile(audit.call_args.args[0], self.root))
+        self.assertFalse((self.root / ".harness").exists())
+        self.assertIn("source_audit", {tool["name"] for tool in TOOL_SCHEMAS})
 
     def test_unknown_and_missing_names_ride_observe(self):
         self.assertEqual(lane_for("not_a_tool"), "observe")

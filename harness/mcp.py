@@ -1512,6 +1512,68 @@ class McpServer:
                 return {"status": "stale" if stale else "ok", "checked": len(repos), "stale": stale}
             changed, unchanged = rc.generate(root, cards, repo=repo_filter)
             return {"status": "written", "changed": changed, "unchanged": unchanged}
+        if name == "source_audit":
+            from .source_audit import (
+                run_source_audit,
+                source_audit_policy_factory,
+                write_report,
+            )
+            allow_write = validate_mcp_bool(args.get("allow_write", False),
+                                            "allow_write")
+            if not (self.allow_write or allow_write):
+                self._refuse(
+                    "mcp source audit write without allow_write",
+                    "source_audit writes resume state; re-send with allow_write=true "
+                    "or configure allow_write=True explicitly",
+                    task_id=args.get("task_id"))
+            root = self._workspace_for(
+                validate_text(args.get("root"), "root", 4096))
+            raw_state = validate_text(args.get("state_path"), "state_path", 4096,
+                                      required=True)
+            state_path = self._file_for(raw_state, workspace=root, must_exist=False)
+            if not osal.is_within(str(state_path), str(root)):
+                raise HarnessError("source audit state path must stay inside the selected repository")
+            raw_report = validate_text(args.get("report_path"), "report_path", 4096)
+            report_path = None
+            if raw_report:
+                report_path = self._file_for(
+                    raw_report, workspace=root, must_exist=False)
+                if not osal.is_within(str(report_path), str(root)):
+                    raise HarnessError("source audit report path must stay inside the selected repository")
+            packs = {
+                "code": args.get("code_pack"),
+                "docs": args.get("docs_pack"),
+                "evidence": args.get("evidence_pack"),
+            }
+            run_budget = finite_number(args.get("run_budget"), "run_budget",
+                                       0.000001, HARD_MAX_COST)
+            chunk_chars = bounded_int(args.get("chunk_chars", 4000),
+                                      "chunk_chars", 512, 8000)
+            dispositions = args.get("dispositions")
+            if dispositions is not None and not isinstance(dispositions, dict):
+                raise HarnessError("source audit dispositions must be an object")
+            raw_task_id = args.get("task_id")
+            task_id = (str(validate_mcp_task_id(raw_task_id))
+                       if raw_task_id is not None
+                       else "source-audit-{}".format(uuid.uuid4().hex[:12]))
+            self.ledger.ensure_offered_task_id(
+                task_id, model="(source-audit)", required=False, source="mcp")
+            settings = getattr(self, "settings", None) or getattr(
+                self.engine, "settings", None)
+            if settings is None:
+                raise HarnessError("source_audit requires configured Jev settings")
+            report = run_source_audit(
+                root, packs,
+                source_audit_policy_factory(settings, run_budget, self.ledger),
+                state_path=state_path, run_budget=run_budget,
+                chunk_chars=chunk_chars,
+                exclude=[report_path], dispositions=dispositions,
+                task_id=task_id)
+            report["task_id"] = task_id
+            report["state_path"] = str(state_path)
+            if report_path:
+                report["written"] = {"report": write_report(report, report_path)}
+            return report
         if name == "jev_calibration":
             from . import jev_calibration as jcal
             window = bounded_int(args.get("window", 1000), "window", 1, 10000)

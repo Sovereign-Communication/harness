@@ -26,6 +26,7 @@ import json
 import os
 import tempfile
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, cast
 from . import jev_calibration as _jcal
@@ -99,6 +100,9 @@ from .repo_summary import analyze_repo as _repo_analyze
 from .repo_summary import render_repo_map as _repo_render_map
 from .repo_summary import write_envelope as _repo_write_envelope
 from .repo_summary import write_map as _repo_write_map
+from .source_audit import run_source_audit as _source_audit_run
+from .source_audit import source_audit_policy_factory as _source_audit_policy_factory
+from .source_audit import write_report as _source_audit_write_report
 from .log_analysis import analyze_log as _log_analyze, load_log_text as _log_load_text, write_analysis as _log_write_analysis
 from .mission_driver import pack_probe_attempt as _mission_pack_probe
 from .mission_driver import run_mission as _mission_run
@@ -116,7 +120,6 @@ from .results import terminal_exit_code, verify_terminal_status
 from .saturation import advise
 from .validation import finite_number
 import sys
-import uuid
 
 from ._http import HttpTransport
 from .apply import validate_continuation
@@ -707,6 +710,44 @@ def _cmd_repo_summary(opts, settings):
                "axes", "attention", "nouls", "structural")}
     report["written"] = written
     report["state_path"] = state_path
+    _emit(report, opts.out)
+
+
+def _cmd_source_audit(opts, settings):
+    """Run the opt-in, resumable full-source audit under a required ceiling."""
+    root = Path(opts.root or Path.cwd()).resolve()
+    run_budget = finite_number(opts.run_budget, "run_budget", 0.000001,
+                               HARD_MAX_COST)
+    chunk_chars = int(opts.chunk_chars)
+    if not 512 <= chunk_chars <= 8000:
+        raise HarnessError("chunk_chars must be between 512 and 8000")
+    packs = {
+        "code": _read_json(opts.code_pack, "source-audit code pack"),
+        "docs": _read_json(opts.docs_pack, "source-audit docs pack"),
+        "evidence": _read_json(opts.evidence_pack, "source-audit evidence pack"),
+    }
+    state_path = opts.state or root / ".harness" / "source-audit.sqlite3"
+    dispositions = None
+    if opts.dispositions:
+        dispositions = _read_json(opts.dispositions, "source-audit dispositions")
+        if not isinstance(dispositions, dict):
+            raise HarnessError("source-audit dispositions must be a JSON object")
+    task_id = opts.task_id or "source-audit-{}".format(uuid.uuid4().hex[:12])
+    ledger = _ledger(settings)
+    ledger.ensure_offered_task_id(
+        task_id, model="(source-audit)", required=False, source="cli")
+    make_policy = _source_audit_policy_factory(settings, run_budget, ledger)
+    report = _source_audit_run(
+        root, packs, make_policy, state_path=state_path,
+        run_budget=run_budget, chunk_chars=chunk_chars,
+        exclude=[opts.save_to, opts.dispositions],
+        dispositions=dispositions, task_id=task_id)
+    report["task_id"] = task_id
+    written = {}
+    if opts.save_to:
+        written["report"] = _source_audit_write_report(report, opts.save_to)
+    report["written"] = written
+    report["state_path"] = str(state_path)
     _emit(report, opts.out)
 
 
@@ -2051,6 +2092,7 @@ _DISPATCH = {
     "issue-sort": _cmd_issue_sort,
     "log-judgment": _cmd_log_judgment,
     "repo-summary": _cmd_repo_summary,
+    "source-audit": _cmd_source_audit,
     "route": _cmd_route,
     "site-export": _cmd_site_export,
     "ledger": _cmd_ledger,

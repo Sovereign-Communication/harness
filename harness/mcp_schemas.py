@@ -238,6 +238,42 @@ TOOL_SCHEMAS = [
         }, "required": ["issue", "pack"]},
     },
     {
+        "name": "source_audit",
+        "title": "Run a resumable full-source Jev audit",
+        "description": (
+            "Opt-in, cost-capped source audit over a Git snapshot. Requires "
+            "operator packs for code/configuration, documentation, and evidence/data. "
+            "Excludes sensitive paths, ignored files, binaries, and generated artifacts; "
+            "stores only hashes, line ranges, typed results, usage receipts, and lead "
+            "dispositions. Never returns source text. Writes resume state and may incur "
+            "Jev provider cost."),
+        "inputSchema": {"type": "object", "properties": {
+            "root": {"type": "string",
+                     "description": "Selected Git repository root inside configured allowed roots"},
+            "code_pack": {"type": "object",
+                          "description": "Operator repo-summary pack for code/configuration"},
+            "docs_pack": {"type": "object",
+                          "description": "Operator repo-summary pack for documentation"},
+            "evidence_pack": {"type": "object",
+                              "description": "Operator repo-summary pack for evidence/data"},
+            "run_budget": {"type": "number", "minimum": 0.000001, "maximum": 0.25,
+                            "description": "Required cumulative USD ceiling for this audit run"},
+            "chunk_chars": {"type": "integer", "default": 4000,
+                            "minimum": 512, "maximum": 8000},
+            "state_path": {"type": "string",
+                           "description": "SQLite resume state path inside the selected repository"},
+            "report_path": {"type": "string",
+                            "description": "Optional source-safe JSON report path inside the selected repository"},
+            "dispositions": {"type": "object",
+                             "description": "Optional lead-id map to verified, false_positive, historical_fixture, or unresolved"},
+            "task_id": {"type": "string"},
+            "allow_write": {"type": "boolean",
+                            "description": "Explicit permission to persist resume state and optional report"},
+        }, "required": ["code_pack", "docs_pack", "evidence_pack",
+                        "run_budget", "state_path", "allow_write"]},
+        "annotations": {"readOnlyHint": False, "openWorldHint": True},
+    },
+    {
         "name": "route_query",
         "title": "Route a query onto the declared model ladder",
         "description": "SITE-2 route marketplace: compares the request against the "

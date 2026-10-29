@@ -409,6 +409,31 @@ def build_parser():
                           "configured max_cost; hard cap applies)")
     _add_output_flags(prs)
 
+    psa = sub.add_parser(
+        "source-audit",
+        help="Opt-in resumable full-source Jev audit (cost-capped; source-safe receipts)")
+    psa.add_argument("--root", default=None,
+                     help="Git repository root to audit (default: current directory)")
+    psa.add_argument("--code-pack", required=True,
+                     help="operator pack JSON for the code/configuration pass")
+    psa.add_argument("--docs-pack", required=True,
+                     help="operator pack JSON for the documentation pass")
+    psa.add_argument("--evidence-pack", required=True,
+                     help="operator pack JSON for supported evidence/data files")
+    psa.add_argument("--run-budget", type=float, required=True,
+                     help="required cumulative USD ceiling for this audit run")
+    psa.add_argument("--chunk-chars", type=int, default=4000,
+                     help="maximum deterministic chunk size in characters (512-8000)")
+    psa.add_argument("--state", default=None,
+                     help="SQLite resume receipts (default: <root>/.harness/source-audit.sqlite3)")
+    psa.add_argument("--save-to", default=None,
+                     help="write a source-safe JSON report to this path")
+    psa.add_argument("--dispositions", default=None,
+                     help="JSON object mapping lead ids to declared dispositions")
+    psa.add_argument("--task-id", default=None,
+                     help="optional ledger task id; generated when omitted")
+    _add_output_flags(psa)
+
     proute = sub.add_parser("route", help="Route a query onto the declared model ladder "
                                            "(cheapest capable rung; unkeyed = deterministic "
                                            "tier heuristic)")
