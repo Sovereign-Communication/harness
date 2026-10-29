@@ -200,7 +200,7 @@
       "url": "https://github.com/Sovereign-Communication/harness/issues/270",
       "updated_at": "2026-10-28T10:33:37Z",
       "github_state": "open",
-      "disposition_status": "pending_issue_spec_and_gate_review"
+      "disposition_status": "parked_by_design_reserved_scope_of_ship"
     },
     {
       "number": 271,
@@ -208,7 +208,7 @@
       "url": "https://github.com/Sovereign-Communication/harness/issues/271",
       "updated_at": "2026-10-28T10:33:40Z",
       "github_state": "open",
-      "disposition_status": "pending_issue_spec_and_gate_review"
+      "disposition_status": "parked_by_design_reserved_scope_of_ship"
     },
     {
       "number": 272,
@@ -216,7 +216,7 @@
       "url": "https://github.com/Sovereign-Communication/harness/issues/272",
       "updated_at": "2026-10-28T10:33:42Z",
       "github_state": "open",
-      "disposition_status": "pending_issue_spec_and_gate_review"
+      "disposition_status": "parked_by_design_reserved_scope_of_ship"
     },
     {
       "number": 273,
@@ -224,7 +224,7 @@
       "url": "https://github.com/Sovereign-Communication/harness/issues/273",
       "updated_at": "2026-10-28T10:33:45Z",
       "github_state": "open",
-      "disposition_status": "pending_issue_spec_and_gate_review"
+      "disposition_status": "parked_by_design_reserved_scope_of_ship"
     },
     {
       "number": 275,
@@ -232,7 +232,7 @@
       "url": "https://github.com/Sovereign-Communication/harness/issues/275",
       "updated_at": "2026-10-28T10:33:48Z",
       "github_state": "open",
-      "disposition_status": "pending_issue_spec_and_gate_review"
+      "disposition_status": "parked_by_design_reserved_philosophy"
     },
     {
       "number": 277,
@@ -304,7 +304,7 @@
       "url": "https://github.com/Sovereign-Communication/harness/issues/290",
       "updated_at": "2026-10-28T10:34:11Z",
       "github_state": "open",
-      "disposition_status": "pending_issue_spec_and_gate_review"
+      "disposition_status": "parked_fail_closed_no_jev_signal"
     },
     {
       "number": 291,
@@ -360,7 +360,7 @@
       "url": "https://github.com/Sovereign-Communication/harness/issues/301",
       "updated_at": "2026-10-28T23:16:07Z",
       "github_state": "open",
-      "disposition_status": "pending_issue_spec_and_gate_review"
+      "disposition_status": "parked_fail_closed_no_jev_signal"
     },
     {
       "number": 302,
@@ -441,7 +441,7 @@
       "url": "https://github.com/Sovereign-Communication/harness/issues/314",
       "updated_at": "2026-10-28T10:34:55Z",
       "github_state": "open",
-      "disposition_status": "pending_issue_spec_and_gate_review"
+      "disposition_status": "parked_by_design_reserved_parity_bars"
     },
     {
       "number": 318,
@@ -513,7 +513,7 @@
       "url": "https://github.com/Sovereign-Communication/harness/issues/336",
       "updated_at": "2026-10-28T10:35:17Z",
       "github_state": "open",
-      "disposition_status": "pending_issue_spec_and_gate_review"
+      "disposition_status": "parked_by_design_reserved_pruning"
     },
     {
       "number": 337,
@@ -537,7 +537,7 @@
       "url": "https://github.com/Sovereign-Communication/harness/issues/342",
       "updated_at": "2026-10-28T11:26:27Z",
       "github_state": "open",
-      "disposition_status": "pending_issue_spec_and_gate_review"
+      "disposition_status": "parked_fail_closed_no_action_specific_jev_signal"
     },
     {
       "number": 343,
@@ -553,7 +553,7 @@
       "url": "https://github.com/Sovereign-Communication/harness/issues/344",
       "updated_at": "2026-10-28T10:35:29Z",
       "github_state": "open",
-      "disposition_status": "pending_issue_spec_and_gate_review"
+      "disposition_status": "parked_dependency_342_open"
     },
     {
       "number": 345,
@@ -601,7 +601,7 @@
       "url": "https://github.com/Sovereign-Communication/harness/issues/380",
       "updated_at": "2026-10-28T10:35:43Z",
       "github_state": "open",
-      "disposition_status": "pending_issue_spec_and_gate_review"
+      "disposition_status": "parked_by_design_reserved_gate_swap"
     },
     {
       "number": 381,
@@ -609,7 +609,7 @@
       "url": "https://github.com/Sovereign-Communication/harness/issues/381",
       "updated_at": "2026-10-28T10:35:45Z",
       "github_state": "open",
-      "disposition_status": "pending_issue_spec_and_gate_review"
+      "disposition_status": "parked_by_design_reserved_gate_swap"
     },
     {
       "number": 382,
@@ -730,7 +730,7 @@
       "url": "https://github.com/Sovereign-Communication/harness/issues/424",
       "updated_at": "2026-10-29T01:54:39Z",
       "github_state": "open",
-      "disposition_status": "pending_issue_spec_and_gate_review"
+      "disposition_status": "parked_by_design_reserved_claims"
     },
     {
       "number": 425,
@@ -960,6 +960,20 @@
         "semantics": "Revoking opt-in stops future submissions; contributions already in published aggregates remain.",
         "implementation_constraints": "Opt-in only, aggregate only, sanitization documented and hermetic-tested; deploy parked on CF_API_TOKEN and D1/KV IDs."
       }
+    },
+    "main_roadmap_snapshot": {
+      "path": "docs/jev-roadmap.md",
+      "ref": "origin/main at ffeb4d2aa05f3153d052aa64ceb141fd7c7fd255",
+      "source_lines": [
+        "22-25",
+        "334-337"
+      ],
+      "snapshot_date": "2026-10-22",
+      "declared_open_issue_count": 61,
+      "declared_plan_row_count": 61,
+      "current_ledger_open_issue_count": 76,
+      "current_ledger_source": "count_source in this artifact, REST pagination cross-checked against open PR listing and repository open_issues_count",
+      "reconciliation_status": "historical planning count is stale relative to the current REST ledger; no roadmap write made pending an action-specific gate"
     }
   },
   "gate_evidence": [
@@ -981,7 +995,112 @@
       "status": "carried_parked_after_second_ci_attempt",
       "evidence_url": "https://github.com/Sovereign-Communication/harness/issues/433#issuecomment-6483926200",
       "instruction": "Do not retry CI in this pass."
+    },
+    {
+      "issue": 270,
+      "status": "parked_by_design_reserved_scope_of_ship",
+      "source": "Mission prompt v2, reserved scope-of-ship/debut ship calls #270-273. Park the row; no ship decision or implementation action taken."
+    },
+    {
+      "issue": 271,
+      "status": "parked_by_design_reserved_scope_of_ship",
+      "source": "Mission prompt v2, reserved scope-of-ship/debut ship calls #270-273. Park the row; no ship decision or implementation action taken."
+    },
+    {
+      "issue": 272,
+      "status": "parked_by_design_reserved_scope_of_ship",
+      "source": "Mission prompt v2, reserved scope-of-ship/debut ship calls #270-273. Park the row; no ship decision or implementation action taken."
+    },
+    {
+      "issue": 273,
+      "status": "parked_by_design_reserved_scope_of_ship",
+      "source": "Mission prompt v2, reserved scope-of-ship/debut ship calls #270-273. Park the row; no ship decision or implementation action taken."
+    },
+    {
+      "issue": 275,
+      "status": "parked_by_design_reserved_philosophy",
+      "source": "Mission prompt v2, reserved Hourglass philosophy #275. Park for Lucas escalation; no philosophy decision taken."
+    },
+    {
+      "issue": 288,
+      "status": "escalated_fail_closed_no_action_specific_jev_signal",
+      "source": "The existing docs/issue-plans/288.md Jev record applies to the merged implementation in PR #411. The mission specifies a separate bookkeeping receipt, which is a distinct action without a matching Jev v1 decision. The prior pass recorded no configured TypeSafe credential; this is carried, not rechecked. Current tool-catalog inspection found no issue-disposition endpoint: driver_step chooses UI actions and does not emit the required Jev v1 signals. Official System One API documentation requires Bearer authentication (https://docs.typesafe.ai/api/system-one). No call or remote write was made; fail closed and keep the follow-up parked until an action-specific gate signal exists. No voice-suite or private-profile pass claimed."
+    },
+    {
+      "issue": 301,
+      "status": "parked_fail_closed_no_jev_signal",
+      "evidence_url": "https://github.com/Sovereign-Communication/harness/issues/301#issuecomment-6483192107",
+      "source": "Carried issue comment records a generic accept with null confidence and no Jev disposition, destructiveness, advances-goal, risk, or never-rule signals. It explicitly forbids retrying to shop a verdict. No code changed; fail closed and keep parked."
+    },
+    {
+      "issue": 306,
+      "status": "parked_by_design_untouched",
+      "source": "Mission prompt v2: do not rerun the probe, delete the marker, or mark complete. Marker existence and size are recorded in local_reconciliation; no marker content was read."
+    },
+    {
+      "issue": 314,
+      "status": "parked_by_design_reserved_parity_bars",
+      "source": "Mission prompt v2, reserved #314 parity bars. Park the parity-bar decision for Lucas escalation; no bar changed."
+    },
+    {
+      "issue": 336,
+      "status": "parked_by_design_reserved_pruning",
+      "source": "Mission prompt v2, reserved #336 never-prune list because pruning is destructive-adjacent. Park; do not prune or alter the list."
+    },
+    {
+      "issue": 380,
+      "status": "parked_by_design_reserved_gate_swap",
+      "source": "Mission prompt v2, reserved gate swap #380/#381. Park; do not replace or bypass Jev gates."
+    },
+    {
+      "issue": 381,
+      "status": "parked_by_design_reserved_gate_swap",
+      "source": "Mission prompt v2, reserved gate swap #380/#381. Park; do not replace or bypass Jev gates."
+    },
+    {
+      "issue": 281,
+      "status": "build_gate_first_publish_reserved",
+      "source": "Mission prompt v2: in-lane gate-first decision for build work; the PUBLISH action is a reserved submission and remains parked. No publish action taken."
+    },
+    {
+      "issue": 295,
+      "status": "open_tracker_close_last",
+      "source": "Mission prompt v2: keep tracker open until every issue is dispositioned and main is green; close last with final primary-source numbers."
+    },
+    {
+      "issue": 407,
+      "status": "implementation_predecided_semantics_deploy_parked",
+      "source": "Mission prompt v2 and local_reconciliation: revocation stops future submissions; published aggregates retain prior contributions. Build only opt-in/aggregate behavior with sanitization documented and hermetic tests; public deploy remains reserved and parked on named CF_API_TOKEN and D1/KV IDs."
+    },
+    {
+      "issue": 432,
+      "status": "parked_by_design_reserved_scope_of_ship",
+      "source": "Mission prompt v2, reserved voice scope-of-ship. Implementation parked; an evaluation brief is allowed. No implementation or ship decision taken."
+    },
+    {
+      "issue": 290,
+      "status": "parked_fail_closed_no_jev_signal",
+      "evidence_url": "https://github.com/Sovereign-Communication/harness/issues/290",
+      "source": "Current issue body is a bounded docs-only triage runbook. Existing comments give acceptance and example requirements but no Jev v1 disposition/destructiveness/advances-goal signals for this write. The prior pass recorded no configured TypeSafe credential; that is carried, not rechecked. No draft or remote write made; fail closed pending an action-specific gate. The mission permits R13 to remain unresolved and requires a declared close only."
+    },
+    {
+      "issue": 342,
+      "status": "parked_fail_closed_no_action_specific_jev_signal",
+      "evidence_url": "https://github.com/Sovereign-Communication/harness/issues/342#issuecomment-6467762818",
+      "source": "Current issue remains open. Existing comments record research-query decisions and an unrecoverable historical plan receipt, but not an action-specific Jev v1 implementation disposition with all required signals. Do not repeat paid retrieval or attestation. TypeSafe credential absence is carried from the prior pass, not rechecked; no new call or write made."
+    },
+    {
+      "issue": 344,
+      "status": "parked_dependency_342_open",
+      "evidence_url": "https://github.com/Sovereign-Communication/harness/issues/344",
+      "source": "The current issue comment parks #344 behind #342; live GitHub retrieval in this pass confirmed #342 is still open. Preserve the dependency; no tests, probes, paid retrieval, or implementation were run."
+    },
+    {
+      "issue": 424,
+      "status": "parked_by_design_reserved_claims",
+      "evidence_url": "https://github.com/Sovereign-Communication/harness/issues/424",
+      "source": "Issue scope is correction of public System One shipped/deferred feature claims. Mission prompt v2 reserves claims: park the claim decision for Lucas escalation. No wording or ship-status claim changed."
     }
   ],
-  "next_item": "Continue with #288 bookkeeping after its per-action gate is available. #433 stays parked after its documented CI attempt bound; #293 is already completed by PR #436; #301 remains open for its ordered step. Keep #295 open until the final verified disposition count and green main."
+  "next_item": "Planning reconciliation is next: docs/jev-roadmap.md still records the 2026-10-22 61-issue snapshot (lines 22-25 and 334-337), while the current REST ledger has a different count. PR #431 is already closed unmerged; do not rebuild it or trust the stale local plans worktree. Keep the reconciliation local until an action-specific Jev v1/Lucas Gate v2 signal exists. Then continue to #420?#430 in order, respecting the single open PR #437 for #421. Keep #295 open until every disposition is complete and main is green."
 }
