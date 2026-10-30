@@ -89,8 +89,9 @@ class SourceAuditTests(unittest.TestCase):
         self._write("src/app.py", "def safe():\n    return 'source sentinel'\n")
         self._write("src/fallback.py", "def fallback():\n    return None\n")
         self._write("src/discarded.py", "def discarded():\n    return None\n")
+        self.test_api_key = "sk-" + ("A" * 32)
         self._write("src/provider.py",
-                    'OPENAI_API_KEY = "sk-1234567890abcdef1234567890"\n')
+                    'OPENAI_API_KEY = "{}"\n'.format(self.test_api_key))
         self._write("docs/readme.md", "# Documentation\nA safe fixture.\n")
         self._write("evidence/events.jsonl", '{"event":"fixture"}\n')
         self._write("secrets/token.txt", "SOURCE_AUDIT_SECRET_SENTINEL")
@@ -231,7 +232,7 @@ class SourceAuditTests(unittest.TestCase):
         self.assertNotIn("source sentinel", serialized)
         self.assertNotIn("SOURCE_AUDIT_SECRET_SENTINEL", serialized)
         self.assertNotIn("ENV_AUDIT_SECRET_SENTINEL", serialized)
-        self.assertNotIn("sk-1234567890abcdef1234567890", serialized)
+        self.assertNotIn(self.test_api_key, serialized)
         self.assertTrue(any(row["is_fallback"] for row in updated["receipts"]))
         self.assertTrue(any(row["discarded"] for row in updated["receipts"]))
         self.assertEqual(updated["spend"]["fallbacks"], 1)
@@ -262,7 +263,7 @@ class SourceAuditTests(unittest.TestCase):
         packs = dict(self.packs)
         packs["code"] = _pack("code-with-credential")
         packs["code"]["axes"]["finding"]["instructions"] = (
-            'api_key="sk-1234567890abcdef1234567890"')
+            'api_key="{}"'.format("sk-" + ("B" * 32)))
         policy = FakePolicy()
         with self.assertRaisesRegex(HarnessError, "pack contains credential-like content"):
             source_audit.run_source_audit(
