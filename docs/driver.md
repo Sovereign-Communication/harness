@@ -127,15 +127,16 @@ parser. The shape must be declared read-only before a process starts:
 
 - built in: `git status`, `log`, `diff`, `show`, `rev-parse`, `ls-files`,
   `describe`, `blame`, `grep`;
-- operator-declared, in `DRIVER_PROBE_ALLOWLIST`, as `;`-separated argv
-  prefixes (for example `DRIVER_PROBE_ALLOWLIST="python scripts/check.py"`).
+- operator-declared, in `DRIVER_PROBE_ALLOWLIST`, as `;`-separated exact
+  argv shapes (for example `DRIVER_PROBE_ALLOWLIST="python scripts/check.py"`).
 
-A prefix match allows trailing arguments, so the declared shape covers the
-arguments a check script needs. `--output` is refused even under a reading
-subcommand because it writes a file. A probe's argv, exit code, stdout and
-stderr are written to the action record in the driver's audit chain; that
-record is the evidence. A non-zero exit is an answer, a missing program is a
-refusal, and a timeout is reported as exit code 124.
+Custom declarations match the full argv: include every argument the check
+needs, because caller-supplied trailing arguments are refused. Built in Git
+subcommands accept their arguments, except `--output` is refused because it
+writes a file. A probe's argv, exit code, stdout and stderr are written to the
+action record in the driver's audit chain; that record is the evidence. A
+non-zero exit is an answer, a missing program is a refusal, and a timeout is
+reported as exit code 124.
 
 ## Consent is never invented
 

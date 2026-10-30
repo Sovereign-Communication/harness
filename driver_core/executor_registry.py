@@ -282,11 +282,12 @@ PROBE_PREFIXES = (
 )
 
 #: An operator's own declaration of read-only command shapes, as
-#: ``;``-separated argv prefixes (for example ``python scripts/check.py``).
-#: This is how a headless verifier runs the repo's own check script without
-#: holding write authority: the operator declares the exact shape, and the
-#: probe refuses everything else. Never a shell string -- the value is
-#: tokenised on whitespace and passed to ``osal.run`` as argv.
+#: ``;``-separated exact argv shapes (for example
+#: ``python scripts/check.py --mode read``). This is how a headless verifier
+#: runs the repo's own check script without holding write authority: the
+#: operator declares every argument, and the probe refuses extra arguments.
+#: Never a shell string -- the value is tokenised on whitespace and passed to
+#: ``osal.run`` as argv.
 PROBE_ENV = "DRIVER_PROBE_ALLOWLIST"
 
 #: git spellings that write a file even under a reading subcommand.
@@ -304,15 +305,29 @@ def _head(token):
     return name[:-4] if name.endswith(".exe") else name
 
 
-def probe_prefixes(env=None):
-    """The built-in read-only shapes plus the operator's declared ones."""
+def _declared_probe_shapes(env=None):
+    """Parse operator-declared exact argv shapes from the environment."""
     env = os.environ if env is None else env
     declared = []
     for entry in str(env.get(PROBE_ENV, "")).split(";"):
         tokens = tuple(token for token in entry.split() if token)
         if tokens:
             declared.append(tokens)
-    return tuple(PROBE_PREFIXES) + tuple(declared)
+    return tuple(declared)
+
+
+def _matches_probe_shape(argv, shape, *, exact):
+    if (len(argv) < len(shape) or
+            (exact and len(argv) != len(shape)) or
+            _head(argv[0]) != _head(shape[0])):
+        return False
+    return all(token == declared
+               for token, declared in zip(argv[1:], shape[1:]))
+
+
+def probe_shapes(env=None):
+    """The built-in read-only prefixes plus exact operator-declared shapes."""
+    return tuple(PROBE_PREFIXES) + _declared_probe_shapes(env)
 
 
 def probe_argv(command, env=None):
@@ -333,15 +348,11 @@ def probe_argv(command, env=None):
     if any(not isinstance(token, str) or not token for token in command):
         raise ExecutorError("run_probe argv tokens must be non-empty strings")
     argv = list(command)
-    head = _head(argv[0])
-    allowed = False
-    for prefix in probe_prefixes(env):
-        if len(argv) < len(prefix) or head != _head(prefix[0]):
-            continue
-        if all(token == declared for token, declared
-               in zip(argv[1:], prefix[1:])):
-            allowed = True
-            break
+    allowed = any(_matches_probe_shape(argv, prefix, exact=False)
+                  for prefix in PROBE_PREFIXES)
+    if not allowed:
+        allowed = any(_matches_probe_shape(argv, shape, exact=True)
+                      for shape in _declared_probe_shapes(env))
     if not allowed:
         raise ExecutorError(
             f"probe shape {argv!r} is not allowlisted; declared read-only "
@@ -356,7 +367,7 @@ def probe_argv(command, env=None):
 
 
 def _progress_shapes(env=None):
-    return [" ".join(prefix) for prefix in probe_prefixes(env)]
+    return [" ".join(shape) for shape in probe_shapes(env)]
 
 
 def _run_probe(action, params, *, env=None):

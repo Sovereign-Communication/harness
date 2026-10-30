@@ -32,8 +32,11 @@ class ReadOnlyProbeTests(unittest.TestCase):
         self.registry = build_driver_registry(None, allow_write=False)
         self.executor = Executor(vocabulary=DEFAULT_VOCABULARY,
                                  registry=self.registry, audit=self.audit)
+        python = os.path.basename(sys.executable)
         self.env = mock.patch.dict(
-            os.environ, {PROBE_ENV: "python -c"})
+            os.environ, {PROBE_ENV: (
+                "{} -c print('state-ok');{} -c 1/0".format(
+                    python, python))})
         self.env.start()
         self.addCleanup(self.env.stop)
 
@@ -60,11 +63,11 @@ class ReadOnlyProbeTests(unittest.TestCase):
     def test_a_probe_with_a_non_zero_exit_is_still_recorded_evidence(self):
         result = self.executor.execute(
             "run_probe",
-            {"command": [sys.executable, "-c", "raise SystemExit(3)"]})
+            {"command": [sys.executable, "-c", "1/0"]})
         self.assertTrue(result.ok, result.detail)
         assert result.output is not None
-        self.assertEqual(result.output["exit_code"], 3)
-        self.assertEqual(self.audit.read_all()[0]["output"]["exit_code"], 3)
+        self.assertEqual(result.output["exit_code"], 1)
+        self.assertEqual(self.audit.read_all()[0]["output"]["exit_code"], 1)
 
     def test_a_non_allowlisted_shape_is_refused_before_a_process_starts(self):
         result = self.executor.execute(
@@ -73,6 +76,29 @@ class ReadOnlyProbeTests(unittest.TestCase):
         self.assertIn("not allowlisted", result.detail)
         # The refusal is an action record, not a silent no-op.
         self.assertEqual(self.audit.read_all()[0]["kind"], "action")
+
+    def test_operator_declared_shapes_reject_appended_arguments(self):
+        declared = {PROBE_ENV: "python scripts/check.py"}
+        self.assertEqual(
+            probe_argv(["python", "scripts/check.py"], env=declared),
+            ["python", "scripts/check.py"])
+        with self.assertRaisesRegex(ExecutorError, "not allowlisted"):
+            probe_argv(["python", "scripts/check.py", "--untrusted"],
+                       env=declared)
+
+        # A `python -c` declaration cannot be used to append caller code;
+        # prove the executor refuses it before launching any process.
+        with mock.patch("driver_core.executor_registry.osal.run") as run:
+            result = self.executor.execute(
+                "run_probe",
+                {"command": [sys.executable, "-c", "print('untrusted')"]})
+        self.assertFalse(result.ok)
+        self.assertIn("not allowlisted", result.detail)
+        run.assert_not_called()
+        record = self.audit.read_all()[0]
+        self.assertEqual(record["action"], "run_probe")
+        self.assertFalse(record["ok"])
+        self.assertTrue(self.audit.verify().ok)
 
     def test_a_shell_string_is_refused_rather_than_tokenised(self):
         result = self.executor.execute(
