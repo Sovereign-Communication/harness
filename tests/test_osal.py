@@ -53,6 +53,30 @@ class OsalRunTest(TempTree):
         result = osal.run_bytes(["harness-no-such-executable"])
         self.assertEqual(result.returncode, 127)
 
+    def test_windows_spawn_uses_hidden_startup_without_console(self):
+        class StartupInfo:
+            def __init__(self):
+                self.dwFlags = 0
+                self.wShowWindow = -1
+
+        with (mock.patch.object(osal, "IS_WINDOWS", True),
+              mock.patch.object(subprocess, "STARTUPINFO", StartupInfo,
+                                create=True),
+              mock.patch.object(subprocess, "STARTF_USESHOWWINDOW", 1,
+                                create=True),
+              mock.patch.object(subprocess, "SW_HIDE", 0, create=True),
+              mock.patch.object(subprocess, "CREATE_NO_WINDOW", 128,
+                                create=True),
+              mock.patch.object(subprocess, "Popen", return_value=object())
+              as popen):
+            result = osal.spawn_piped_process([sys.executable])
+
+        self.assertIsNotNone(result)
+        startupinfo = popen.call_args.kwargs["startupinfo"]
+        self.assertEqual(startupinfo.dwFlags, 1)
+        self.assertEqual(startupinfo.wShowWindow, 0)
+        self.assertEqual(popen.call_args.kwargs["creationflags"], 128)
+
     def test_a_command_string_is_refused(self):
         """The whole point: gates are data. A string is a shell waiting."""
         with self.assertRaises(osal.OsalError):

@@ -1330,7 +1330,8 @@ class SourceAuditMcpTests(unittest.TestCase):
             result = self.server._invoke("source_audit", self.args)
         self.assertEqual(result["schema"], "source-audit-v1")
         self.assertEqual(result["state_path"],
-                         str(self.root / ".harness" / "source-audit.sqlite3"))
+                         str(self.root.resolve() / ".harness" /
+                             "source-audit.sqlite3"))
         factory.assert_called_once()
         audit.assert_called_once()
         self.assertTrue(os.path.samefile(audit.call_args.args[0], self.root))

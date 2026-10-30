@@ -218,9 +218,11 @@ def spawn_piped_process(argv, *, cwd=None, env=None):
     if env is not None:
         kwargs["env"] = env
     if IS_WINDOWS:
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = subprocess.SW_HIDE
+        # Typeshed exposes these names only for Windows; keep cross-platform
+        # static checking from treating the guarded Windows path as invalid.
+        startupinfo = getattr(subprocess, "STARTUPINFO")()
+        startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW")
+        startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE")
         kwargs["startupinfo"] = startupinfo
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     return subprocess.Popen(argv, **kwargs)

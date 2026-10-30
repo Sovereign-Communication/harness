@@ -136,7 +136,10 @@ class SourceAuditTests(unittest.TestCase):
         original = source_audit._read_text
 
         def record_reads(path):
-            read_paths.append(Path(path).relative_to(self.root).as_posix())
+            # macOS may spell a temp path as /var or /private/var; Windows
+            # may use an 8.3 alias. Compare resolved identities, not aliases.
+            read_paths.append(
+                Path(path).resolve().relative_to(self.root.resolve()).as_posix())
             return original(path)
 
         with patch.object(source_audit, "_read_text", side_effect=record_reads):
@@ -321,7 +324,7 @@ class SourceAuditTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[1], packs)
         self.assertEqual(run.call_args.kwargs["run_budget"], 0.01)
         self.assertEqual(run.call_args.kwargs["state_path"],
-                         root / ".harness" / "source-audit.sqlite3")
+                         root.resolve() / ".harness" / "source-audit.sqlite3")
         self.assertEqual(emit.call_args.args[0]["task_id"],
                          "source-audit-cli-test")
 
