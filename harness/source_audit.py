@@ -393,6 +393,7 @@ def _open_state(state_path: Path) -> sqlite3.Connection:
     if _is_link_or_reparse(state_path):
         raise SourceAuditError(
             "source audit state path cannot be a symlink or reparse point")
+    connection = None
     try:
         connection = sqlite3.connect(str(state_path), timeout=30)
         connection.execute("PRAGMA journal_mode=DELETE")
@@ -403,6 +404,11 @@ def _open_state(state_path: Path) -> sqlite3.Connection:
         connection.commit()
         return connection
     except sqlite3.Error as exc:
+        if connection is not None:
+            try:
+                connection.close()
+            except sqlite3.Error:
+                pass
         raise SourceAuditError("cannot open source audit resume state") from exc
 
 

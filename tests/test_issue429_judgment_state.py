@@ -101,6 +101,11 @@ class JudgmentStateTests(unittest.TestCase):
                 with self.assertRaises(JudgmentStateError):
                     load_judgment_rows(self.path, recover_truncated=True)
 
+    def test_append_requires_an_id_before_creating_state(self):
+        with self.assertRaisesRegex(JudgmentStateError, "needs an id"):
+            append_judgment_row(self.path, {})
+        self.assertFalse(os.path.exists(self.path))
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

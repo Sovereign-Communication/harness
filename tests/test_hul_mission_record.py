@@ -249,6 +249,12 @@ class ReceiptsAndStatusTests(unittest.TestCase):
         self.assertIn(r2["ts"], raw2)
         self.assertEqual(mr.load_receipts(self.pack)[0]["attempt"], 1)
 
+    def test_receipt_loader_skips_blank_jsonl_lines(self):
+        receipt = mr.append_receipt(self.pack, {"kind": "attempt", "attempt": 1})
+        self.pack.receipts_path.write_text(
+            "\n" + json.dumps(receipt) + "\n\n", encoding="utf-8")
+        self.assertEqual(mr.load_receipts(self.pack), [receipt])
+
     def test_jev_evals_append_and_load(self):
         mr.append_jev_eval(self.pack, {"verdict": "pass", "confidence": 0.9})
         mr.append_jev_eval(self.pack, {"verdict": "fail", "confidence": 0.2})

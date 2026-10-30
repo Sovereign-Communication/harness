@@ -1,6 +1,8 @@
 """Deterministic safety, resume, and receipt tests for issue #423."""
 import json
+import os
 import stat
+import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -11,6 +13,7 @@ from unittest.mock import patch
 from harness import source_audit
 from harness import cli
 from harness.errors import HarnessError
+from harness.source_audit import SourceAuditError
 from harness.jev import jev_cost
 from harness.jev_policy import JEV_MAX_INPUT_TOKENS
 
@@ -309,7 +312,7 @@ class SourceAuditTests(unittest.TestCase):
             code_pack="code.json", docs_pack="docs.json",
             evidence_pack="evidence.json", state=None,
             dispositions=None, task_id="source-audit-cli-test",
-            save_to=None, out=None)
+            save_to="source-audit.json", out=None)
         with (patch.object(cli, "_read_json",
                            side_effect=lambda path, _what: packs[path.split(".")[0]]),
               patch.object(cli, "_ledger", return_value=Ledger()),
@@ -317,6 +320,8 @@ class SourceAuditTests(unittest.TestCase):
                            return_value=lambda _spent: object()),
               patch.object(cli, "_source_audit_run",
                            return_value={"schema": "source-audit-v1"}) as run,
+              patch.object(cli, "_source_audit_write_report",
+                           return_value="source-audit.json") as write_report,
               patch.object(cli, "_emit") as emit):
             cli._cmd_source_audit(opts, SimpleNamespace(max_cost=0.1))
         self.assertEqual(captured["task_id"], "source-audit-cli-test")
@@ -327,6 +332,299 @@ class SourceAuditTests(unittest.TestCase):
                          root.resolve() / ".harness" / "source-audit.sqlite3")
         self.assertEqual(emit.call_args.args[0]["task_id"],
                          "source-audit-cli-test")
+        write_report.assert_called_once()
+        written_report, written_path = write_report.call_args.args
+        self.assertEqual(written_path, "source-audit.json")
+        self.assertEqual(written_report["task_id"],
+                         "source-audit-cli-test")
+        self.assertEqual(written_report["written"],
+                         {"report": "source-audit.json"})
+        self.assertEqual(written_report["state_path"],
+                         str(root.resolve() / ".harness" /
+                             "source-audit.sqlite3"))
+
+    def test_cli_source_audit_rejects_invalid_chunk_limit_and_dispositions(self):
+        opts = SimpleNamespace(
+            root=str(self.root), run_budget=0.01, chunk_chars=511,
+            code_pack="code.json", docs_pack="docs.json",
+            evidence_pack="evidence.json", state=None,
+            dispositions=None, task_id="source-audit-invalid-cli",
+            save_to=None, out=None)
+        with self.assertRaisesRegex(HarnessError, "chunk_chars must be between"):
+            cli._cmd_source_audit(opts, SimpleNamespace(max_cost=0.1))
+
+        opts.chunk_chars = 512
+        opts.dispositions = "dispositions.json"
+        with (patch.object(cli, "_read_json", return_value=[]),
+              self.assertRaisesRegex(HarnessError,
+                                     "dispositions must be a JSON object")):
+            cli._cmd_source_audit(opts, SimpleNamespace(max_cost=0.1))
+
+    def test_git_snapshot_and_output_path_refusals_are_explicit(self):
+        for code in (126, 127):
+            with self.subTest(git_returncode=code):
+                with patch.object(source_audit.osal, "run_bytes",
+                                  return_value=SimpleNamespace(
+                                      returncode=code, stdout=b"", stderr=b"")):
+                    with self.assertRaisesRegex(SourceAuditError,
+                                                "available Git executable"):
+                        source_audit._git(self.root, "status")
+        with patch.object(source_audit.osal, "run_bytes",
+                          return_value=SimpleNamespace(
+                              returncode=2, stdout=b"", stderr=b"bad repo")):
+            with self.assertRaisesRegex(SourceAuditError,
+                                        "valid Git repository snapshot"):
+                source_audit._git(self.root, "status")
+
+        with patch.object(source_audit, "_git", side_effect=OSError("read")):
+            with self.assertRaisesRegex(SourceAuditError,
+                                        "cannot read the Git repository snapshot"):
+                source_audit._repo_snapshot(self.root)
+        with patch.object(source_audit, "_git", side_effect=[
+                os.fsencode(str(self.root.parent)), b"fixture-commit"]):
+            with self.assertRaisesRegex(SourceAuditError,
+                                        "root must be the Git repository root"):
+                source_audit._repo_snapshot(self.root)
+
+        def empty_git(root, *args, **_kwargs):
+            if args == ("rev-parse", "--show-toplevel"):
+                return os.fsencode(str(root))
+            if args == ("rev-parse", "HEAD"):
+                return b"fixture-commit"
+            return b""
+
+        with patch.object(source_audit, "_git", side_effect=empty_git):
+            commit, paths, ignored = source_audit._repo_snapshot(self.root)
+        self.assertEqual(commit, "fixture-commit")
+        self.assertEqual(paths, [])
+        self.assertEqual(ignored, set())
+        self.assertIsNone(source_audit._relative_output(self.root, None))
+        with self.assertRaisesRegex(SourceAuditError, "stay inside"):
+            source_audit._relative_output(self.root, "..")
+
+        class Uninspectable:
+            def lstat(self):
+                raise PermissionError("fixture")
+
+        with self.assertRaisesRegex(SourceAuditError,
+                                    "cannot safely inspect source audit output"):
+            source_audit._is_link_or_reparse(Uninspectable())
+
+    def test_snapshot_fails_closed_when_git_ignore_rules_cannot_be_read(self):
+        original = source_audit.osal.run_bytes
+
+        for code, message in ((127, "available Git executable"),
+                              (2, "cannot read Git ignored-path rules")):
+            def fake_run(argv, **kwargs):
+                if argv[:2] == ["git", "check-ignore"]:
+                    return SimpleNamespace(returncode=code, stdout=b"",
+                                           stderr=b"fixture")
+                return original(argv, **kwargs)
+
+            with self.subTest(returncode=code), patch.object(
+                    source_audit.osal, "run_bytes", side_effect=fake_run):
+                with self.assertRaisesRegex(SourceAuditError, message):
+                    source_audit._repo_snapshot(self.root)
+
+    def test_file_safety_helpers_classify_unreadable_binary_and_secret_content(self):
+        missing = self.root / "missing.py"
+        self.assertEqual(source_audit._exclusion_reason(
+            "missing.py", missing, set(), set()), "unavailable_path")
+        directory = self.root / "directory"
+        directory.mkdir()
+        self.assertEqual(source_audit._exclusion_reason(
+            "directory", directory, set(), set()), "non_regular_file")
+
+        large = self.root / "large.py"
+        large.write_bytes(b"x" * (source_audit.MAX_FILE_BYTES + 1))
+        self.assertEqual(source_audit._exclusion_reason(
+            "large.py", large, set(), set()), "file_too_large")
+        self.assertEqual(source_audit._read_text(large), (b"", "file_too_large"))
+
+        unreadable = self.root / "unreadable.py"
+        self.assertEqual(source_audit._read_text(unreadable),
+                         (b"", "unreadable_file"))
+        nul_file = self.root / "nul.py"
+        nul_file.write_bytes(b"safe\0binary")
+        self.assertEqual(source_audit._read_text(nul_file),
+                         (b"safe\0binary", "binary_file"))
+        non_utf8 = self.root / "bad-encoding.py"
+        non_utf8.write_bytes(b"\xff\xfe")
+        self.assertEqual(source_audit._read_text(non_utf8),
+                         (b"\xff\xfe", "non_utf8_file"))
+
+        self.assertFalse(source_audit._contains_credentials(
+            'API_KEY="example" TOKEN=${TOKEN} OTHER=os.environ["X"]'))
+        self.assertTrue(source_audit._contains_credentials(
+            'api_key="fixture-secret-value"'))
+        self.assertEqual(source_audit._exclusion_reason(
+            "assets/image.png", self.root / "assets" / "image.png",
+            set(), set()), "binary_file")
+
+    def test_chunking_flushes_prior_lines_before_splitting_a_long_line(self):
+        chunks = list(source_audit._iter_text_chunks(
+            "a\nb\n" + "z" * 9 + "\n" + "c\n", 4))
+        self.assertEqual(chunks, [
+            ("a\nb\n", 1, 2),
+            ("zzzz", 3, 3),
+            ("zzzz", 3, 3),
+            ("z\nc\n", 3, 4),
+        ])
+
+    def test_manifest_validation_rejects_bad_roots_packs_and_chunk_limits(self):
+        with self.assertRaisesRegex(SourceAuditError, "root must be a directory"):
+            source_audit.build_manifest(self.root / "src" / "app.py", self.packs)
+        with self.assertRaisesRegex(SourceAuditError, "chunk_chars"):
+            source_audit.build_manifest(self.root, self.packs, chunk_chars=511)
+        with self.assertRaisesRegex(SourceAuditError, "requires operator packs"):
+            source_audit.build_manifest(self.root, {"code": self.packs["code"]})
+
+        bad = dict(self.packs)
+        bad["code"] = {"id": "invalid"}
+        with self.assertRaisesRegex(SourceAuditError, "invalid code pass pack"):
+            source_audit.build_manifest(self.root, bad)
+
+        non_json = dict(self.packs)
+        non_json["code"] = dict(self.packs["code"], opaque={"not-json"})
+        with self.assertRaisesRegex(SourceAuditError, "not canonical JSON"):
+            source_audit.build_manifest(self.root, non_json)
+
+        no_docs = dict(self.packs)
+        del no_docs["docs"]
+        with self.assertRaisesRegex(SourceAuditError, "requires operator packs"):
+            source_audit._prepared_packs(no_docs)
+
+    def test_source_audit_state_corruption_and_sqlite_failures_refuse(self):
+        corrupt_file = self.root / "corrupt.sqlite3"
+        corrupt_file.write_bytes(b"not a sqlite database")
+        with self.assertRaisesRegex(SourceAuditError, "cannot open source audit"):
+            source_audit._open_state(corrupt_file)
+
+        db = sqlite3.connect(":memory:")
+        db.execute("CREATE TABLE chunks (chunk_id TEXT PRIMARY KEY, status TEXT, payload TEXT)")
+        db.execute("INSERT INTO chunks VALUES ('bad-json', 'in_flight', '{')")
+        db.execute("INSERT INTO chunks VALUES ('not-object', 'in_flight', '[]')")
+        db.commit()
+        with self.assertRaisesRegex(SourceAuditError, "state is corrupt"):
+            source_audit._state_get(db, "bad-json")
+        with self.assertRaisesRegex(SourceAuditError, "state is corrupt"):
+            source_audit._state_get(db, "not-object")
+        identity = {"chunk_id": "bad-json"}
+        with self.assertRaisesRegex(SourceAuditError, "state is corrupt"):
+            source_audit._state_claim(db, "bad-json", identity)
+        with self.assertRaisesRegex(SourceAuditError, "invalid source audit receipt"):
+            source_audit._state_finish(db, "bad-json", "in_flight", identity)
+        db.close()
+
+        missing_table = sqlite3.connect(":memory:")
+        with self.assertRaisesRegex(SourceAuditError, "cannot claim source audit chunk"):
+            source_audit._state_claim(missing_table, "chunk", {"chunk_id": "chunk"})
+        with self.assertRaisesRegex(SourceAuditError, "cannot persist source audit chunk"):
+            source_audit._state_finish(missing_table, "chunk", "complete", {})
+        missing_table.close()
+
+    def test_run_source_audit_refuses_unbounded_or_nonpersistent_state(self):
+        policy = FakePolicy()
+        with self.assertRaisesRegex(SourceAuditError, "positive USD ceiling"):
+            source_audit.run_source_audit(
+                self.root, self.packs, lambda _spent: policy,
+                state_path=self.root / ".harness" / "state.sqlite3",
+                run_budget=0)
+        with self.assertRaisesRegex(SourceAuditError, "persistent.*state path"):
+            source_audit.run_source_audit(
+                self.root, self.packs, lambda _spent: policy,
+                state_path=None, run_budget=0.1)
+        self.assertEqual(policy.calls, [])
+
+    def test_source_changes_unclaimed_chunks_and_provider_errors_are_resumable(self):
+        real_read = source_audit._read_text
+        counts = {}
+
+        def changed_on_reread(path):
+            result = real_read(path)
+            rel = Path(path).resolve().relative_to(self.root.resolve()).as_posix()
+            counts[rel] = counts.get(rel, 0) + 1
+            if rel == "src/app.py" and counts[rel] > 1:
+                return b"def replaced():\n    return 'different'\n", None
+            return result
+
+        with patch.object(source_audit, "_read_text", side_effect=changed_on_reread):
+            changed = self._run(FakePolicy())
+        self.assertEqual(changed["coverage"]["stop_reason"], "source_changed")
+        self.assertIn("src/app.py", changed["coverage"]["stop_detail"])
+
+        with patch.object(source_audit, "_state_claim",
+                          side_effect=lambda _db, _chunk_id, identity:
+                          ("in_flight", identity, False)):
+            pending = self._run(FakePolicy())
+        self.assertEqual(pending["coverage"]["stop_reason"], "resume_pending")
+        self.assertTrue(pending["coverage"]["pending_chunks"])
+
+        class BrokenPolicy:
+            keyed = True
+
+            def evaluate_repo_summary(self, *_args, **_kwargs):
+                raise RuntimeError("fixture provider failure")
+
+        failed = self._run(BrokenPolicy())
+        self.assertEqual(failed["coverage"]["stop_reason"], "error")
+        self.assertGreater(failed["coverage"]["pending_chunks"], 0)
+        self.assertNotIn("source sentinel", json.dumps(failed))
+
+    def test_policy_factory_reuses_policy_and_refuses_unfunded_calls(self):
+        worst = jev_cost(JEV_MAX_INPUT_TOKENS)
+        ledger = object()
+        policy = object()
+        governor = SimpleNamespace(remaining=lambda: worst)
+        with (patch("harness._http.HttpTransport", return_value=object()),
+              patch("harness.jev_policy.policy_for", return_value=policy) as make,
+              patch("harness.session.jev_face_governor") as reserve):
+            settings = SimpleNamespace(jev_api_key=None, max_cost=worst * 3)
+            factory = source_audit.source_audit_policy_factory(
+                settings, worst * 3, ledger)
+            self.assertIs(factory(0), policy)
+            self.assertIs(factory(0), policy)
+            make.assert_called_once()
+            reserve.assert_not_called()
+
+        with patch("harness._http.HttpTransport", return_value=object()):
+            settings = SimpleNamespace(jev_api_key="fixture-key",
+                                       max_cost=worst / 2)
+            factory = source_audit.source_audit_policy_factory(
+                settings, worst / 2, ledger)
+            self.assertIsNone(factory(0))
+            settings.max_cost = worst * 3
+            factory = source_audit.source_audit_policy_factory(
+                settings, worst * 3, ledger)
+            self.assertIsNone(factory(worst * 2.5))
+
+        with (patch("harness._http.HttpTransport", return_value=object()),
+              patch("harness.session.jev_face_governor", return_value=governor) as reserve,
+              patch("harness.jev_policy.policy_for", return_value=policy) as make):
+            settings = SimpleNamespace(jev_api_key="fixture-key",
+                                       max_cost=worst * 3)
+            factory = source_audit.source_audit_policy_factory(
+                settings, worst * 3, ledger)
+            self.assertIs(factory(0), policy)
+            self.assertIs(factory(0), policy)
+            reserve.assert_called_once()
+            make.assert_called_once()
+
+    def test_report_writer_is_atomic_and_cleans_failed_temporary_file(self):
+        report_path = self.root / "reports" / "audit.json"
+        written = source_audit.write_report({"schema": "source-audit-v1"}, report_path)
+        self.assertEqual(Path(written), report_path)
+        self.assertEqual(json.loads(report_path.read_text(encoding="utf-8")),
+                         {"schema": "source-audit-v1"})
+        self.assertTrue(report_path.read_bytes().endswith(b"\n"))
+
+        failed_path = self.root / "reports" / "failed.json"
+        with patch.object(source_audit.os, "replace", side_effect=OSError("fixture")):
+            with self.assertRaisesRegex(SourceAuditError,
+                                        "cannot write source audit report"):
+                source_audit.write_report({"safe": True}, failed_path)
+        self.assertFalse(failed_path.exists())
+        self.assertEqual(list(failed_path.parent.glob(".source-audit-*.tmp")), [])
 
 
 if __name__ == "__main__":

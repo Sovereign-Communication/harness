@@ -17,11 +17,14 @@ import tempfile
 import unittest
 from typing import Any, Dict
 from contextlib import redirect_stdout
+from types import SimpleNamespace
 from unittest import mock
 
+from harness import cli
 from harness.jev_assessment import (
     ASPECTS, BLOCK, INVESTIGATE, PASS, PASS_WITH_NOTE, STOP,
-    AssessmentError, AspectJudgment, assess, run_cli, verdict_for_payload,
+    AssessmentError, AspectJudgment, assess, from_payload, run_cli,
+    verdict_for_payload,
 )
 
 
@@ -221,6 +224,76 @@ class CliTests(unittest.TestCase):
         payload["aspects"]["correctness"]["score"] = 91
         with self.assertRaises(AssessmentError):
             verdict_for_payload(payload)
+
+    def test_probability_and_direct_aspect_inputs_reject_bad_types(self):
+        with self.assertRaisesRegex(AssessmentError, "no probabilities"):
+            AspectJudgment(name="correctness", probabilities={})
+        with self.assertRaisesRegex(AssessmentError, "is not a number"):
+            AspectJudgment(name="correctness", probabilities={
+                ">=90": True, "85-89": 0.0, "<85": 0.0})
+        with self.assertRaisesRegex(AssessmentError, "outside \[0, 1\]"):
+            AspectJudgment(name="correctness", probabilities={
+                ">=90": 1.1, "85-89": 0.0, "<85": 0.0})
+        with self.assertRaisesRegex(AssessmentError, "not one of the five aspects"):
+            AspectJudgment(name="extra", probabilities={
+                ">=90": 1.0, "85-89": 0.0, "<85": 0.0})
+        with self.assertRaisesRegex(AssessmentError, "AspectJudgment instances"):
+            assess([object()])
+
+    def test_payload_parser_refuses_wrong_container_and_aspect_shapes(self):
+        with self.assertRaisesRegex(AssessmentError, "payload must be an object"):
+            from_payload([])
+        with self.assertRaisesRegex(AssessmentError, "aspects.*object"):
+            from_payload({"aspects": []})
+        payload = self._payload()
+        payload["aspects"]["extra"] = {"probabilities": {}}
+        with self.assertRaisesRegex(AssessmentError, "undeclared aspect"):
+            from_payload(payload)
+        payload = self._payload()
+        payload["aspects"].pop("confidence")
+        with self.assertRaisesRegex(AssessmentError, "missing from payload"):
+            from_payload(payload)
+        payload = self._payload()
+        payload["aspects"]["confidence"] = "not-an-object"
+        with self.assertRaisesRegex(AssessmentError, "must be an object"):
+            from_payload(payload)
+        with self.assertRaisesRegex(AssessmentError, "payload must be an object"):
+            verdict_for_payload([])
+        with self.assertRaisesRegex(AssessmentError, "unknown payload field"):
+            verdict_for_payload(dict(self._payload(), extra=True))
+
+    def test_harness_cli_assessment_handler_reports_all_exit_classes(self):
+        def invoke(payload_text, input_path="-"):
+            out = io.StringIO()
+            with mock.patch("sys.stdin", io.StringIO(payload_text)):
+                with redirect_stdout(out):
+                    with self.assertRaises(SystemExit) as raised:
+                        cli._cmd_assess(
+                            SimpleNamespace(input=input_path), SimpleNamespace())
+            return raised.exception.code, json.loads(out.getvalue())
+
+        good = json.dumps(self._payload())
+        code, verdict = invoke(good)
+        self.assertEqual(code, 0)
+        self.assertEqual(verdict["decision"], PASS)
+
+        stopped = self._payload()
+        stopped["stalled_rounds"] = 3
+        code, verdict = invoke(json.dumps(stopped))
+        self.assertEqual(code, 1)
+        self.assertEqual(verdict["decision"], STOP)
+
+        code, error = invoke("not-json")
+        self.assertEqual(code, 2)
+        self.assertFalse(error["ok"])
+
+        with tempfile.TemporaryDirectory() as workdir:
+            path = os.path.join(workdir, "assessment.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(good)
+            code, verdict = invoke(good, path)
+        self.assertEqual(code, 0)
+        self.assertEqual(verdict["decision"], PASS)
 
 
 if __name__ == "__main__":  # pragma: no cover

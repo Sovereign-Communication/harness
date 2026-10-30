@@ -203,6 +203,91 @@ class LucasGateV2Tests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "only the typed track"):
             run_typed_track(**packet)
 
+    def test_scorecard_rejects_malformed_text_numbers_and_rows(self):
+        packet = scorecard()
+        packet["artifact_text"] = "x" * 100_001
+        with self.assertRaisesRegex(ValueError, "character limit"):
+            run_typed_track(**packet)
+
+        packet = scorecard()
+        packet["category_scores"] = None
+        with self.assertRaisesRegex(ValueError, "must be a list"):
+            run_typed_track(**packet)
+
+        packet = scorecard()
+        packet["category_scores"][0] = None
+        with self.assertRaisesRegex(ValueError, "entry must be an object"):
+            run_typed_track(**packet)
+
+        packet = scorecard()
+        packet["category_scores"][0]["id"] = "12"
+        with self.assertRaisesRegex(ValueError, "unknown id"):
+            run_typed_track(**packet)
+
+        packet = scorecard()
+        packet["category_scores"][1]["id"] = packet["category_scores"][0]["id"]
+        with self.assertRaisesRegex(ValueError, "duplicate id"):
+            run_typed_track(**packet)
+
+        packet = scorecard()
+        packet["category_scores"][0]["score"] = True
+        with self.assertRaisesRegex(ValueError, "must be a number"):
+            run_typed_track(**packet)
+
+        class InvalidFloat(float):
+            def __str__(self):
+                return "not-a-number"
+
+        packet = scorecard()
+        packet["category_scores"][0]["score"] = InvalidFloat(9.0)
+        with self.assertRaisesRegex(ValueError, "must be a number"):
+            run_typed_track(**packet)
+
+        packet = scorecard()
+        packet["category_scores"][0]["score"] = float("nan")
+        with self.assertRaisesRegex(ValueError, "finite number"):
+            run_typed_track(**packet)
+
+    def test_scorecard_rejects_inconsistent_applicability_and_averages(self):
+        packet = scorecard()
+        packet["actual_risk"] = 1
+        with self.assertRaisesRegex(ValueError, "actual_risk must be a boolean"):
+            run_typed_track(**packet)
+
+        packet = scorecard()
+        packet["category_scores"][0]["applicable"] = "yes"
+        with self.assertRaisesRegex(ValueError, "applicable must be a boolean"):
+            run_typed_track(**packet)
+
+        packet = scorecard()
+        packet["category_scores"][0]["not_applicable_reason"] = "not N/A"
+        with self.assertRaisesRegex(ValueError, "cannot have a not-applicable reason"):
+            run_typed_track(**packet)
+
+        packet = scorecard()
+        packet["category_scores"][0] = {
+            "id": packet["category_scores"][0]["id"],
+            "applicable": False,
+            "not_applicable_reason": "No relevant profile evidence.",
+            "score": 9.0,
+        }
+        with self.assertRaisesRegex(ValueError, "cannot include scores or evidence"):
+            run_typed_track(**packet)
+
+        packet = scorecard()
+        packet["overall_average"] = None
+        with self.assertRaisesRegex(ValueError, "overall_average is required"):
+            run_typed_track(**packet)
+
+        packet = scorecard()
+        packet["overall_average"] = 9.0
+        packet["category_scores"] = [
+            {"id": category_id, "applicable": False,
+             "not_applicable_reason": "No relevant profile evidence."}
+            for category_id in CATEGORY_LABELS
+        ]
+        self.assertEqual(run_typed_track(**packet)["status"], "not_applicable")
+
     def test_mcp_call_route_is_registered_and_callable(self):
         server = McpServer(transport=None, api_key=None, governor=None,
                            ledger=None, router=None, engine=None)

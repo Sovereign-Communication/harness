@@ -291,6 +291,32 @@ class TestProvisionCliExecution(unittest.TestCase):
         text = out_buf.getvalue()
         self.assertIn("Provision run:", text)
 
+    def test_provision_cli_formats_plain_mapping_results(self):
+        probe = pv.probe_host()
+        policy = pv.policy_for_probe(probe, [self.root])
+        plan = pv.plan_provision("inspect host", probe, policy=policy)
+        plan_path = os.path.join(self.root, "plan_mapping.json")
+        with open(plan_path, "w", encoding="utf-8") as handle:
+            json.dump(plan.to_dict(), handle)
+
+        class Report:
+            outcome = "ok"
+            results = [{"status": "ok", "step_id": "inspect", "note": "checked"}]
+
+            @staticmethod
+            def to_dict():
+                return {"outcome": "ok", "results": Report.results}
+
+        opts = SimpleNamespace(
+            command="provision", provision_cmd="apply", plan_file=plan_path,
+            dry_run=True, approve_all=False, json=False, out=None, quiet=False)
+        out_buf = io.StringIO()
+        with (mock.patch("sys.stdout", out_buf),
+              mock.patch("harness.cli._ledger", return_value=None),
+              mock.patch("harness.cli._pv.execute_plan", return_value=Report())):
+            cli._cmd_provision(opts, SimpleNamespace())
+        self.assertIn("[ok] step inspect: checked", out_buf.getvalue())
+
     def test_provision_execute_cli_persists_and_reuses_terminal_result(self):
         from harness.lifecycle import LifecycleCoordinator
 

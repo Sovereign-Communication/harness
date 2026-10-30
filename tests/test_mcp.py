@@ -1338,6 +1338,48 @@ class SourceAuditMcpTests(unittest.TestCase):
         self.assertFalse((self.root / ".harness").exists())
         self.assertIn("source_audit", {tool["name"] for tool in TOOL_SCHEMAS})
 
+    def test_source_audit_confines_both_persistent_output_paths(self):
+        outside = Path(self.temp.name) / "outside.sqlite3"
+        with mock.patch.object(self.server, "_file_for", return_value=outside):
+            with self.assertRaisesRegex(HarnessError,
+                                        "state path must stay inside"):
+                self.server._invoke("source_audit", self.args)
+
+        args = dict(self.args, report_path="audit.json")
+        with mock.patch.object(self.server, "_file_for",
+                               side_effect=[self.root / ".harness" / "state.sqlite3",
+                                            outside]):
+            with self.assertRaisesRegex(HarnessError,
+                                        "report path must stay inside"):
+                self.server._invoke("source_audit", args)
+
+    def test_source_audit_rejects_bad_dispositions_and_missing_settings(self):
+        args = dict(self.args, dispositions=[])
+        with self.assertRaisesRegex(HarnessError,
+                                    "dispositions must be an object"):
+            self.server._invoke("source_audit", args)
+
+        self.server.settings = None
+        if getattr(self.server, "engine", None) is not None:
+            self.server.engine.settings = None
+        with self.assertRaisesRegex(HarnessError,
+                                    "requires configured Jev settings"):
+            self.server._invoke("source_audit", self.args)
+
+    def test_source_audit_writes_a_requested_report(self):
+        report = {"schema": "source-audit-v1", "leads": []}
+        args = dict(self.args, report_path="reports/audit.json")
+        target = self.root / "reports" / "audit.json"
+        with (mock.patch("harness.mcp.source_audit_policy_factory",
+                         return_value=lambda _spent: object()),
+              mock.patch("harness.mcp.run_source_audit",
+                         return_value=report),
+              mock.patch("harness.mcp.write_report",
+                         return_value=str(target)) as write_report):
+            result = self.server._invoke("source_audit", args)
+        self.assertEqual(result["written"], {"report": str(target)})
+        write_report.assert_called_once_with(report, target)
+
     def test_unknown_and_missing_names_ride_observe(self):
         self.assertEqual(lane_for("not_a_tool"), "observe")
         self.assertEqual(lane_for(None), "observe")
