@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest import mock
 
 from harness import cli, provision as pv
@@ -320,9 +321,9 @@ class TestProvisionCliExecution(unittest.TestCase):
     def test_provision_execute_cli_persists_and_reuses_terminal_result(self):
         from harness.lifecycle import LifecycleCoordinator
 
-        plan = pv.Plan("install ruff", [pv.Step(
+        plan = pv.Plan("install ruff", (pv.Step(
             "inspect", "inspect Python", ("python", "--version"),
-            pv.READ, "prints version")], self.root, "test", "test", False)
+            pv.READ, "prints version"),), self.root, "test", "test", False)
         plan_path = os.path.join(self.root, "plan_lifecycle.json")
         with open(plan_path, "w", encoding="utf-8") as f:
             json.dump(plan.to_dict(), f)
@@ -362,9 +363,9 @@ class TestProvisionCliExecution(unittest.TestCase):
     def test_provision_execute_cli_does_not_replay_unknown_step(self):
         from harness.lifecycle import LifecycleCoordinator
 
-        plan = pv.Plan("install ruff", [pv.Step(
+        plan = pv.Plan("install ruff", (pv.Step(
             "inspect", "inspect Python", ("python", "--version"),
-            pv.READ, "prints version")], self.root, "test", "test", False)
+            pv.READ, "prints version"),), self.root, "test", "test", False)
         plan_path = os.path.join(self.root, "plan_unknown.json")
         with open(plan_path, "w", encoding="utf-8") as f:
             json.dump(plan.to_dict(), f)
@@ -797,8 +798,9 @@ class TestAgentProvisionIntent(unittest.TestCase):
             history_dir = root_path / "history"
             history_dir.mkdir()
             agent = AutonomousAgent(
-                settings=SimpleNamespace(jev_api_key=None, jev_disabled=True,
-                                         allow_escalation=False),
+                settings=cast(Any, SimpleNamespace(
+                    jev_api_key=None, jev_disabled=True,
+                    allow_escalation=False)),
                 root_dir=root_path,
                                     history_dir=history_dir)
             with mock.patch("harness.provision.probe_host", return_value=probe):
@@ -815,9 +817,10 @@ class TestAgentProvisionIntent(unittest.TestCase):
     def test_agent_run_prompt_provision_force_conversation(self):
         with tempfile.TemporaryDirectory() as root:
             agent = AutonomousAgent(
-                settings=SimpleNamespace(jev_api_key=None, jev_disabled=True,
-                                         allow_escalation=False),
-                root_dir=root)
+                settings=cast(Any, SimpleNamespace(
+                    jev_api_key=None, jev_disabled=True,
+                    allow_escalation=False)),
+                root_dir=Path(root))
             res = agent.run_prompt("provision host probe", force_conversation=True)
         self.assertEqual(res["status"], "planned")
         self.assertEqual(res["intent"], "provision")

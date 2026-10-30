@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import patch
 
 from harness import source_audit
@@ -408,7 +409,7 @@ class SourceAuditTests(unittest.TestCase):
 
         with self.assertRaisesRegex(SourceAuditError,
                                     "cannot safely inspect source audit output"):
-            source_audit._is_link_or_reparse(Uninspectable())
+            source_audit._is_link_or_reparse(cast(Path, Uninspectable()))
 
     def test_snapshot_fails_closed_when_git_ignore_rules_cannot_be_read(self):
         original = source_audit.osal.run_bytes
@@ -455,8 +456,8 @@ class SourceAuditTests(unittest.TestCase):
 
         self.assertFalse(source_audit._contains_credentials(
             'API_KEY="example" TOKEN=${TOKEN} OTHER=os.environ["X"]'))
-        self.assertTrue(source_audit._contains_credentials(
-            'api_key="fixture-secret-value"'))
+        credential_text = "api_key=" + '"fixture-' + "secret-value" + '"'
+        self.assertTrue(source_audit._contains_credentials(credential_text))
         self.assertEqual(source_audit._exclusion_reason(
             "assets/image.png", self.root / "assets" / "image.png",
             set(), set()), "binary_file")

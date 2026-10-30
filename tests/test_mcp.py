@@ -1361,7 +1361,7 @@ class SourceAuditMcpTests(unittest.TestCase):
 
         self.server.settings = None
         if getattr(self.server, "engine", None) is not None:
-            self.server.engine.settings = None
+            setattr(self.server.engine, "settings", None)
         with self.assertRaisesRegex(HarnessError,
                                     "requires configured Jev settings"):
             self.server._invoke("source_audit", self.args)
@@ -1369,7 +1369,7 @@ class SourceAuditMcpTests(unittest.TestCase):
     def test_source_audit_writes_a_requested_report(self):
         report = {"schema": "source-audit-v1", "leads": []}
         args = dict(self.args, report_path="reports/audit.json")
-        target = self.root / "reports" / "audit.json"
+        target = (self.root / "reports" / "audit.json").resolve()
         with (mock.patch("harness.mcp.source_audit_policy_factory",
                          return_value=lambda _spent: object()),
               mock.patch("harness.mcp.run_source_audit",

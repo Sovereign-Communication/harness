@@ -15,7 +15,7 @@ import json
 import os
 import tempfile
 import unittest
-from typing import Any, Dict
+from typing import Any, Dict, cast
 from contextlib import redirect_stdout
 from types import SimpleNamespace
 from unittest import mock
@@ -231,7 +231,7 @@ class CliTests(unittest.TestCase):
         with self.assertRaisesRegex(AssessmentError, "is not a number"):
             AspectJudgment(name="correctness", probabilities={
                 ">=90": True, "85-89": 0.0, "<85": 0.0})
-        with self.assertRaisesRegex(AssessmentError, "outside \[0, 1\]"):
+        with self.assertRaisesRegex(AssessmentError, r"outside \[0, 1\]"):
             AspectJudgment(name="correctness", probabilities={
                 ">=90": 1.1, "85-89": 0.0, "<85": 0.0})
         with self.assertRaisesRegex(AssessmentError, "not one of the five aspects"):
@@ -242,7 +242,7 @@ class CliTests(unittest.TestCase):
 
     def test_payload_parser_refuses_wrong_container_and_aspect_shapes(self):
         with self.assertRaisesRegex(AssessmentError, "payload must be an object"):
-            from_payload([])
+            from_payload(cast(Any, []))
         with self.assertRaisesRegex(AssessmentError, "aspects.*object"):
             from_payload({"aspects": []})
         payload = self._payload()
@@ -258,7 +258,7 @@ class CliTests(unittest.TestCase):
         with self.assertRaisesRegex(AssessmentError, "must be an object"):
             from_payload(payload)
         with self.assertRaisesRegex(AssessmentError, "payload must be an object"):
-            verdict_for_payload([])
+            verdict_for_payload(cast(Any, []))
         with self.assertRaisesRegex(AssessmentError, "unknown payload field"):
             verdict_for_payload(dict(self._payload(), extra=True))
 
