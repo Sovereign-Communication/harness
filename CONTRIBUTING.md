@@ -113,6 +113,12 @@ cli.py / mcp.py          interfaces (arg parsing, JSON-RPC; boundary
     (cli `dogfood` composes the lanes: hermetic ground gate -> live panel
     tally gate -> gated self-apply; deliberately not exposed over MCP)
     config.py  paths.py  tokens.py  output.py  errors.py
+    `harness/jev_assessment.py` five-aspect workflow assessment and flexibility
+                                rule; does not replace audit or phase gates
+    `harness/lucas_gate.py`     deterministic typed-track validator for
+                                caller-produced Lucas Gate v2 scorecards
+    `harness/source_audit.py`   opt-in resumable full-source Jev audit with
+                                Git-backed inventory and receipt aggregation
 ```
 
 - **One owner per concern.** Cost policy lives only in `spend.py`; model
