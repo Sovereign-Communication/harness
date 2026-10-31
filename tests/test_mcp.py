@@ -1400,6 +1400,27 @@ class MainCliFlagsTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn(__version__, out.getvalue())
 
+    def test_help_and_version_flags_are_order_independent(self):
+        from harness.mcp import _handle_cli_flags
+
+        for args in (["--help", "--version"], ["--version", "--help"]):
+            with self.subTest(args=args):
+                out = io.StringIO()
+                err = io.StringIO()
+                self.assertEqual(_handle_cli_flags(args, stdout=out,
+                                                   stderr=err), 0)
+                self.assertIn("usage: harness-mcp", out.getvalue())
+                self.assertFalse(out.getvalue().startswith("harness-mcp "))
+                self.assertEqual(err.getvalue(), "")
+
+    def test_repeated_version_flag_prints_once(self):
+        from harness.mcp import _handle_cli_flags, __version__
+
+        out = io.StringIO()
+        self.assertEqual(_handle_cli_flags(
+            ["--version", "--version", "--version"], stdout=out), 0)
+        self.assertEqual(out.getvalue(), f"harness-mcp {__version__}\n")
+
     def test_help_flag_prints_usage_and_returns_exit_code(self):
         from harness.mcp import _handle_cli_flags
 
@@ -1435,9 +1456,19 @@ class MainCliFlagsTests(unittest.TestCase):
 
         with mock.patch("harness.mcp.load_settings") as load_settings, \
              mock.patch("sys.stderr", new_callable=io.StringIO) as err:
-            self.assertEqual(mcp.main(["--some-other-flag"]), 2)
+            self.assertEqual(mcp.main(["--version", "--some-other-flag"]), 2)
             self.assertIn("unrecognized arguments", err.getvalue())
             load_settings.assert_not_called()
+
+    def test_unrecognized_args_fail_even_beside_help(self):
+        from harness.mcp import _handle_cli_flags
+
+        out = io.StringIO()
+        err = io.StringIO()
+        self.assertEqual(_handle_cli_flags(
+            ["--help", "--not-a-flag"], stdout=out, stderr=err), 2)
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("unrecognized arguments: --not-a-flag", err.getvalue())
 
     def test_main_returns_early_on_version_without_touching_serve_setup(self):
         # main() itself must short-circuit on a handled flag before its
@@ -1455,6 +1486,18 @@ class MainCliFlagsTests(unittest.TestCase):
         with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
             self.assertEqual(mcp.main(["--help"]), 0)
             self.assertIn("usage: harness-mcp", out.getvalue())
+
+    def test_module_entrypoint_propagates_unknown_flag_exit_code(self):
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "harness.mcp", "--unknown"],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("unrecognized arguments: --unknown", result.stderr)
 
     def test_main_passes_the_settings_seam_to_the_server(self):
         """HV-4/HV-3-use reachability: `main` must wire the settings seam.
