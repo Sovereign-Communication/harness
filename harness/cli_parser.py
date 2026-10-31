@@ -426,6 +426,8 @@ def build_parser():
                      help="maximum deterministic chunk size in characters (512-8000)")
     psa.add_argument("--state", default=None,
                      help="SQLite resume receipts (default: <root>/.harness/source-audit.sqlite3)")
+    psa.add_argument("--recover-interrupted", action="store_true",
+                     help="retry matching failed/in-flight chunks; refuses an active same-state run and budgets prior reservations as unknown spend")
     psa.add_argument("--save-to", default=None,
                      help="write a source-safe JSON report to this path")
     psa.add_argument("--dispositions", default=None,

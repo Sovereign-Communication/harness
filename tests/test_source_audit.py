@@ -4,6 +4,7 @@ import os
 import stat
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,7 @@ from unittest.mock import patch
 
 from harness import source_audit
 from harness import cli
+from harness import cli_parser
 from harness.errors import HarnessError
 from harness.source_audit import SourceAuditError
 from harness.jev import jev_cost
@@ -49,15 +51,20 @@ def _pack(pack_id):
 class FakePolicy:
     keyed = True
 
-    def __init__(self, *, interrupt_first=False):
+    def __init__(self, *, interrupt_first=False, interrupt_at=None, fail_at=None):
         self.calls = []
         self.interrupt_first = interrupt_first
+        self.interrupt_at = interrupt_at
+        self.fail_at = fail_at
 
     def evaluate_repo_summary(self, state, pack, *, site, task_id, node_id,
                               max_input_tokens):
         self.calls.append({"state": state, "site": site, "node_id": node_id})
-        if self.interrupt_first and len(self.calls) == 1:
+        if ((self.interrupt_first and len(self.calls) == 1)
+                or len(self.calls) == self.interrupt_at):
             raise KeyboardInterrupt()
+        if len(self.calls) == self.fail_at:
+            raise RuntimeError("fixture provider failure")
         fallback = state["path"].endswith("fallback.py")
         discarded = state["path"].endswith("discarded.py")
         structural = {
@@ -128,12 +135,16 @@ class SourceAuditTests(unittest.TestCase):
         else:
             path.write_text(content, encoding="utf-8")
 
-    def _run(self, policy, *, dispositions=None, run_budget=0.1):
+    def _run(self, policy, *, dispositions=None, run_budget=0.1,
+             recover_interrupted=False, state_name="source-audit.sqlite3",
+             make_policy=None):
+        policy_factory = make_policy or (lambda _spent: policy)
         return source_audit.run_source_audit(
-            self.root, self.packs, lambda _spent: policy,
-            state_path=self.root / ".harness" / "source-audit.sqlite3",
+            self.root, self.packs, policy_factory,
+            state_path=self.root / ".harness" / state_name,
             run_budget=run_budget, chunk_chars=512,
-            dispositions=dispositions, task_id="source-audit-fixture")
+            dispositions=dispositions, task_id="source-audit-fixture",
+            recover_interrupted=recover_interrupted)
 
     def test_manifest_is_deterministic_and_excludes_sensitive_ignored_binary_generated(self):
         read_paths = []
@@ -203,6 +214,24 @@ class SourceAuditTests(unittest.TestCase):
         self.assertEqual(fourth["spend"]["calls_this_run"], 1)
         self.assertEqual(len(policy.calls), 8)
 
+    def test_completed_receipt_with_mismatched_identity_is_refused(self):
+        first = self._run(FakePolicy())
+        state_file = self.root / ".harness" / "source-audit.sqlite3"
+        chunk_id = first["receipts"][0]["chunk_id"]
+        with sqlite3.connect(str(state_file)) as db:
+            row = db.execute(
+                "SELECT payload FROM chunks WHERE chunk_id=?", (chunk_id,)
+            ).fetchone()
+            payload = json.loads(row[0])
+            payload["pack_hash"] = "different-policy"
+            db.execute("UPDATE chunks SET payload=? WHERE chunk_id=?",
+                       (json.dumps(payload, sort_keys=True), chunk_id))
+
+        resumed = FakePolicy()
+        with self.assertRaisesRegex(SourceAuditError, "state is corrupt"):
+            self._run(resumed)
+        self.assertEqual(resumed.calls, [])
+
     def test_chunk_boundaries_are_stable_for_empty_and_large_lines(self):
         large = "x" * 1300 + "\n"
         first = list(source_audit._iter_text_chunks(large, 512))
@@ -213,18 +242,137 @@ class SourceAuditTests(unittest.TestCase):
                             for _text, start, end in first))
         self.assertEqual(list(source_audit._iter_text_chunks("", 512)), [])
 
-    def test_resume_keeps_interrupted_chunk_in_flight_without_duplicate_call(self):
-        interrupted = FakePolicy(interrupt_first=True)
+    def test_inflight_chunks_require_explicit_recovery_and_reuse_completed_receipts(self):
+        state_name = "interrupted.sqlite3"
+        interrupted = FakePolicy(interrupt_at=3)
         with self.assertRaises(KeyboardInterrupt):
-            self._run(interrupted)
-        self.assertEqual(len(interrupted.calls), 1)
+            self._run(interrupted, state_name=state_name)
+        self.assertEqual(len(interrupted.calls), 3)
+
+        ordinary_resume = FakePolicy()
+        pending = self._run(ordinary_resume, state_name=state_name)
+        self.assertEqual(len(ordinary_resume.calls), 3)
+        self.assertEqual(pending["coverage"]["pending_chunks"], 1)
+        self.assertEqual(pending["coverage"]["stop_reason"], "resume_pending")
+        self.assertIsNotNone(pending["coverage"]["resume_cursor"])
+        self.assertAlmostEqual(
+            pending["spend"]["pending_possible_spend_usd"],
+            jev_cost(JEV_MAX_INPUT_TOKENS))
+
+        recovered_policy = FakePolicy()
+        recovered = self._run(
+            recovered_policy, recover_interrupted=True, state_name=state_name)
+        self.assertEqual(len(recovered_policy.calls), 1)
+        self.assertTrue(recovered["coverage"]["complete"])
+        self.assertEqual(recovered["coverage"]["recovered_chunks"], 1)
+        self.assertAlmostEqual(
+            recovered["spend"]["unknown_prior_attempt_reservations_usd"],
+            jev_cost(JEV_MAX_INPUT_TOKENS))
+        self.assertAlmostEqual(recovered["spend"]["actual_spend_usd"], 0.006)
+
+        final_policy = FakePolicy()
+        final = self._run(final_policy, state_name=state_name)
+        self.assertEqual(final_policy.calls, [])
+        self.assertEqual(final["spend"]["calls_this_run"], 0)
+        self.assertAlmostEqual(
+            final["spend"]["unknown_prior_attempt_reservations_usd"],
+            jev_cost(JEV_MAX_INPUT_TOKENS))
+
+    def test_failed_chunk_can_be_recovered_without_repeating_completed_receipts(self):
+        state_name = "failed.sqlite3"
+        failed_policy = FakePolicy(fail_at=2)
+        failed = self._run(failed_policy, state_name=state_name)
+        self.assertEqual(failed["coverage"]["stop_reason"], "error")
+        self.assertEqual(failed["coverage"]["completed_chunks"], 1)
+        self.assertEqual(failed["coverage"]["pending_chunks"], 5)
+
+        ordinary_resume = FakePolicy()
+        pending = self._run(ordinary_resume, state_name=state_name)
+        self.assertEqual(len(ordinary_resume.calls), 4)
+        self.assertEqual(pending["coverage"]["pending_chunks"], 1)
+
+        recovered_policy = FakePolicy()
+        recovered = self._run(
+            recovered_policy, recover_interrupted=True, state_name=state_name)
+        self.assertEqual(len(recovered_policy.calls), 1)
+        self.assertTrue(recovered["coverage"]["complete"])
+        self.assertEqual(recovered["coverage"]["recovered_chunks"], 1)
+        self.assertEqual(recovered["spend"]["calls"], 6)
+        self.assertAlmostEqual(
+            recovered["spend"]["unknown_prior_attempt_reservations_usd"],
+            jev_cost(JEV_MAX_INPUT_TOKENS))
+
+    def test_recovery_preflight_counts_unknown_prior_reservation(self):
+        state_name = "recovery-budget.sqlite3"
+        with self.assertRaises(KeyboardInterrupt):
+            self._run(FakePolicy(interrupt_first=True), state_name=state_name)
+
+        reservation = jev_cost(JEV_MAX_INPUT_TOKENS)
+        budget = reservation * 1.5
+        no_call = FakePolicy()
+        report = self._run(
+            no_call, state_name=state_name, run_budget=budget,
+            recover_interrupted=True,
+            make_policy=lambda spent: (
+                None if spent + reservation > budget else no_call))
+        self.assertEqual(no_call.calls, [])
+        self.assertEqual(report["coverage"]["stop_reason"], "run_budget")
+        self.assertEqual(report["coverage"]["recovered_chunks"], 1)
+        self.assertAlmostEqual(report["spend"]["pending_possible_spend_usd"],
+                               reservation)
 
         resumed = FakePolicy()
-        report = self._run(resumed)
-        self.assertEqual(len(resumed.calls), 5)
-        self.assertEqual(report["coverage"]["pending_chunks"], 1)
-        self.assertEqual(report["coverage"]["stop_reason"], "resume_pending")
-        self.assertIsNotNone(report["coverage"]["resume_cursor"])
+        final = self._run(resumed, state_name=state_name)
+        self.assertEqual(len(resumed.calls), 6)
+        self.assertTrue(final["coverage"]["complete"])
+        self.assertAlmostEqual(
+            final["spend"]["unknown_prior_attempt_reservations_usd"],
+            reservation)
+
+    def test_same_state_lock_refuses_another_process_and_releases_on_close(self):
+        state_file = self.root / ".harness" / "locked.sqlite3"
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        lock_fd = source_audit._acquire_source_audit_lock(state_file)
+        script = (
+            "import sys\n"
+            "from pathlib import Path\n"
+            "from harness.source_audit import _acquire_source_audit_lock, SourceAuditError\n"
+            "p = Path(sys.argv[1])\n"
+            "try:\n"
+            "    _acquire_source_audit_lock(p)\n"
+            "except SourceAuditError as exc:\n"
+            "    print(str(exc))\n"
+            "    raise SystemExit(0)\n"
+            "raise SystemExit(1)\n"
+        )
+        try:
+            child = subprocess.run(
+                [sys.executable, "-c", script, str(state_file)],
+                cwd=str(Path(__file__).resolve().parents[1]),
+                capture_output=True, text=True, timeout=10, check=False)
+            self.assertEqual(child.returncode, 0, child.stderr)
+            self.assertIn("file lock is already held", child.stdout)
+        finally:
+            os.close(lock_fd)
+        released_fd = source_audit._acquire_source_audit_lock(state_file)
+        os.close(released_fd)
+
+    def test_state_lock_file_is_excluded_from_following_manifest(self):
+        policy = FakePolicy()
+        state_file = self.root / "source-audit.sqlite3"
+        first = source_audit.run_source_audit(
+            self.root, self.packs, lambda _spent: policy,
+            state_path=state_file, run_budget=0.1, chunk_chars=512)
+        self.assertTrue(first["coverage"]["complete"])
+
+        second = source_audit.run_source_audit(
+            self.root, self.packs, lambda _spent: policy,
+            state_path=state_file, run_budget=0.1, chunk_chars=512)
+        lock = next(entry for entry in second["manifest"]["files"]
+                    if entry["path"] == "source-audit.sqlite3.lock")
+        self.assertFalse(lock["included"])
+        self.assertEqual(lock["reason"], "audit_output_or_state")
+        self.assertEqual(second["spend"]["calls_this_run"], 0)
 
     def test_leads_are_deduplicated_dispositioned_and_reports_never_include_source(self):
         policy = FakePolicy()
@@ -313,7 +461,8 @@ class SourceAuditTests(unittest.TestCase):
             code_pack="code.json", docs_pack="docs.json",
             evidence_pack="evidence.json", state=None,
             dispositions=None, task_id="source-audit-cli-test",
-            save_to="source-audit.json", out=None)
+            save_to="source-audit.json", out=None,
+            recover_interrupted=True)
         with (patch.object(cli, "_read_json",
                            side_effect=lambda path, _what: packs[path.split(".")[0]]),
               patch.object(cli, "_ledger", return_value=Ledger()),
@@ -331,6 +480,7 @@ class SourceAuditTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["run_budget"], 0.01)
         self.assertEqual(run.call_args.kwargs["state_path"],
                          root.resolve() / ".harness" / "source-audit.sqlite3")
+        self.assertTrue(run.call_args.kwargs["recover_interrupted"])
         self.assertEqual(emit.call_args.args[0]["task_id"],
                          "source-audit-cli-test")
         write_report.assert_called_once()
@@ -343,6 +493,14 @@ class SourceAuditTests(unittest.TestCase):
         self.assertEqual(written_report["state_path"],
                          str(root.resolve() / ".harness" /
                              "source-audit.sqlite3"))
+
+    def test_cli_parser_exposes_interrupted_recovery_option(self):
+        opts = cli_parser.build_parser().parse_args([
+            "source-audit", "--code-pack", "code.json",
+            "--docs-pack", "docs.json", "--evidence-pack", "evidence.json",
+            "--run-budget", "0.01", "--recover-interrupted",
+        ])
+        self.assertTrue(opts.recover_interrupted)
 
     def test_cli_source_audit_rejects_invalid_chunk_limit_and_dispositions(self):
         opts = SimpleNamespace(
@@ -555,7 +713,7 @@ class SourceAuditTests(unittest.TestCase):
         self.assertIn("src/app.py", changed["coverage"]["stop_detail"])
 
         with patch.object(source_audit, "_state_claim",
-                          side_effect=lambda _db, _chunk_id, identity:
+                          side_effect=lambda _db, _chunk_id, identity, **_kwargs:
                           ("in_flight", identity, False)):
             pending = self._run(FakePolicy())
         self.assertEqual(pending["coverage"]["stop_reason"], "resume_pending")

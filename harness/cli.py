@@ -741,7 +741,9 @@ def _cmd_source_audit(opts, settings):
         root, packs, make_policy, state_path=state_path,
         run_budget=run_budget, chunk_chars=chunk_chars,
         exclude=[opts.save_to, opts.dispositions],
-        dispositions=dispositions, task_id=task_id)
+        dispositions=dispositions, task_id=task_id,
+        recover_interrupted=bool(getattr(
+            opts, "recover_interrupted", False)))
     report["task_id"] = task_id
     written = {}
     if opts.save_to:

@@ -36,6 +36,7 @@ import re
 import signal
 import subprocess
 import sys
+import stat
 import tempfile
 import threading
 from typing import Any, Dict, Optional
@@ -193,6 +194,42 @@ def run_bytes(argv, cwd=None, timeout=None, input_bytes=None):
             126, b"", "cannot run {}: {}".format(argv[0], exc).encode())
     return ByteCommandResult(proc.returncode, proc.stdout or b"",
                              proc.stderr or b"")
+
+
+def acquire_file_lock(path):
+    """Acquire a nonblocking, process-released lock on a retained file."""
+    fd = None
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_BINARY", 0)
+    try:
+        fd = os.open(str(path), flags, 0o600)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OsalError("lock path must be a regular file")
+        if os.fstat(fd).st_size == 0 and os.write(fd, b"\0") != 1:
+            raise OsalError("cannot initialize lock file")
+        os.lseek(fd, 0, os.SEEK_SET)
+        try:
+            if IS_WINDOWS:
+                import msvcrt
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (ImportError, OSError) as exc:
+            raise OsalError("file lock is already held or unavailable") from exc
+        return fd
+    except OsalError:
+        if fd is not None:
+            os.close(fd)
+        raise
+    except OSError as exc:
+        if fd is not None:
+            os.close(fd)
+        raise OsalError("cannot open lock file") from exc
+
+
+def release_file_lock(fd):
+    """Release a lock acquired by :func:`acquire_file_lock`."""
+    os.close(fd)
 
 
 def spawn_piped_process(argv, *, cwd=None, env=None):

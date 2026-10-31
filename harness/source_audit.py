@@ -7,6 +7,7 @@ stores source text in its state or report.
 """
 import hashlib
 import json
+import math
 import os
 import re
 import sqlite3
@@ -164,6 +165,24 @@ def _relative_output(root: Path, raw: Optional[Any]) -> Optional[str]:
     if rel == ".." or rel.startswith("../"):
         raise SourceAuditError("source audit output paths must stay inside the repository")
     return rel
+
+
+def _acquire_source_audit_lock(state_file: Path) -> int:
+    """Hold a nonblocking process lock while this run owns resume state.
+
+    The OS releases this lock when a process exits, including after an
+    interruption. A sibling lock file is retained so deleting it cannot split
+    two concurrent lockers across different inodes.
+    """
+    lock_path = state_file.with_name(state_file.name + ".lock")
+    if _is_link_or_reparse(lock_path):
+        raise SourceAuditError(
+            "source audit lock path cannot be a symlink or reparse point")
+    try:
+        return osal.acquire_file_lock(str(lock_path))
+    except osal.OsalError as exc:
+        raise SourceAuditError(
+            "cannot acquire source audit lock: {}".format(exc)) from exc
 
 
 def _pass_for(rel_path: str) -> Optional[str]:
@@ -427,26 +446,124 @@ def _state_get(db: sqlite3.Connection, chunk_id: str) -> Optional[Dict[str, Any]
     return payload
 
 
+def _payload_matches_identity(payload: Dict[str, Any],
+                              identity: Dict[str, Any]) -> bool:
+    return all(payload.get(key) == value for key, value in identity.items())
+
+
+def _state_cost(payload: Dict[str, Any], key: str, default: float = 0.0) -> float:
+    value = payload.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise SourceAuditError("source audit resume state is corrupt")
+    try:
+        number = float(value)
+    except (OverflowError, ValueError) as exc:
+        raise SourceAuditError("source audit resume state is corrupt") from exc
+    if not math.isfinite(number) or number < 0:
+        raise SourceAuditError("source audit resume state is corrupt")
+    return number
+
+
 def _state_claim(db: sqlite3.Connection, chunk_id: str,
-                 identity: Dict[str, Any]) -> Tuple[str, Dict[str, Any], bool]:
+                 identity: Dict[str, Any], *, reserved_usd: float = 0.0,
+                 unknown_prior_spend_usd: float = 0.0
+                 ) -> Tuple[str, Dict[str, Any], bool]:
+    claim_payload = {
+        **identity,
+        "reserved_usd": float(reserved_usd),
+        "unknown_prior_spend_usd": float(unknown_prior_spend_usd),
+    }
     try:
         db.execute("BEGIN IMMEDIATE")
         inserted = db.execute(
             "INSERT OR IGNORE INTO chunks(chunk_id,status,payload) "
             "VALUES(?, 'in_flight', ?)",
-            (chunk_id, json.dumps(identity, sort_keys=True))).rowcount == 1
+            (chunk_id, json.dumps(claim_payload, sort_keys=True))).rowcount == 1
         row = db.execute("SELECT status,payload FROM chunks WHERE chunk_id=?",
                          (chunk_id,)).fetchone()
+        status = row[0]
+        try:
+            payload = json.loads(row[1])
+        except (TypeError, ValueError) as exc:
+            raise SourceAuditError(
+                "source audit resume state is corrupt") from exc
+        claimed = inserted
+        if not inserted and status == "pending":
+            if not isinstance(payload, dict) or not _payload_matches_identity(
+                    payload, identity):
+                raise SourceAuditError("source audit resume state is corrupt")
+            claim_payload["unknown_prior_spend_usd"] = _state_cost(
+                payload, "unknown_prior_spend_usd")
+            changed = db.execute(
+                "UPDATE chunks SET status='in_flight',payload=? "
+                "WHERE chunk_id=? AND status='pending'",
+                (json.dumps(claim_payload, sort_keys=True), chunk_id)).rowcount
+            if changed:
+                status, payload, claimed = "in_flight", claim_payload, True
+            else:
+                row = db.execute(
+                    "SELECT status,payload FROM chunks WHERE chunk_id=?",
+                    (chunk_id,)).fetchone()
+                status = row[0]
+                payload = json.loads(row[1])
         db.commit()
-    except sqlite3.Error as exc:
+        return status, payload, claimed
+    except SourceAuditError:
+        db.rollback()
+        raise
+    except (sqlite3.Error, TypeError, ValueError) as exc:
         db.rollback()
         raise SourceAuditError("cannot claim source audit chunk") from exc
-    status = row[0]
+
+
+def _state_requeue_pending(db: sqlite3.Connection, chunk_id: str,
+                           identity: Dict[str, Any]
+                           ) -> Tuple[str, Optional[Dict[str, Any]], bool]:
+    """Reconcile a matching failed/interrupted receipt for an explicit retry."""
     try:
-        payload = json.loads(row[1])
-    except (TypeError, ValueError) as exc:
-        raise SourceAuditError("source audit resume state is corrupt") from exc
-    return status, payload, inserted
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT status,payload FROM chunks WHERE chunk_id=?",
+                         (chunk_id,)).fetchone()
+        if not row:
+            db.commit()
+            return "missing", None, False
+        status = row[0]
+        try:
+            payload = json.loads(row[1])
+        except (TypeError, ValueError) as exc:
+            raise SourceAuditError(
+                "source audit resume state is corrupt") from exc
+        if not isinstance(payload, dict) or not _payload_matches_identity(
+                payload, identity):
+            raise SourceAuditError("source audit resume state is corrupt")
+        if status not in ("failed", "in_flight"):
+            db.commit()
+            payload["status"] = status
+            return status, payload, False
+        # Older in-flight receipts predate reservation persistence. Charge the
+        # maximum Jev reservation as unknown spend rather than retrying free.
+        reserved = _state_cost(
+            payload, "reserved_usd", jev_cost(JEV_MAX_INPUT_TOKENS))
+        unknown_prior = (_state_cost(payload, "unknown_prior_spend_usd")
+                         + reserved)
+        pending_payload = {
+            **identity,
+            "unknown_prior_spend_usd": unknown_prior,
+        }
+        changed = db.execute(
+            "UPDATE chunks SET status='pending',payload=? "
+            "WHERE chunk_id=? AND status=?",
+            (json.dumps(pending_payload, sort_keys=True), chunk_id,
+             status)).rowcount
+        db.commit()
+        pending_payload["status"] = "pending"
+        return "pending", pending_payload, bool(changed)
+    except SourceAuditError:
+        db.rollback()
+        raise
+    except sqlite3.Error as exc:
+        db.rollback()
+        raise SourceAuditError("cannot requeue source audit chunk") from exc
 
 
 def _state_finish(db: sqlite3.Connection, chunk_id: str,
@@ -472,7 +589,8 @@ def _receipt_identity(*, chunk_id: str, pass_name: str, path: str,
 
 
 def _safe_receipt(identity: Dict[str, Any], structural: Dict[str, Any],
-                  judgment: Dict[str, Any], reserved_usd: float) -> Dict[str, Any]:
+                  judgment: Dict[str, Any], reserved_usd: float,
+                  unknown_prior_spend_usd: float = 0.0) -> Dict[str, Any]:
     axes = judgment.get("axes") if isinstance(judgment, dict) else {}
     attention = judgment.get("attention") if isinstance(judgment, dict) else {}
     nouls = judgment.get("nouls") if isinstance(judgment, dict) else {}
@@ -490,6 +608,7 @@ def _safe_receipt(identity: Dict[str, Any], structural: Dict[str, Any],
         "site": structural.get("site"),
         "cost_usd": float(structural.get("cost") or 0.0),
         "reserved_usd": float(reserved_usd),
+        "unknown_prior_spend_usd": float(unknown_prior_spend_usd),
         "input_tokens": int(structural.get("input_tokens") or 0),
         "output_tokens": int(structural.get("output_tokens") or 0),
     }
@@ -558,25 +677,33 @@ def run_source_audit(root: Any, packs: Mapping[str, Any], make_policy, *,
                      chunk_chars: int = DEFAULT_CHUNK_CHARS,
                      exclude: Optional[Sequence[Any]] = None,
                      dispositions: Optional[Mapping[str, str]] = None,
-                     task_id: str = "source-audit") -> Dict[str, Any]:
+                     task_id: str = "source-audit",
+                     recover_interrupted: bool = False) -> Dict[str, Any]:
     """Run/resume independently named passes, storing only safe receipts.
 
-    ``make_policy(actual_spend)`` must return the shared JevPolicy owner or
+    ``make_policy(budget_spent)`` must return the shared JevPolicy owner or
     ``None`` when the cumulative run ceiling cannot reserve another call.
+    ``recover_interrupted`` is an explicit operator retry of matching failed
+    or in-flight chunks; prior attempt reservations remain budgeted as unknown.
     """
     if isinstance(run_budget, bool) or not isinstance(run_budget, (int, float)) or run_budget <= 0:
         raise SourceAuditError("run_budget must be a positive USD ceiling")
+    if not isinstance(recover_interrupted, bool):
+        raise SourceAuditError("recover_interrupted must be a boolean")
     root_path = Path(root).resolve(strict=True)
     state_rel = _relative_output(root_path, state_path)
     if state_rel is None:
         raise SourceAuditError("a persistent source audit state path is required")
     state_file = root_path / Path(state_rel)
-    exclude_all = list(exclude or ()) + [state_file]
+    lock_file = state_file.with_name(state_file.name + ".lock")
+    exclude_all = list(exclude or ()) + [state_file, lock_file]
     prepared = _prepared_packs(packs)
     manifest = build_manifest(root_path, packs, chunk_chars=chunk_chars,
                               exclude=exclude_all)
     entries = [entry for entry in manifest["files"] if entry.get("included")]
-    db = _open_state(state_file)
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    lock_fd = _acquire_source_audit_lock(state_file)
+    db = None
     receipts_by_id: Dict[str, Dict[str, Any]] = {}
     pending = []
     stop_reason = "complete"
@@ -584,8 +711,13 @@ def run_source_audit(root: Any, packs: Mapping[str, Any], make_policy, *,
     run_calls = 0
     run_cost = 0.0
     run_reserved = 0.0
+    budget_spent = 0.0
+    unknown_prior_spend = 0.0
+    pending_possible_spend = 0.0
+    recovered_chunks = 0
     resume_cursor = None
     try:
+        db = _open_state(state_file)
         for entry in entries:
             path = root_path / Path(entry["path"])
             raw_bytes, reason = _read_text(path)
@@ -610,12 +742,48 @@ def run_source_audit(root: Any, packs: Mapping[str, Any], make_policy, *,
                     line_start=line_start, line_end=line_end,
                     pack_id=pack["pack_id"], pack_hash=pack["pack_hash"])
                 existing = _state_get(db, chunk_id)
+                if (existing and recover_interrupted
+                        and existing.get("status") in ("failed", "in_flight")):
+                    _status, _payload, recovered = _state_requeue_pending(
+                        db, chunk_id, identity)
+                    recovered_chunks += int(recovered)
+                    existing = _state_get(db, chunk_id)
+
                 if existing and existing.get("status") == "complete":
+                    if not _payload_matches_identity(existing, identity):
+                        raise SourceAuditError(
+                            "source audit resume state is corrupt")
                     receipts_by_id[chunk_id] = existing
-                    run_cost += float(existing.get("cost_usd") or 0.0)
+                    actual = float(existing.get("cost_usd") or 0.0)
+                    prior_unknown = _state_cost(
+                        existing, "unknown_prior_spend_usd")
+                    run_cost += actual
                     run_reserved += float(existing.get("reserved_usd") or 0.0)
+                    unknown_prior_spend += prior_unknown
+                    budget_spent += actual + prior_unknown
                     continue
-                if existing:
+
+                if existing and existing.get("status") in ("failed", "in_flight"):
+                    prior_unknown = _state_cost(
+                        existing, "unknown_prior_spend_usd")
+                    reservation = _state_cost(
+                        existing, "reserved_usd",
+                        jev_cost(JEV_MAX_INPUT_TOKENS))
+                    possible = prior_unknown + reservation
+                    pending.append({"chunk_id": chunk_id, "path": entry["path"],
+                                    "line_start": line_start, "line_end": line_end,
+                                    "status": existing.get("status"),
+                                    "unknown_spend_usd": possible})
+                    pending_possible_spend += possible
+                    budget_spent += possible
+                    if resume_cursor is None:
+                        resume_cursor = {"chunk_id": chunk_id,
+                                         "path": entry["path"],
+                                         "line_start": line_start,
+                                         "line_end": line_end}
+                    continue
+
+                if existing and existing.get("status") not in ("pending",):
                     pending.append({"chunk_id": chunk_id, "path": entry["path"],
                                     "line_start": line_start, "line_end": line_end,
                                     "status": existing.get("status")})
@@ -625,29 +793,61 @@ def run_source_audit(root: Any, packs: Mapping[str, Any], make_policy, *,
                                          "line_start": line_start,
                                          "line_end": line_end}
                     continue
-                policy = make_policy(run_cost)
+
+                prior_unknown = (_state_cost(
+                    existing, "unknown_prior_spend_usd") if existing else 0.0)
+                budget_spent += prior_unknown
+                policy = make_policy(budget_spent)
                 if policy is None:
                     stop_reason = "run_budget"
                     resume_cursor = {"chunk_id": chunk_id,
                                      "path": entry["path"],
                                      "line_start": line_start,
                                      "line_end": line_end}
+                    if existing:
+                        pending.append({
+                            "chunk_id": chunk_id, "path": entry["path"],
+                            "line_start": line_start, "line_end": line_end,
+                            "status": "pending",
+                            "unknown_spend_usd": prior_unknown,
+                        })
+                        pending_possible_spend += prior_unknown
                     break
-                status, stored, claimed = _state_claim(db, chunk_id, identity)
-                if not claimed or status != "in_flight" or stored != identity:
-                    # Another process already owns this receipt, or an earlier
-                    # interrupted call has unknown billing state. Never repeat it.
+                reserved = (jev_cost(JEV_MAX_INPUT_TOKENS)
+                            if bool(getattr(policy, "keyed", False)) else 0.0)
+                status, stored, claimed = _state_claim(
+                    db, chunk_id, identity, reserved_usd=reserved,
+                    unknown_prior_spend_usd=prior_unknown)
+                if (status == "complete" and _payload_matches_identity(
+                        stored, identity)):
+                    receipts_by_id[chunk_id] = stored
+                    actual = float(stored.get("cost_usd") or 0.0)
+                    old_unknown = _state_cost(
+                        stored, "unknown_prior_spend_usd")
+                    run_cost += actual
+                    run_reserved += float(stored.get("reserved_usd") or 0.0)
+                    unknown_prior_spend += old_unknown
+                    budget_spent += actual + old_unknown
+                    continue
+                if (not claimed or status != "in_flight"
+                        or not _payload_matches_identity(stored, identity)):
+                    # An old or external invocation may still own this claim.
+                    possible = (_state_cost(
+                        stored, "unknown_prior_spend_usd")
+                        + _state_cost(stored, "reserved_usd",
+                                      jev_cost(JEV_MAX_INPUT_TOKENS)))
                     pending.append({"chunk_id": chunk_id, "path": entry["path"],
                                     "line_start": line_start, "line_end": line_end,
-                                    "status": status})
+                                    "status": status,
+                                    "unknown_spend_usd": possible})
+                    pending_possible_spend += possible
+                    budget_spent += max(0.0, possible - prior_unknown)
                     if resume_cursor is None:
                         resume_cursor = {"chunk_id": chunk_id,
                                          "path": entry["path"],
                                          "line_start": line_start,
                                          "line_end": line_end}
                     continue
-                reserved = (jev_cost(JEV_MAX_INPUT_TOKENS)
-                            if bool(getattr(policy, "keyed", False)) else 0.0)
                 state = {
                     "path": entry["path"], "kind": pass_name,
                     "element_kind": "source_chunk", "summary": chunk_text,
@@ -662,19 +862,24 @@ def run_source_audit(root: Any, packs: Mapping[str, Any], make_policy, *,
                         site="source_audit_" + pass_name,
                         task_id=task_id, node_id=chunk_id,
                         max_input_tokens=JEV_MAX_INPUT_TOKENS)
-                    receipt = _safe_receipt(identity, structural, judgment, reserved)
+                    receipt = _safe_receipt(
+                        identity, structural, judgment, reserved, prior_unknown)
                     _state_finish(db, chunk_id, "complete", receipt)
                 except Exception as exc:
                     _state_finish(db, chunk_id, "failed", {
                         **identity, "status": "failed",
                         "error_type": type(exc).__name__,
                         "reserved_usd": reserved,
+                        "unknown_prior_spend_usd": prior_unknown,
                     })
                     stop_reason = "error"
                     stop_detail = "{}: {}".format(entry["path"], type(exc).__name__)
+                    possible = prior_unknown + reserved
                     pending.append({"chunk_id": chunk_id, "path": entry["path"],
                                     "line_start": line_start, "line_end": line_end,
-                                    "status": "failed"})
+                                    "status": "failed",
+                                    "unknown_spend_usd": possible})
+                    pending_possible_spend += possible
                     if resume_cursor is None:
                         resume_cursor = {"chunk_id": chunk_id,
                                          "path": entry["path"],
@@ -683,12 +888,19 @@ def run_source_audit(root: Any, packs: Mapping[str, Any], make_policy, *,
                     break
                 receipts_by_id[chunk_id] = receipt
                 run_calls += 1
-                run_cost += float(receipt.get("cost_usd") or 0.0)
+                actual = float(receipt.get("cost_usd") or 0.0)
+                run_cost += actual
                 run_reserved += float(receipt.get("reserved_usd") or 0.0)
+                unknown_prior_spend += prior_unknown
+                budget_spent += actual
             if stop_reason != "complete":
                 break
     finally:
-        db.close()
+        try:
+            if db is not None:
+                db.close()
+        finally:
+            osal.release_file_lock(lock_fd)
 
     if stop_reason == "complete" and pending:
         stop_reason = "resume_pending"
@@ -731,6 +943,7 @@ def run_source_audit(root: Any, packs: Mapping[str, Any], make_policy, *,
             "pending_chunks": max(
                 0, sum(value["chunks"] for value in pass_coverage.values())
                 - len(receipts)),
+            "recovered_chunks": recovered_chunks,
             "resume_cursor": resume_cursor,
             "stop_reason": stop_reason,
             "stop_detail": stop_detail,
@@ -744,6 +957,11 @@ def run_source_audit(root: Any, packs: Mapping[str, Any], make_policy, *,
             "run_budget_usd": float(run_budget),
             "actual_spend_usd": round(run_cost, 6),
             "conservative_reservations_usd": round(run_reserved, 6),
+            "unknown_prior_attempt_reservations_usd": round(
+                unknown_prior_spend, 6),
+            "pending_possible_spend_usd": round(pending_possible_spend, 6),
+            "budget_accounted_spend_usd": round(
+                run_cost + unknown_prior_spend + pending_possible_spend, 6),
             "released_reservations_usd": round(released_reservations, 6),
             "reservation_overrun_usd": round(reservation_overrun, 6),
             "input_tokens": sum(int(row.get("input_tokens") or 0) for row in receipts),
