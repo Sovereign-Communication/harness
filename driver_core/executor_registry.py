@@ -290,8 +290,9 @@ PROBE_PREFIXES = (
 #: ``osal.run`` as argv.
 PROBE_ENV = "DRIVER_PROBE_ALLOWLIST"
 
-#: git spellings that write a file even under a reading subcommand.
-PROBE_FORBIDDEN_OPTIONS = ("--output",)
+#: Git options that write a file or dispatch an external command even under
+#: an otherwise read-only subcommand.
+PROBE_FORBIDDEN_OPTIONS = ("--output", "--open-files-in-pager", "-O")
 
 #: Bound on one probe. A read-only check that has not finished in thirty
 #: seconds is a check whose answer nobody is waiting for, and the action
@@ -358,11 +359,16 @@ def probe_argv(command, env=None):
             f"probe shape {argv!r} is not allowlisted; declared read-only "
             f"shapes: {_progress_shapes(env)}")
     for token in argv[1:]:
-        if any(token == option or token.startswith(option + "=")
-               for option in PROBE_FORBIDDEN_OPTIONS):
-            raise ExecutorError(
-                f"probe option {token!r} writes a file; a read-only probe "
-                f"cannot use it")
+        for option in PROBE_FORBIDDEN_OPTIONS:
+            matches = token == option or token.startswith(option + "=")
+            if option == "-O":
+                matches = token.startswith(option)
+            if matches:
+                effect = ("writes a file" if option == "--output"
+                          else "can launch an external pager")
+                raise ExecutorError(
+                    f"probe option {token!r} {effect}; a read-only probe "
+                    f"cannot use it")
     return argv
 
 

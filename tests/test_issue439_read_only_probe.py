@@ -118,6 +118,28 @@ class ReadOnlyProbeTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("writes a file", result.detail)
 
+    def test_git_grep_cannot_launch_an_external_pager(self):
+        commands = (
+            ["git", "grep", "--open-files-in-pager=python", "needle"],
+            ["git", "grep", "-Opython", "needle"],
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                audit = MemoryAuditLog()
+                executor = Executor(
+                    vocabulary=DEFAULT_VOCABULARY,
+                    registry=build_driver_registry(None, allow_write=False),
+                    audit=audit)
+                with mock.patch(
+                        "driver_core.executor_registry.osal.run") as run:
+                    result = executor.execute(
+                        "run_probe", {"command": command})
+                self.assertFalse(result.ok)
+                self.assertIn("external pager", result.detail)
+                run.assert_not_called()
+                self.assertEqual(audit.read_all()[0]["action"], "run_probe")
+                self.assertTrue(audit.verify().ok)
+
     def test_read_only_git_subcommands_are_allowlisted_by_default(self):
         self.assertEqual(probe_argv(["git", "status", "--short"]),
                          ["git", "status", "--short"])
