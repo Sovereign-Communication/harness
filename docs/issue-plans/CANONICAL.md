@@ -74,3 +74,5 @@
 
 - `docs/issue-plans/driving-addendum-2026-10-28.md` (companion to pair v2, oversight tasking confirmation): every issue/PR comment cites the canon item it executes (docs/jev-roadmap.md + pair step) plus fresh evidence (head SHA, check-runs, never combined status); conversion discipline - one PR at a time, small, verified, landed before the next starts; blockers park one item, never the lane.
 - `docs/issue-plans/branch-cleanup-derived-2026-10-28.md`: the 67 merged-PR head branches staged with head SHAs + merged-PR numbers; re-derive, compare, delete at the lane's pace.
+
+- `docs/issue-plans/sweep-2026-10-31/` (oversight sweep delivery, 2026-10-31): harness-438.patch + harness-report.md (issue 438 draft), harness-439.patch + harness-439-report.md (issue 439 draft + issue 433 assessment). Drafts for lane adoption on lane/burndown; the lane's own on-branch implementations exist for both issues - see the relay comment on PR 442 for the reconciliation.
