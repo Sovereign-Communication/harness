@@ -321,6 +321,13 @@ Which surfaces are keyless is deliberate, not an accident of configuration:
 keyed step records its spend in the ledger and `verify` reports it under
 `budget.spent_usd`.
 
+For a headless step followed by spend verification, keep `driver-core serve`
+running and call `POST /step` followed by `GET /verify` on that service. Those
+routes share the same per-process budget, so `verify` includes the step's spend.
+Standalone `driver-core step` and `driver-core verify` commands start separate
+processes; their in-memory budgets are separate even when they use the same
+persistent audit path.
+
 ## Status
 
 ## Status
