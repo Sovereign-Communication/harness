@@ -1419,12 +1419,25 @@ class MainCliFlagsTests(unittest.TestCase):
         self.assertIsNone(_handle_cli_flags([], stdout=out))
         self.assertEqual(out.getvalue(), "")
 
-    def test_unrecognized_args_fall_through_to_serve(self):
+    def test_unrecognized_args_return_usage_error_without_serving(self):
         from harness.mcp import _handle_cli_flags
 
         out = io.StringIO()
-        self.assertIsNone(_handle_cli_flags(["--some-other-flag"], stdout=out))
+        err = io.StringIO()
+        self.assertEqual(
+            _handle_cli_flags(["--some-other-flag"], stdout=out, stderr=err), 2
+        )
         self.assertEqual(out.getvalue(), "")
+        self.assertIn("unrecognized arguments: --some-other-flag", err.getvalue())
+
+    def test_main_returns_early_on_unrecognized_args(self):
+        from harness import mcp
+
+        with mock.patch("harness.mcp.load_settings") as load_settings, \
+             mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.assertEqual(mcp.main(["--some-other-flag"]), 2)
+            self.assertIn("unrecognized arguments", err.getvalue())
+            load_settings.assert_not_called()
 
     def test_main_returns_early_on_version_without_touching_serve_setup(self):
         # main() itself must short-circuit on a handled flag before its
