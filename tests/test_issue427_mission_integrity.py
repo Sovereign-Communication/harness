@@ -7,6 +7,7 @@ could be reported as a complete receipt history. These tests pin the refusal
 at every consumer, and that a refusal never rewrites the bytes.
 """
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -191,6 +192,50 @@ class MissionIntegrityTests(unittest.TestCase):
                 )
 
                 self.assertEqual(result.returncode, 1)
+                self.assertIn(f"{damaged}:2:", result.stderr)
+                self.assertNotIn("Traceback", result.stdout + result.stderr)
+                self.assertEqual(
+                    {item: item.read_bytes() for item in tracked}, before)
+
+    def test_resume_run_cli_names_damaged_history_and_preserves_it(self):
+        for stream_name in ("receipts.jsonl", "jev_evals.jsonl"):
+            with self.subTest(stream=stream_name):
+                root = Path(self.tmp.name) / (
+                    "resume-run-" + stream_name.replace(".", "-")
+                )
+                pack = mr.init_mission_pack(
+                    root, _spec(
+                        mission_id="m-resume-run-" + stream_name.split(".")[0],
+                        root=str(root),
+                    )
+                )
+                damaged = (
+                    pack.receipts_path if stream_name == "receipts.jsonl"
+                    else pack.jev_evals_path
+                )
+                damaged.write_bytes(b'{"valid": true}\nnot json\n')
+                tracked = (
+                    pack.receipts_path, pack.jev_evals_path, pack.resume_path,
+                    pack.status_md, pack.findings_md, pack.index_md,
+                )
+                before = {item: item.read_bytes() for item in tracked}
+                env = os.environ.copy()
+                env["HARNESS_CONFIG_DIR"] = str(
+                    Path(self.tmp.name) / ("config-" + stream_name.replace(".", "-"))
+                )
+                env.pop("OPENROUTER_API_KEY", None)
+                env.pop("HARNESS_JEV_KEY", None)
+
+                result = subprocess.run(
+                    [sys.executable, "-m", "harness.cli", "mission", "resume",
+                     "--id", pack.id, "--root", str(root), "--run"],
+                    cwd=Path(__file__).resolve().parents[1],
+                    env=env,
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace",
+                )
+
+                self.assertEqual(result.returncode, 1, result.stderr)
                 self.assertIn(f"{damaged}:2:", result.stderr)
                 self.assertNotIn("Traceback", result.stdout + result.stderr)
                 self.assertEqual(
