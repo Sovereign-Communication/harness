@@ -69,8 +69,8 @@ dispositions only: `authority` in every verdict says so, and
 
 **Aggregation rule (declared, because the policy's point scores and a live
 Jev distribution are different objects):** an aspect is in a band when that
-band holds a majority (>= 0.5) of the declared distribution. A distribution
-with no majority is `UNCERTAIN` and is investigated; it is never converted
+band holds a strict majority (> 0.5) of the declared distribution. A tie or
+distribution with no strict majority is `UNCERTAIN` and is investigated; it is never converted
 into a point score, and the full distribution stays in the verdict.
 
 **Disposition ladder, in order:**

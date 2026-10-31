@@ -62,6 +62,10 @@ class AggregationRuleTests(unittest.TestCase):
         with self.assertRaises(AssessmentError):
             _judgment("completeness", green=0.9, flex=0.2)
 
+    def test_a_tied_band_distribution_is_uncertain(self):
+        judgment = _judgment("correctness", green=0.5, flex=0.5)
+        self.assertEqual(judgment.band, "UNCERTAIN")
+
     def test_an_unknown_or_missing_band_is_refused(self):
         with self.assertRaises(AssessmentError):
             AspectJudgment("completeness",

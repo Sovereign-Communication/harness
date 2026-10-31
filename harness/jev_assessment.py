@@ -12,8 +12,8 @@ showed the mass spreads: a crisp point score never materialises. Rather than
 invent one, this module declares the aggregation rule and applies thresholds
 to *probabilities of bands*:
 
-    an aspect is in band B when P(B) is a majority (>= 0.5) of the declared
-    distribution; no majority means the aspect is UNCERTAIN and is
+    an aspect is in band B when P(B) is a strict majority (> 0.5) of the
+    declared distribution; no strict majority means the aspect is UNCERTAIN and is
     investigated, never scored.
 
 That is the whole rule. It keeps the declared distribution in the verdict
@@ -47,9 +47,9 @@ BAND_FLEX = "85-89"
 BAND_BELOW = "<85"
 BANDS = (BAND_GREEN, BAND_FLEX, BAND_BELOW)
 
-#: A band holds the aspect when this much of the declared mass is in it.
-#: Majority rather than argmax: an argmax reading would call 0.4/0.35/0.25 a
-#: green aspect, which is the fabrication this rule exists to avoid.
+#: A band holds the aspect when strictly more than this share of the declared
+#: mass is in it. A 50/50 tie is uncertain; band declaration order must not
+#: turn a tied judgement into a green classification.
 MAJORITY = 0.5
 
 #: The policy's own numbers, named so a change to them is a visible edit.
@@ -150,7 +150,7 @@ class AspectJudgment:
         if not self.relevant or self.probabilities is None:
             return "IRRELEVANT" if not self.relevant else "UNCERTAIN"
         for band in BANDS:
-            if self.probabilities[band] >= MAJORITY:
+            if self.probabilities[band] > MAJORITY:
                 return band
         return "UNCERTAIN"
 
