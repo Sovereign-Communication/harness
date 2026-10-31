@@ -275,9 +275,6 @@ def _iter_text_chunks(text: str, max_chars: int) -> Iterable[Tuple[str, int, int
             yield "".join(buffer), buffer_start, line_number - 1
             buffer, buffer_chars, buffer_start = [], 0, line_number
         while len(line) > max_chars:
-            if buffer:
-                yield "".join(buffer), buffer_start, line_number
-                buffer, buffer_chars = [], 0
             yield line[:max_chars], line_number, line_number
             line = line[max_chars:]
         if line:
@@ -366,10 +363,6 @@ def build_manifest(root: Any, packs: Mapping[str, Any], *,
         if pass_name is None:
             entries.append({"path": normalized, "included": False,
                             "pass": None, "reason": "unsupported_file_type"})
-            continue
-        if pass_name not in prepared:
-            entries.append({"path": normalized, "included": False,
-                            "pass": None, "reason": "pass_not_requested"})
             continue
         raw_bytes, content_reason = _read_text(target)
         if content_reason:
