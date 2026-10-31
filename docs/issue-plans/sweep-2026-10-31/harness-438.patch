@@ -1,0 +1,423 @@
+diff --git a/docs/driver.md b/docs/driver.md
+index acbda8d..0c88b6d 100644
+--- a/docs/driver.md
++++ b/docs/driver.md
+@@ -259,6 +259,7 @@ loopback default**. No Harness state file is written on the driver's behalf.
+ |---|---|---|
+ | Endpoint | `DRIVER_BASE_URL` | `http://127.0.0.1:8791` |
+ | Token | `DRIVER_TOKEN` | generated per start when unset |
++| Jev (System One) API key | `DRIVER_JEV_API_KEY` | unset — the driver runs keyless (see below) |
+ | Config file | `DRIVER_CONFIG_PATH` | `$HARNESS_CONFIG_DIR/driver.json` (`~/.config/harness/driver.json` by default) |
+ | Audit log | `DRIVER_AUDIT_PATH` | per-user state directory |
+ | Allow side-effect executors | `DRIVER_ALLOW_WRITE` | off |
+@@ -268,6 +269,43 @@ loopback default**. No Harness state file is written on the driver's behalf.
+ { "base_url": "http://127.0.0.1:8791", "token": "..." }
+ ```
+ 
++### Provisioning the Jev key (headless installs)
++
++Some surfaces are intentionally keyless, and some are keyed because they
++call the model:
++
++| Surface | Key? |
++|---|---|
++| `health`, `vocabulary`, `schema`, `verify` | Keyless — liveness, the redacted settings and the audit-chain verdict never need a key. |
++| Structured extraction (CLI / MCP / DOM tiers) | Keyless — deterministic readers, no model call. |
++| The Jev decision inside every `step` | **Keyed.** |
++| Screen (vision) extraction (`DRIVER_SCREEN=1`) | **Keyed** — the vision slots call the model. |
++
++An unkeyed `step` therefore still captures and cross-verifies, then refuses
++at the decision tier with `decision_not_usable` and spends nothing.
++
++To provision a headless install, set the key in the environment of the
++process that runs the driver, then restart it:
++
++```bash
++DRIVER_JEV_API_KEY=<your TypeSafe key> driver-core serve
++```
++
++`health` reports `keyed: true` once the key is present. While unkeyed,
++health names this same step in its `key_provisioning` field, and the
++`driver-core health` text output prints it — without ever printing or
++logging the key value itself. Declaring the variable **blank** is a
++configuration error rather than a keyless install: unset it to run keyless.
++An embedding caller can instead pass `jev_api_key=` to `load_settings()` or
++`Settings`; an explicit argument takes precedence over the environment, as
++with every other setting.
++
++Operators who already hold the key in the Harness config files
++(`resolve_jev_key()` in `harness/config.py`) bridge it by exporting the
++resolved value as `DRIVER_JEV_API_KEY` for the driver process — that is
++what `scripts/run_driver_dogfood.py` does. driver-core itself reads only
++`DRIVER_*` variables and never opens Harness config files.
++
+ The service binds **loopback only** and requires a bearer token, because an
+ endpoint that can act on a machine should never be reachable by accident from
+ another host. That is a floor, not a security claim: any local process that
+diff --git a/driver_core/cli.py b/driver_core/cli.py
+index 9d87d6a..10daf23 100644
+--- a/driver_core/cli.py
++++ b/driver_core/cli.py
+@@ -49,6 +49,11 @@ def cmd_health(args, driver):
+         print(f"  vocabulary : {driver.vocabulary.identity()} "
+               f"({len(driver.vocabulary)} actions)")
+         print(f"  sources    : {', '.join(payload['sources']) or 'none declared'}")
++        if not settings.keyed:
++            # The remedy beside the fact, in the output a headless operator
++            # actually reads. ``keyed=False`` on the line above says what is
++            # missing; this says what to do about it.
++            print(f"  key        : missing -- {settings.provisioning_step()}")
+         print(f"  writes     : {'allowed' if settings.allow_write else 'off'} "
+               f"(DRIVER_ALLOW_WRITE)")
+         print(f"  budget     : ${driver.budget.remaining:.6f} remaining of "
+diff --git a/driver_core/config.py b/driver_core/config.py
+index 6365d69..d5602e8 100644
+--- a/driver_core/config.py
++++ b/driver_core/config.py
+@@ -30,6 +30,13 @@ from pathlib import Path
+ #: The one prefix this package is allowed to read.
+ ENV_PREFIX = "DRIVER_"
+ 
++#: The environment variable that provisions the Jev (System One) key.
++#: Named once, here, because three surfaces have to agree on it: the loader
++#: that reads it, the error raised when it is declared blank, and the health
++#: output that tells a headless operator what to set. A name spelled out in
++#: three places is a name that drifts.
++JEV_API_KEY_VARIABLE = ENV_PREFIX + "JEV_API_KEY"
++
+ #: Variables belonging to the host application this package ships inside
+ #: (Harness) and to its provider tooling. driver-core is a self-contained,
+ #: segmented module -- wire-compatible with the standalone driver-core project
+@@ -195,6 +202,25 @@ class Settings:
+         """Honest key state. A missing key is a name, not an empty string."""
+         return bool(self.jev_api_key)
+ 
++    def provisioning_step(self):
++        """The one step that would make this install keyed, or ``None``.
++
++        Health surfaces this because ``keyed: false`` on its own is a fact
++        without a remedy: a headless operator holding a valid key had no
++        discoverable way to learn what to set, so the model-backed surfaces
++        stayed unavailable for a reason nobody could see. The step names
++        the variable and what it unlocks, and never a value -- this text is
++        printed by ``/health`` and by the CLI, and both reach logs.
++        """
++        if self.keyed:
++            return None
++        return (
++            f"set {JEV_API_KEY_VARIABLE} to a TypeSafe (System One) API "
++            f"key in the environment of the driver-core process and "
++            f"restart it; Jev decision steps and screen (vision) "
++            f"extraction are unavailable until then. Health, vocabulary, "
++            f"schema and verify work keyless")
++
+     def redacted(self):
+         """The settings as they may be printed or logged.
+ 
+@@ -242,11 +268,23 @@ def load_settings(env=None, **overrides):
+     # ``.get(..., "")`` would silently collapse those two into one.
+     token = validated_token(env[ENV_PREFIX + "TOKEN"], "DRIVER_TOKEN") \
+         if ENV_PREFIX + "TOKEN" in env else ""
++    # The key gets the same presence rule as the token, for the same
++    # reason: an operator whose provisioning script declares
++    # DRIVER_JEV_API_KEY blank has made a mistake worth naming. Read with
++    # ``.get(..., "")`` it would silently collapse into "keyless", and the
++    # install would refuse every model-backed step for what looks like a
++    # product fault rather than a typo. Unset means keyless, and keyless
++    # is a supported state that health describes honestly -- see
++    # :meth:`Settings.provisioning_step`.
++    if JEV_API_KEY_VARIABLE in env and not env[JEV_API_KEY_VARIABLE].strip():
++        raise ConfigError(
++            f"{JEV_API_KEY_VARIABLE} was declared but is blank; either "
++            f"give it a real value or unset it to run keyless")
+     settings = Settings(
+         base_url=env.get(ENV_PREFIX + "BASE_URL", DEFAULT_BASE_URL).rstrip("/"),
+         host=env.get(ENV_PREFIX + "HOST", DEFAULT_HOST),
+         port=_env_int(env, "PORT", DEFAULT_PORT),
+-        jev_api_key=env.get(ENV_PREFIX + "JEV_API_KEY", ""),
++        jev_api_key=env.get(JEV_API_KEY_VARIABLE, ""),
+         token=token,
+         jev_model=env.get(ENV_PREFIX + "JEV_MODEL", "jev-latest"),
+         extractor_pool=pool,
+diff --git a/driver_core/server.py b/driver_core/server.py
+index dff2ad0..1b6cc30 100644
+--- a/driver_core/server.py
++++ b/driver_core/server.py
+@@ -119,6 +119,13 @@ class Service:
+             "status": "up",
+             "version": __version__,
+             "keyed": self.driver.settings.keyed,
++            # When unkeyed, the step that would make this install keyed --
++            # named here because a headless operator has no other surface
++            # that tells them, and a bare ``keyed: false`` reads as a
++            # defect rather than a provisioning gap. ``None`` when keyed.
++            # The step names a variable, never a value, so it is safe in
++            # this body for the same reason the settings are redacted.
++            "key_provisioning": self.driver.settings.provisioning_step(),
+             "settings": self.driver.settings.redacted(),
+             "vocabulary": self._vocabulary_view(),
+             "sources": [s.name for s in self.driver.sources],
+diff --git a/tests/test_driver_core/test_auth.py b/tests/test_driver_core/test_auth.py
+index c51d863..9c436e8 100644
+--- a/tests/test_driver_core/test_auth.py
++++ b/tests/test_driver_core/test_auth.py
+@@ -420,15 +420,17 @@ class TokenProvisioningTests(unittest.TestCase):
+             thread.join(timeout=10)
+ 
+     def test_a_declared_token_does_not_change_the_request_contract(self):
+-        """Authenticating must not have moved the wire. Same eleven keys,
+-        same stop reasons, same fail-closed schema."""
++        """Authenticating must not have moved the wire. Same keys (the
++        health shape gained ``key_provisioning`` with #438, for keyed and
++        unkeyed installs alike), same stop reasons, same fail-closed
++        schema."""
+         from driver_core.server import STOP_REASONS
+         env = {"DRIVER_TOKEN": self.DECLARED}
+         service = Service(self.driver_for(env))
+         health = service.health()
+         self.assertEqual(sorted(health),
+-                         ["keyed", "ok", "settings", "sources", "status",
+-                          "version", "vocabulary"])
++                         ["key_provisioning", "keyed", "ok", "settings",
++                          "sources", "status", "version", "vocabulary"])
+         self.assertEqual(len(STOP_REASONS), 9)
+ 
+ 
+diff --git a/tests/test_driver_core/test_headless_provisioning.py b/tests/test_driver_core/test_headless_provisioning.py
+new file mode 100644
+index 0000000..263858e
+--- /dev/null
++++ b/tests/test_driver_core/test_headless_provisioning.py
+@@ -0,0 +1,232 @@
++"""Headless key provisioning (#438): the fix is discoverable, the key is not.
++
++The behaviours pinned here are the ones a headless operator depends on and
++could not previously see: an unkeyed install's health output names the one
++step that would make it keyed, a key provisioned through the environment
++actually unlocks the model-backed step end to end (with the spend visible
++in verify), and the channels that already carried a key -- an explicit
++constructor argument, and the Harness config-file key the dogfood bridge
++exports as the environment variable -- behave exactly as before.
++
++Every key below is a dummy. Nothing here touches the network: the Jev
++transport is the package's own fake, which is the seam the decision client
++is built to accept.
++"""
++import argparse
++import contextlib
++import io
++import json
++import unittest
++
++from driver_core.actions import DEFAULT_VOCABULARY
++from driver_core.audit import MemoryAuditLog
++from driver_core.budget import Budget
++from driver_core.config import ConfigError, Settings, load_settings
++from driver_core.driver import Driver
++from driver_core.ev import FakeTransport, ok_response
++from driver_core.executor import Executor
++from driver_core.executor_registry import build_read_only_registry
++from driver_core.extractors import ExtractorPool, StructuredExtractor
++from driver_core.jev_client import JevClient
++from driver_core.perception import StructuredSource
++from driver_core.server import Service
++
++DUMMY_KEY = "dummy-key-for-tests-only-0000"
++
++STATE = {"window_title": "report - editor", "foreground_app": "editor",
++         "error_dialog_present": False}
++
++
++def _reader(payload=None):
++    def read(capture, schema):
++        return dict(payload or STATE)
++    return read
++
++
++def _source_reader(payload=None):
++    def read(target):
++        return dict(payload or STATE)
++    return read
++
++
++def _answers(action="observe", confidence=0.95):
++    """A realistic Jev response body: a distribution over every declared
++    option, not just the winner -- the shape the real endpoint returns and
++    the validator requires."""
++    options = DEFAULT_VOCABULARY.names()
++    others = [name for name in options if name != action]
++    share = (1.0 - confidence) / len(others) if others else 0.0
++    distribution = {name: (confidence if name == action else share)
++                    for name in options}
++    return {
++        "action": {"type": "choice", "choice": action,
++                   "probabilities": distribution,
++                   "confidence": confidence},
++        "state_is_stable": {"type": "noul", "noul": 0.95},
++        "a_blocking_choice_is_required": {"type": "noul", "noul": 0.2},
++    }
++
++
++def _service(settings, transport=None):
++    """A service whose decision tier is the real Jev client over a fake
++    transport -- so a step exercises the actual keyed/unkeyed code path,
++    not a stand-in for it."""
++    chain = MemoryAuditLog()
++    budget = Budget(1.0, step_ceiling_usd=1.0)
++    jev = JevClient(settings, budget=budget, audit=chain,
++                    transport_module=transport or FakeTransport())
++    pool = ExtractorPool([StructuredExtractor(f"s{i}", _reader())
++                          for i in range(2)])
++    driver = Driver(
++        settings=settings, budget=budget, audit=chain, pool=pool, jev=jev,
++        sources=[StructuredSource("screen", _source_reader(),
++                                  serves=("gui",))],
++        executor=Executor(vocabulary=DEFAULT_VOCABULARY,
++                          registry=build_read_only_registry(),
++                          dry_run=True, audit=chain))
++    return Service(driver, token="test-token")
++
++
++def _settings(env):
++    return load_settings(env=env, quorum=2, min_agreement=1.0,
++                         confidence_threshold=0.7, run_ceiling_usd=1.0,
++                         step_ceiling_usd=1.0, dry_run=True)
++
++
++def _text_health(settings):
++    from driver_core import cli
++    driver = Driver(settings=settings, audit=MemoryAuditLog())
++    out = io.StringIO()
++    with contextlib.redirect_stdout(out):
++        code = cli.cmd_health(argparse.Namespace(json=False), driver)
++    return code, out.getvalue()
++
++
++class UnkeyedHealthTests(unittest.TestCase):
++
++    def test_health_names_the_provisioning_step(self):
++        """``keyed: false`` alone is a fact without a remedy. The health
++        body also carries the step, naming the variable to set."""
++        payload = _service(_settings({})).handle("health", {})["body"]
++        self.assertTrue(payload["ok"])
++        self.assertFalse(payload["keyed"])
++        self.assertIn("DRIVER_JEV_API_KEY", payload["key_provisioning"])
++
++    def test_cli_health_text_names_the_step(self):
++        """The text output is the surface a headless operator reads first;
++        the remedy has to be there, not only in the JSON."""
++        code, out = _text_health(_settings({}))
++        self.assertEqual(code, 0)
++        self.assertIn("keyed=False", out)
++        self.assertIn("DRIVER_JEV_API_KEY", out)
++
++    def test_the_provisioning_step_is_none_once_keyed(self):
++        settings = _settings({"DRIVER_JEV_API_KEY": DUMMY_KEY})
++        self.assertIsNone(settings.provisioning_step())
++
++
++class KeyedViaEnvironmentTests(unittest.TestCase):
++
++    def test_the_environment_variable_provisions_the_key(self):
++        settings = _settings({"DRIVER_JEV_API_KEY": DUMMY_KEY})
++        self.assertTrue(settings.keyed)
++        self.assertEqual(settings.jev_api_key, DUMMY_KEY)
++
++    def test_health_reports_keyed_without_leaking_the_key(self):
++        """Keyed health shows the state and no remedy -- and the key value
++        appears nowhere in the body, as with every other health field."""
++        payload = _service(
++            _settings({"DRIVER_JEV_API_KEY": DUMMY_KEY})
++        ).handle("health", {})["body"]
++        self.assertTrue(payload["keyed"])
++        self.assertIsNone(payload["key_provisioning"])
++        self.assertNotIn(DUMMY_KEY, json.dumps(payload))
++
++    def test_cli_health_text_stays_clean_when_keyed(self):
++        _, out = _text_health(_settings({"DRIVER_JEV_API_KEY": DUMMY_KEY}))
++        self.assertIn("keyed=True", out)
++        self.assertNotIn("missing --", out)
++        self.assertNotIn(DUMMY_KEY, out)
++
++    def test_a_keyed_step_runs_end_to_end_and_the_spend_is_in_verify(self):
++        """The acceptance shape: provision by environment, run one step,
++        watch it execute on a real (transport-faked) Jev decision, and see
++        the step's spend in the verify output."""
++        transport = FakeTransport(
++            ok_response(_answers(), input_tokens=1000))
++        service = _service(_settings({"DRIVER_JEV_API_KEY": DUMMY_KEY}),
++                           transport=transport)
++        outcome = service.handle("step", {"target": "t", "schema": "gui"})
++        self.assertEqual(outcome["status"], 200)
++        self.assertTrue(outcome["body"]["ok"])
++        self.assertEqual(outcome["body"]["execution"]["action"], "observe")
++        # The decision really went to the model tier: one transport call,
++        # carrying the provisioned key and nothing else's.
++        self.assertEqual(len(transport.requests), 1)
++        verify = service.handle("verify", {})["body"]
++        self.assertAlmostEqual(verify["budget"]["spent_usd"],
++                               1000 * 0.042 / 1_000_000)
++
++    def test_the_same_step_unkeyed_refuses_at_the_decision_tier(self):
++        """The contrast that makes the keyed run meaningful: without the
++        key the pipeline still captures and agrees, refuses with the
++        documented reason, never calls the model, and spends nothing."""
++        transport = FakeTransport()
++        service = _service(_settings({}), transport=transport)
++        outcome = service.handle("step", {"target": "t", "schema": "gui"})
++        self.assertFalse(outcome["body"]["ok"])
++        self.assertEqual(outcome["body"]["reason"], "decision_not_usable")
++        self.assertEqual(transport.requests, [])
++        verify = service.handle("verify", {})["body"]
++        self.assertEqual(verify["budget"]["spent_usd"], 0.0)
++
++
++class ExistingKeyChannelTests(unittest.TestCase):
++    """Keys that already arrive must behave exactly as before.
++
++    Two channels predate this change: an explicit ``jev_api_key=`` argument
++    (how an embedding or config-driven caller injects one), and the Harness
++    config-file key that ``scripts/run_driver_dogfood.py`` resolves via
++    ``resolve_jev_key()`` and exports as ``DRIVER_JEV_API_KEY`` -- which is
++    the environment path pinned above. Neither gains a remedy line, a new
++    precedence, or a new failure mode.
++    """
++
++    def test_a_caller_supplied_key_is_keyed_with_no_remedy(self):
++        settings = load_settings(env={}, jev_api_key="caller-supplied")
++        self.assertTrue(settings.keyed)
++        self.assertIsNone(settings.provisioning_step())
++        payload = _service(settings).handle("health", {})["body"]
++        self.assertTrue(payload["keyed"])
++        self.assertIsNone(payload["key_provisioning"])
++        self.assertNotIn("caller-supplied", json.dumps(payload))
++
++    def test_an_explicit_key_still_beats_the_environment(self):
++        settings = load_settings(env={"DRIVER_JEV_API_KEY": "from-env"},
++                                 jev_api_key="from-caller")
++        self.assertEqual(settings.jev_api_key, "from-caller")
++
++    def test_a_directly_built_settings_is_unchanged(self):
++        settings = Settings(jev_api_key="from-config")
++        self.assertTrue(settings.keyed)
++        self.assertIsNone(settings.provisioning_step())
++
++
++class BlankKeyTests(unittest.TestCase):
++    """A declared-but-blank key is the token's failure shape, adopted for
++    the same reason: silently collapsing it into "keyless" would leave a
++    provisioning typo looking like a product fault."""
++
++    def test_a_blank_key_is_a_named_configuration_error(self):
++        for blank in ("", "   "):
++            with self.assertRaises(ConfigError) as caught:
++                load_settings(env={"DRIVER_JEV_API_KEY": blank})
++            self.assertIn("DRIVER_JEV_API_KEY", str(caught.exception))
++            self.assertIn("blank", str(caught.exception))
++
++    def test_an_unset_key_is_keyless_not_an_error(self):
++        self.assertFalse(load_settings(env={}).keyed)
++
++
++if __name__ == "__main__":
++    unittest.main()
