@@ -381,9 +381,9 @@ def parse_payload_json(raw: str) -> Any:
 def run_cli(argv=None) -> int:
     """``harness assess --input FILE``: JSON in, verdict JSON out.
 
-    Reads a file or stdin, prints the verdict, and exits 0 on a pass, 1 on
-    anything else. The exit code is the gate: a script can branch on it
-    without parsing prose, exactly like the rest of the CLI.
+    Reads a file or stdin and prints the verdict. Returns 0 for a pass, 1 for
+    any non-passing verdict, and 2 for malformed assessment JSON or payload.
+    Callers can branch on the return value without parsing prose.
     """
     import argparse
     import json
