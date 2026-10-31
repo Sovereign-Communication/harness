@@ -226,6 +226,10 @@ def _run_mission(
     _require_callable(attempt_fn, "attempt_fn")
 
     spec = pack.spec()
+    # Validate both append-only histories before creating resume state,
+    # invoking the attempt seat, or writing terminal/status artifacts.
+    mr.load_receipts(pack)
+    mr.load_jev_evals(pack)
     if not pack.resume_path.is_file():
         mr.write_resume(pack, mr.build_resume_state(pack))
     resume = mr.load_resume(pack)

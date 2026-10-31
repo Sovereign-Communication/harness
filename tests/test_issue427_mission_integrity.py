@@ -13,6 +13,7 @@ import unittest
 
 from harness import mission_record as mr
 from harness.errors import HarnessError
+from harness.mission_driver import run_mission
 
 
 def _spec(mission_id="m-integrity", root="missions"):
@@ -102,6 +103,44 @@ class MissionIntegrityTests(unittest.TestCase):
             mr.generate_status_md(self.pack)
         with self.assertRaises(HarnessError):
             mr.pack_summary(self.pack)
+
+    def test_append_refuses_a_damaged_existing_stream_without_changing_bytes(self):
+        for path, append in (
+                (self.pack.receipts_path, mr.append_receipt),
+                (self.pack.jev_evals_path, mr.append_jev_eval)):
+            with self.subTest(path=path.name):
+                self._write(path, '{"valid": true}\nnot json\n')
+                before = path.read_bytes()
+                with self.assertRaises(HarnessError):
+                    append(self.pack, {"new": "record"})
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_driver_refuses_damaged_streams_before_terminal_side_effects(self):
+        for stream_name in ("receipts.jsonl", "jev-evals.jsonl"):
+            with self.subTest(stream=stream_name):
+                root = Path(self.tmp.name) / stream_name.replace(".", "-")
+                pack = mr.init_mission_pack(
+                    root, _spec(mission_id="m-driver-" + stream_name.split(".")[0],
+                                root=str(root)))
+                damaged = (pack.receipts_path if stream_name == "receipts.jsonl"
+                           else pack.jev_evals_path)
+                self._write(damaged, '{"valid": true}\nnot json\n')
+                tracked = (pack.receipts_path, pack.jev_evals_path,
+                           pack.resume_path, pack.status_md,
+                           pack.findings_md, pack.index_md)
+                before = {item: item.read_bytes() for item in tracked}
+                called = []
+
+                def attempt(_context):
+                    called.append(True)
+                    return {"ok": True}
+
+                with self.assertRaises(HarnessError):
+                    run_mission(pack, attempt_fn=attempt, max_attempts=0)
+                self.assertEqual(called, [])
+                self.assertEqual(
+                    {item: item.read_bytes() for item in tracked}, before)
+                self.assertEqual(damaged.read_bytes(), b'{"valid": true}\nnot json\n')
 
 
 if __name__ == "__main__":  # pragma: no cover

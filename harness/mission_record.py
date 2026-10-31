@@ -550,6 +550,10 @@ class MissionPack:
 def _append_jsonl(path: Path, record: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(record, dict):
         raise HarnessError("receipt/eval record must be a mapping")
+    # Do not extend a stream whose earlier bytes cannot be parsed. Appending
+    # would leave the damaged row in place while making later rows look like
+    # a continuous, complete history.
+    _load_jsonl(path)
     body = dict(record)
     body.setdefault("ts", _now_iso())
     try:
