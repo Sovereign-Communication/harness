@@ -8,6 +8,8 @@ at every consumer, and that a refusal never rewrites the bytes.
 """
 import json
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -80,6 +82,18 @@ class MissionIntegrityTests(unittest.TestCase):
             mr.load_receipts(self.pack)
         self.assertIn("interrupted final record", str(ctx.exception))
 
+    def test_invalid_utf8_is_refused_with_path_and_line(self):
+        damaged = b'{"valid": true}\n{"bad": "\xff"}\n'
+        self.pack.receipts_path.write_bytes(damaged)
+        before = self.pack.receipts_path.read_bytes()
+        with self.assertRaises(HarnessError) as ctx:
+            mr.load_receipts(self.pack)
+        message = str(ctx.exception)
+        self.assertIn(str(self.pack.receipts_path), message)
+        self.assertIn(":2:", message)
+        self.assertIn("malformed UTF-8", message)
+        self.assertEqual(self.pack.receipts_path.read_bytes(), before)
+
     def test_refusal_preserves_the_bytes(self):
         text = (json.dumps({"kind": "attempt", "id": "r1"}) + "\n"
                 + "garbage\n")
@@ -99,6 +113,8 @@ class MissionIntegrityTests(unittest.TestCase):
                                               '{"axis": broken\n')
         with self.assertRaises(HarnessError):
             mr.load_jev_evals(self.pack)
+        with self.assertRaises(HarnessError):
+            mr.build_resume_state(self.pack)
         with self.assertRaises(HarnessError):
             mr.generate_status_md(self.pack)
         with self.assertRaises(HarnessError):
@@ -141,6 +157,66 @@ class MissionIntegrityTests(unittest.TestCase):
                 self.assertEqual(
                     {item: item.read_bytes() for item in tracked}, before)
                 self.assertEqual(damaged.read_bytes(), b'{"valid": true}\nnot json\n')
+
+
+    def test_resume_cli_refuses_damaged_histories_before_rewriting_resume(self):
+        for stream_name in ("receipts.jsonl", "jev-evals.jsonl"):
+            with self.subTest(stream=stream_name):
+                root = Path(self.tmp.name) / ("resume-" + stream_name.replace(".", "-"))
+                pack = mr.init_mission_pack(
+                    root, _spec(mission_id="m-resume-" + stream_name.split(".")[0],
+                                root=str(root)))
+                # A valid but non-canonical resume file makes an early rewrite
+                # observable even when the stored counters remain unchanged.
+                resume_before = (
+                    "{\"status\":\"in_progress\",\"mission_id\":\"" + pack.id
+                    + "\",\"schema_version\":1,\"receipts_seq\":0,"
+                    + "\"attempts\":0,\"spent\":0.0,\"updated_at\":\"fixed\"}\n"
+                ).encode("utf-8")
+                pack.resume_path.write_bytes(resume_before)
+                damaged = (pack.receipts_path if stream_name == "receipts.jsonl"
+                           else pack.jev_evals_path)
+                damaged.write_bytes(b'{"valid": true}\nnot json\n')
+                tracked = (pack.receipts_path, pack.jev_evals_path,
+                           pack.resume_path, pack.status_md, pack.findings_md,
+                           pack.index_md)
+                before = {item: item.read_bytes() for item in tracked}
+
+                result = subprocess.run(
+                    [sys.executable, "-m", "harness.cli", "mission", "resume",
+                     "--id", pack.id, "--root", str(root)],
+                    cwd=Path(__file__).resolve().parents[1],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace",
+                )
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(f"{damaged}:2:", result.stderr)
+                self.assertNotIn("Traceback", result.stdout + result.stderr)
+                self.assertEqual(
+                    {item: item.read_bytes() for item in tracked}, before)
+
+    def test_mark_terminal_refuses_damaged_histories_before_writing(self):
+        for stream_name in ("receipts.jsonl", "jev-evals.jsonl"):
+            with self.subTest(stream=stream_name):
+                root = Path(self.tmp.name) / ("terminal-" + stream_name.replace(".", "-"))
+                pack = mr.init_mission_pack(
+                    root, _spec(mission_id="m-terminal-" + stream_name.split(".")[0],
+                                root=str(root)))
+                mr.write_resume(pack, mr.build_resume_state(pack))
+                mr.write_status(pack)
+                damaged = (pack.receipts_path if stream_name == "receipts.jsonl"
+                           else pack.jev_evals_path)
+                self._write(damaged, '{"valid": true}\nnot json\n')
+                tracked = (pack.receipts_path, pack.jev_evals_path,
+                           pack.resume_path, pack.status_md, pack.findings_md)
+                before = {item: item.read_bytes() for item in tracked}
+
+                with self.assertRaises(HarnessError):
+                    mr.mark_terminal(pack, outcome="complete")
+
+                self.assertEqual(
+                    {item: item.read_bytes() for item in tracked}, before)
 
 
 if __name__ == "__main__":  # pragma: no cover

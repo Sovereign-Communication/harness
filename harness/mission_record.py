@@ -580,20 +580,25 @@ def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
         return []
     out: List[Dict[str, Any]] = []
     try:
-        with open(path, encoding="utf-8", newline="") as f:
-            text = f.read()
+        with open(path, "rb") as f:
+            lines = f.read().splitlines(keepends=True)
     except OSError as e:
         raise HarnessError(f"cannot read JSONL: {path} ({e})") from e
-    lines = text.splitlines(keepends=True)
     for number, raw in enumerate(lines, start=1):
-        line = raw.strip()
+        try:
+            decoded = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise HarnessError(
+                f"{path}:{number}: malformed UTF-8 record ({exc.reason}); "
+                f"stream integrity cannot be established") from exc
+        line = decoded.strip()
         if not line:
             continue
         try:
             entry = json.loads(line)
         except json.JSONDecodeError as exc:
             interrupted = (number == len(lines)
-                           and not raw.endswith(("\n", "\r")))
+                           and not raw.endswith((b"\n", b"\r")))
             kind = ("interrupted final record" if interrupted
                     else "malformed record")
             raise HarnessError(
@@ -801,6 +806,7 @@ def record_spend(
 
 def build_resume_state(pack: MissionPack, **extra: Any) -> Dict[str, Any]:
     receipts = load_receipts(pack)
+    load_jev_evals(pack)
     budget = load_budget(pack) if pack.budget_path.is_file() else {}
     state = {
         "schema_version": RESUME_SCHEMA_VERSION,
@@ -1000,6 +1006,10 @@ def mark_terminal(
     if outcome not in _TERMINAL_STATUSES:
         raise HarnessError(
             f"terminal outcome must be one of {sorted(_TERMINAL_STATUSES)}; got {outcome!r}")
+    # Validate both append-only histories before writing findings or terminal
+    # resume state. A failed STATUS refresh must not leave a partial completion.
+    load_receipts(pack)
+    load_jev_evals(pack)
     text = findings if findings is not None else (
         f"# FINDINGS — {pack.id}\n\n"
         f"Terminal outcome: `{outcome}` at {_now_iso()}.\n\n"

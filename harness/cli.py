@@ -1052,6 +1052,10 @@ def _cmd_mission(opts, settings):
             result["resumed"] = not terminal_before
             _emit(result, opts.out)
             return
+        # Refuse damaged histories before the read-only resume path rewrites
+        # the validated resume projection.
+        mr.load_receipts(pack)
+        mr.load_jev_evals(pack)
         state = mr.load_resume(pack)
         validated = mr.validate_resume(state, expected_id=pack.id)
         mr.write_resume(pack, validated)
