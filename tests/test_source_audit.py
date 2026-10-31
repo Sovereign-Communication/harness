@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -218,14 +219,15 @@ class SourceAuditTests(unittest.TestCase):
         first = self._run(FakePolicy())
         state_file = self.root / ".harness" / "source-audit.sqlite3"
         chunk_id = first["receipts"][0]["chunk_id"]
-        with sqlite3.connect(str(state_file)) as db:
-            row = db.execute(
-                "SELECT payload FROM chunks WHERE chunk_id=?", (chunk_id,)
-            ).fetchone()
-            payload = json.loads(row[0])
-            payload["pack_hash"] = "different-policy"
-            db.execute("UPDATE chunks SET payload=? WHERE chunk_id=?",
-                       (json.dumps(payload, sort_keys=True), chunk_id))
+        with closing(sqlite3.connect(str(state_file))) as db:
+            with db:
+                row = db.execute(
+                    "SELECT payload FROM chunks WHERE chunk_id=?", (chunk_id,)
+                ).fetchone()
+                payload = json.loads(row[0])
+                payload["pack_hash"] = "different-policy"
+                db.execute("UPDATE chunks SET payload=? WHERE chunk_id=?",
+                           (json.dumps(payload, sort_keys=True), chunk_id))
 
         resumed = FakePolicy()
         with self.assertRaisesRegex(SourceAuditError, "state is corrupt"):

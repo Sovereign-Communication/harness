@@ -208,7 +208,7 @@ def acquire_file_lock(path):
             raise OsalError("cannot initialize lock file")
         os.lseek(fd, 0, os.SEEK_SET)
         try:
-            if IS_WINDOWS:
+            if sys.platform == "win32":
                 import msvcrt
                 msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
             else:
