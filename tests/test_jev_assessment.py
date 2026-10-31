@@ -359,6 +359,28 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("relevant must be a boolean", error["error"])
 
+        non_finite = self._payload()
+        non_finite["aspects"]["correctness"]["probabilities"] = {
+            ">=90": 0.6, "85-89": float("nan"), "<85": 0.4}
+        code, error = invoke(json.dumps(non_finite))
+        self.assertEqual(code, 2)
+        self.assertIn("not finite", error["error"])
+
+        duplicate_base = json.dumps(self._payload())
+        green = json.dumps(self._payload()["aspects"]["correctness"])
+        below = json.dumps({"probabilities": {
+            ">=90": 0.1, "85-89": 0.1, "<85": 0.8}})
+        original = '"correctness": ' + green
+        self.assertIn(original, duplicate_base)
+        for first, second in ((below, green), (green, below)):
+            duplicate_keys = duplicate_base.replace(
+                original,
+                '"correctness": ' + first + ', "correctness": ' + second,
+                1)
+            code, error = invoke(duplicate_keys)
+            self.assertEqual(code, 2)
+            self.assertIn("duplicate JSON object keys", error["error"])
+
         bad_count = dict(self._payload(), stalled_rounds=[])
         code, error = invoke(json.dumps(bad_count))
         self.assertEqual(code, 2)

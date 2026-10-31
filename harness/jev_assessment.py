@@ -29,6 +29,7 @@ composer ``proceed``. A composer verdict passed in is carried through
 untouched, under its own key, and never feeds the decision here.
 """
 from dataclasses import dataclass, field
+import math
 from typing import Any, Dict, List, Optional
 
 #: The five aspects, in the policy's order. Declared once: a caller cannot
@@ -100,9 +101,9 @@ def _checked_probabilities(probabilities: Any, aspect: str) -> Dict[str, float]:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise AssessmentError(
                 f"aspect {aspect!r}: band {band!r} is not a number")
-        if value < 0 or value > 1:
+        if value < 0 or value > 1 or not math.isfinite(value):
             raise AssessmentError(
-                f"aspect {aspect!r}: band {band!r} is outside [0, 1]")
+                f"aspect {aspect!r}: band {band!r} is outside [0, 1] or is not finite")
         checked[band] = float(value)
     total = sum(checked.values())
     if abs(total - 1.0) > 1e-6:
@@ -351,6 +352,21 @@ def verdict_for_payload(payload: Dict[str, Any]) -> AssessmentVerdict:
                   composer=payload.get("composer"))
 
 
+def parse_payload_json(raw: str) -> Any:
+    """Parse CLI assessment JSON without accepting ambiguous duplicate keys."""
+    import json
+
+    def reject_duplicate_keys(pairs: List[Any]) -> Dict[str, Any]:
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise AssessmentError("duplicate JSON object keys are not allowed")
+            result[key] = value
+        return result
+
+    return json.loads(raw, object_pairs_hook=reject_duplicate_keys)
+
+
 def run_cli(argv=None) -> int:
     """``harness assess --input FILE``: JSON in, verdict JSON out.
 
@@ -370,12 +386,13 @@ def run_cli(argv=None) -> int:
     parser.add_argument("--input", default="-",
                         help="JSON file with the aspect judgements, or - for stdin")
     args = parser.parse_args(argv or [])
+
     try:
         if args.input == "-":
             raw = sys.stdin.read()
         else:
             raw = osal.read_text(args.input)
-        payload = json.loads(raw)
+        payload = parse_payload_json(raw)
         verdict = verdict_for_payload(payload)
     except (AssessmentError, ValueError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True))

@@ -30,7 +30,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, cast
 from . import jev_calibration as _jcal
-from .jev_assessment import AssessmentError, verdict_for_payload
+from .jev_assessment import AssessmentError, parse_payload_json, verdict_for_payload
 from . import provision as _pv
 from . import refine as _refine
 from . import repo_cards as _rc
@@ -1956,7 +1956,7 @@ def _cmd_assess(opts, settings):
     try:
         raw = (sys.stdin.read() if getattr(opts, "input", "-") == "-"
                else _read_text(opts.input, "assessment payload"))
-        verdict = verdict_for_payload(json.loads(raw))
+        verdict = verdict_for_payload(parse_payload_json(raw))
     except (AssessmentError, ValueError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True))
         sys.exit(2)
