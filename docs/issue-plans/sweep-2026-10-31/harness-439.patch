@@ -1,0 +1,662 @@
+diff --git a/docs/driver.md b/docs/driver.md
+index 0c88b6d..7529c73 100644
+--- a/docs/driver.md
++++ b/docs/driver.md
+@@ -111,8 +111,14 @@ only these have an executor behind them, and anything else is refused as
+ unregistered):
+ 
+ - Always: three read-only executors, `no_action`, `observe` and `read_value`.
+-  The other declared read-only actions (`read_dom`, `call_read_tool`,
+-  `run_probe`) have no executor in this build and are refused.
++  The other declared read-only actions (`read_dom`, `call_read_tool`)
++  have no executor in this build and are refused.
++- Whenever read-only probes are declared (`DRIVER_PROBES`, below):
++  `run_probe`. A probe declaration names commands the operator trusts to
++  be read-only; `run_probe` may name one of them and returns its stdout,
++  exit code and stderr, recorded in the audit chain like any other
++  action. Probes are not write authority and are registered with
++  `DRIVER_ALLOW_WRITE` on or off; a name nobody declared is refused.
+ - Only when `DRIVER_ALLOW_WRITE` is set: `write_file` (back up, then atomic
+   replace) and `delete_file` (irreversible). Input executors also require a
+   registered backend; the native Windows backend makes only exact-title
+@@ -263,12 +269,26 @@ loopback default**. No Harness state file is written on the driver's behalf.
+ | Config file | `DRIVER_CONFIG_PATH` | `$HARNESS_CONFIG_DIR/driver.json` (`~/.config/harness/driver.json` by default) |
+ | Audit log | `DRIVER_AUDIT_PATH` | per-user state directory |
+ | Allow side-effect executors | `DRIVER_ALLOW_WRITE` | off |
++| Read-only probes | `DRIVER_PROBES` | none declared |
+ | Dry run | `DRIVER_DRY_RUN` | off |
+ 
+ ```json
+ { "base_url": "http://127.0.0.1:8791", "token": "..." }
+ ```
+ 
++### Declaring read-only probes
++
++`DRIVER_PROBES` declares the named commands the `run_probe` action may
++run: `name=command` entries separated by `;`, for example
++`DRIVER_PROBES="git_status=git status --porcelain; disk_free=df -h"`.
++A declared command is split exactly like `DRIVER_CLI_COMMAND`
++(whitespace tokenisation, quotes group, nothing expanded) and runs as
++an argv list with no shell; the action's `command` parameter only ever
++*names* an entry, so there is nothing for a caller to compose or inject.
++Declaring a probe asserts it is read-only — the driver cannot verify
++that, so declare check and status commands only. A malformed
++declaration fails settings load rather than being skipped.
++
+ ### Provisioning the Jev key (headless installs)
+ 
+ Some surfaces are intentionally keyless, and some are keyed because they
+diff --git a/driver_core/config.py b/driver_core/config.py
+index d5602e8..8f57ed7 100644
+--- a/driver_core/config.py
++++ b/driver_core/config.py
+@@ -125,6 +125,40 @@ def _env_int(env, name, default):
+         raise ConfigError(f"{ENV_PREFIX}{name}={raw!r} is not an integer") from None
+ 
+ 
++def _probe_name(name):
++    """Whether ``name`` can name a declared read-only probe.
++
++    Conservative on purpose: a probe name is how a caller refers to a
++    declared command, so it is a label, not a string with structure --
++    no spaces, no separators, nothing a shell or a path could read
++    meaning into.
++    """
++    return (isinstance(name, str) and bool(name)
++            and all(c.isalnum() or c in "-_" for c in name))
++
++
++def _env_probes(env):
++    """Parse ``DRIVER_PROBES``: ``name=command`` entries separated by ';'.
++
++    A malformed entry is a configuration fault and raises rather than
++    being skipped: an operator who declared a probe that silently does
++    not exist has a verifier that refuses for a reason nobody can see.
++    Name and command are validated when the settings are built.
++    """
++    raw = env.get(ENV_PREFIX + "PROBES", "")
++    pairs = []
++    for entry in raw.split(";"):
++        entry = entry.strip()
++        if not entry:
++            continue
++        name, sep, command = entry.partition("=")
++        if not sep:
++            raise ConfigError(
++                f"{ENV_PREFIX}PROBES entry {entry!r} is not name=command")
++        pairs.append((name.strip(), command.strip()))
++    return tuple(pairs)
++
++
+ class ConfigError(Exception):
+     """A driver-core setting is present but unusable.
+ 
+@@ -174,6 +208,16 @@ class Settings:
+     #: The in-repo native input backend is a separate, explicit opt-in. It is
+     #: still constrained by ``allow_write`` and per-action consent.
+     native_input_enabled: bool = False
++    #: Declared read-only probes, as ``(name, command)`` pairs. A probe is a
++    #: command the operator declares safe to run for verification; the
++    #: ``run_probe`` action may name one of these, and nothing else. Declaring
++    #: a probe is not write authority: probes are registered in builds with
++    #: ``allow_write`` off, because running one observes the machine rather
++    #: than changing it. The command string is split like every declared
++    #: command (see :func:`driver_core.wiring.parse_argv`); there is no
++    #: shell anywhere on the path. None are declared by default, so a
++    #: default build can observe only through its sources.
++    probes: tuple = ()
+ 
+     def __post_init__(self):
+         if not self.base_url.startswith(("http://", "https://")):
+@@ -196,6 +240,24 @@ class Settings:
+                 f"${self.step_ceiling_usd}, so no step could ever run")
+         if self.token:
+             validated_token(self.token, "the declared token")
++        seen_probes = set()
++        for pair in self.probes:
++            try:
++                name, command = pair
++            except (TypeError, ValueError):
++                raise ConfigError(
++                    f"probes entries must be (name, command) pairs, got "
++                    f"{pair!r}") from None
++            if not _probe_name(name):
++                raise ConfigError(
++                    f"probe name {name!r} is not a usable name; use letters, "
++                    f"digits, '-' and '_'")
++            if not isinstance(command, str) or not command.strip():
++                raise ConfigError(
++                    f"probe {name!r} declares an empty command")
++            if name in seen_probes:
++                raise ConfigError(f"probe {name!r} is declared twice")
++            seen_probes.add(name)
+ 
+     @property
+     def keyed(self):
+@@ -305,6 +367,7 @@ def load_settings(env=None, **overrides):
+         dom_url=env.get(ENV_PREFIX + "DOM_URL", ""),
+         screen_enabled=_env_bool(env, "SCREEN", False),
+         native_input_enabled=_env_bool(env, "NATIVE_INPUT", False),
++        probes=_env_probes(env),
+     )
+     return settings.with_overrides(**overrides) if overrides else settings
+ 
+diff --git a/driver_core/driver.py b/driver_core/driver.py
+index 7e58ef7..50a3d54 100644
+--- a/driver_core/driver.py
++++ b/driver_core/driver.py
+@@ -57,7 +57,7 @@ from .extractors import ExtractorPool
+ from .jev_client import JevClient
+ from .perception import select_capture
+ from .states import SCREEN_SCHEMA
+-from .wiring import configured_pools, configured_sources
++from .wiring import configured_pools, configured_probes, configured_sources
+ 
+ 
+ class StepResult:
+@@ -187,6 +187,7 @@ class Driver:
+             vocabulary=vocabulary,
+             registry=build_driver_registry(
+                 allow_write=self.settings.allow_write,
++                probes=configured_probes(self.settings),
+                 input_backend=input_backend),
+             dry_run=self.settings.dry_run,
+             audit=self.audit)
+diff --git a/driver_core/executor.py b/driver_core/executor.py
+index 37ba10a..34a04cf 100644
+--- a/driver_core/executor.py
++++ b/driver_core/executor.py
+@@ -9,7 +9,9 @@ judgement about what the parameters should have been.
+ Three properties make that safe enough to run unattended:
+ 
+ **Executors are named, declared, and closed.** ``observe``, ``no_action`` and
+-``read_value`` are built in. The mutating and irreversible executors are
++``read_value`` are built in. ``run_probe`` is built in too, registered
++wherever the operator declares read-only probes, with writes on or off.
++The mutating and irreversible executors are
+ registered only where ``DRIVER_ALLOW_WRITE`` is on, and an unregistered
+ executor name is a refusal, not a fallback.
+ 
+@@ -37,7 +39,7 @@ from .audit import KIND_ACTION, required
+ from .errors import (ConsentError, ExecutionOutcomeUnknown,
+                      ExecutorError, PersistentStateUnavailable,
+                      VocabularyError)
+-from .executor_registry import input_backend_needs
++from .executor_registry import WRITE_EXECUTORS, input_backend_needs
+ 
+ #: Declared parameter normalisers, by name. An ``Action`` names one; this is
+ #: where the name becomes a function. The indirection exists so that
+@@ -305,10 +307,17 @@ class Executor:
+             # rather than skipped -- a silent skip would look like a
+             # successful no-op. The registry's note says which of the two
+             # this is, so the refusal is actionable rather than a puzzle.
++            # The note explains a *write* refusal and is attached only to
++            # write executors; a read-only action refused here (an
++            # undeclared probe, an unwired reader) is a wiring matter,
++            # and blaming the write switch for it would name the wrong
++            # gate in the refusal the operator actually reads.
++            note = (self.registry.policy_note
++                    if action.executor in WRITE_EXECUTORS else "")
+             raise ExecutorError(
+                 f"action {action.name!r} names executor {action.executor!r}, "
+                 f"which is not registered; registered: "
+-                f"{sorted(self.registry.names())}.{self.registry.policy_note}")
++                f"{sorted(self.registry.names())}.{note}")
+ 
+         # The advertised capability view is not an execution gate by itself.
+         # Refuse here as well, before dry-run can report success and before a
+diff --git a/driver_core/executor_registry.py b/driver_core/executor_registry.py
+index 2bcb9a9..ef973ed 100644
+--- a/driver_core/executor_registry.py
++++ b/driver_core/executor_registry.py
+@@ -10,6 +10,12 @@ The read-only executors are built in because observing is always safe and
+ should never require a deployment step to turn on. The mutating and
+ irreversible executors are built in too, but **only when the operator has
+ declared that this machine may be written to** (``DRIVER_ALLOW_WRITE``).
++``run_probe`` is the one read-only executor with a precondition of its
++own: it is registered whenever the operator has *declared* read-only
++probes (``DRIVER_PROBES``), in builds with writes on or off alike,
++because running a declared read-only command is observation and the
++write switch is not the gate for it. What the declaration gates is
++*which commands exist*; a name nobody declared is refused.
+ Registration is a capability, and a default-on capability to delete files is
+ not something a library should hand to every caller that constructs a
+ ``Driver``.
+@@ -186,8 +192,16 @@ def executability(action, registry):
+     """
+     needs = []
+     if registry.get(action.executor) is None:
++        # The write-policy note explains a *write* refusal, so it is
++        # attached only when the missing executor is a write executor.
++        # Attaching it to a read-only action -- an undeclared probe, a
++        # read tool nobody wired -- would name the wrong gate, and a
++        # refusal whose stated reason contradicts the action's class
++        # sends the operator to fix a switch that is not the problem.
++        note = (registry.policy_note
++                if action.executor in WRITE_EXECUTORS else "")
+         needs.append(f"executor {action.executor!r} is not registered."
+-                     f"{registry.policy_note}")
++                     f"{note}")
+     needs.extend(input_backend_needs(action, registry))
+     return (not needs), needs
+ 
+@@ -278,13 +292,84 @@ def _observe(action, params, state=None):
+     }
+ 
+ 
++def _freeze_probes(probes):
++    """Validate and freeze a probe declaration: ``{name: argv tuple}``.
++
++    A declaration is operator-supplied configuration, and a malformed one
++    is refused at build time rather than at first use. An argv given as a
++    single string is the dangerous case: any runner that accepted it
++    would hand it to a shell, which is exactly what
++    :func:`driver_core.osal.run` exists to prevent, so the string form
++    is an error here and not a convenience to be split on the caller's
++    behalf.
++    """
++    frozen = {}
++    for name, argv in dict(probes or {}).items():
++        if not isinstance(name, str) or not name.strip():
++            raise ExecutorError("a probe name must be a non-empty string")
++        if isinstance(argv, str) or not isinstance(argv, (list, tuple)):
++            raise ExecutorError(
++                f"probe {name!r}: argv must be a sequence of strings, not "
++                f"{type(argv).__name__}; a single string would be handed "
++                f"to a shell")
++        argv = tuple(argv)
++        if not argv or not all(isinstance(a, str) and a for a in argv):
++            raise ExecutorError(
++                f"probe {name!r}: argv must be a non-empty sequence of "
++                f"non-empty strings")
++        frozen[name] = argv
++    return frozen
++
++
++def _run_probe(action, params, probes):
++    """``run_probe``: run one declared read-only command, report it verbatim.
++
++    The ``command`` parameter *names* a declaration; it is never itself
++    executed, split, or composed. The argv that runs is the argv the
++    operator declared for that name, unchanged, through
++    :func:`driver_core.osal.run` -- an argv list, no shell -- so there is
++    no composition for a hostile name to exploit: an undeclared name is
++    simply refused, and a declared one can only ever run as declared.
++
++    A non-zero exit is an answer, not a refusal: a check script that
++    exits 3 has told the verifier something, and dressing that up as an
++    executor failure would hide it. A probe that could not be *asked*
++    (missing binary, timeout) is refused instead, because its result
++    carries no real exit code to report.
++    """
++    name = params["command"]
++    argv = probes.get(name)
++    if argv is None:
++        _refused(
++            f"command {name!r} is not a declared read-only probe; only "
++            f"a declared name may run (declared: {sorted(probes)}; "
++            f"declare probes with DRIVER_PROBES or the registry builder)")
++    result = osal.run(list(argv))
++    if result.reason:
++        _refused(f"probe {name!r} could not run: {result.error}")
++    return {
++        "command": name,
++        "argv": list(argv),
++        "exit_code": result.returncode,
++        "stdout": result.stdout,
++        "stderr": result.stderr,
++    }
++
++
+ def build_read_only_registry(state_provider=None, *,
++                             probes=None,
+                              input_backend=osal.USE_REGISTERED_INPUT_BACKEND):
+     """The registry containing only the safe built-ins.
+ 
+     ``state_provider`` is a zero-argument callable returning the current
+     verified state, which is how the built-in readers see the extraction
+     without the executor tier holding a copy of it.
++
++    ``probes`` is the operator's read-only probe declaration,
++    ``{name: argv}``; when it is non-empty the ``run_probe`` executor is
++    registered against it. With no declaration there is no probe
++    executor: a build that declared no commands has no commands it may
++    run, and its refusal says exactly that.
+     """
+     def _state():
+         return state_provider() if state_provider else None
+@@ -294,10 +379,15 @@ def build_read_only_registry(state_provider=None, *,
+         "read_value": lambda a, p: _read_value(a, p, _state()),
+         "observe": lambda a, p: _observe(a, p, _state()),
+     }, input_backend=input_backend)
++    declared = _freeze_probes(probes)
++    if declared:
++        registry.register("run_probe",
++                          lambda a, p: _run_probe(a, p, declared))
+     return registry
+ 
+ 
+ def build_driver_registry(state_provider=None, *, allow_write=False,
++                          probes=None,
+                           input_backend=osal.USE_REGISTERED_INPUT_BACKEND):
+     """What a :class:`~driver_core.driver.Driver` runs with.
+ 
+@@ -307,8 +397,12 @@ def build_driver_registry(state_provider=None, *, allow_write=False,
+     observe a machine and nothing more. That is the right default for a
+     library: building a ``Driver`` should not silently confer the ability to
+     delete files.
++
++    ``probes`` declares read-only commands for ``run_probe`` and is
++    independent of ``allow_write``: probes observe, so the write switch
++    neither grants nor withholds them.
+     """
+-    registry = build_read_only_registry(state_provider,
++    registry = build_read_only_registry(state_provider, probes=probes,
+                                         input_backend=input_backend)
+     input_backend = registry.input_backend
+     if allow_write:
+diff --git a/driver_core/wiring.py b/driver_core/wiring.py
+index 939883f..285b138 100644
+--- a/driver_core/wiring.py
++++ b/driver_core/wiring.py
+@@ -120,6 +120,23 @@ def configured_sources(settings):
+     return sources
+ 
+ 
++def configured_probes(settings):
++    """The declared read-only probes this configuration enables.
++
++    ``{name: argv}``, with each declared command string split by the same
++    :func:`parse_argv` the perception sources use, so a probe declaration
++    means exactly what a source declaration means: whitespace tokenisation,
++    quotes group, no expansion, no shell. An unparseable declaration raises
++    rather than being skipped, for the same reason as in
++    :func:`configured_sources`: a probe the operator asked for and cannot
++    run is a configuration fault, not an absence.
++    """
++    probes = {}
++    for name, command in settings.probes:
++        probes[name] = tuple(parse_argv(command))
++    return probes
++
++
+ def configured_pools(settings, *, budget, audit):
+     """Extractor pools keyed by the target class each one serves.
+ 
+diff --git a/tests/test_driver_core/test_run_probe.py b/tests/test_driver_core/test_run_probe.py
+new file mode 100644
+index 0000000..99475f6
+--- /dev/null
++++ b/tests/test_driver_core/test_run_probe.py
+@@ -0,0 +1,271 @@
++"""run_probe: a read-only action must not need write authority (#439).
++
++The vocabulary declares ``run_probe`` read-only, but the executor was
++registered nowhere, and the refusal blamed ``DRIVER_ALLOW_WRITE`` -- so a
++verifier, whose correct posture is writes off and no key, could not run
++the deterministic checks that are its whole job. These tests pin the
++fix: declared probes run with writes off, undeclared names refuse, write
++actions still refuse, and the refusal for a read-only action no longer
++names the write gate.
++
++Hermetic: process execution is a recording fake at the ``osal`` seam,
++except one end-to-end case that runs the interpreter this suite is
++running on (``sys.executable``) -- never a bare ``python``, which a host
++may not have.
++"""
++import sys
++import tempfile
++import unittest
++from pathlib import Path
++from unittest import mock
++
++from driver_core import osal
++from driver_core.actions import DEFAULT_VOCABULARY
++from driver_core.audit import KIND_ACTION, MemoryAuditLog
++from driver_core.config import ConfigError, Settings, load_settings
++from driver_core.driver import Driver
++from driver_core.errors import ExecutorError
++from driver_core.executor import Consent, Executor
++from driver_core.executor_registry import (
++    WRITE_EXECUTORS, build_driver_registry, executability,
++)
++from driver_core.osal import ProcessResult
++from driver_core.server import Service
++from driver_core.wiring import configured_probes
++
++PROBES = {"health_check": ("probe-bin", "--check")}
++
++
++def _executor(*, allow_write=False, probes=PROBES, audit=None,
++              dry_run=False):
++    return Executor(
++        vocabulary=DEFAULT_VOCABULARY,
++        registry=build_driver_registry(allow_write=allow_write,
++                                       probes=probes),
++        audit=audit or MemoryAuditLog(), dry_run=dry_run)
++
++
++class _FakeRun:
++    """A recording ``osal.run`` double returning one canned result."""
++
++    def __init__(self, result):
++        self.result = result
++        self.calls = []
++
++    def __call__(self, argv, **kwargs):
++        self.calls.append(list(argv))
++        return self.result
++
++
++def _ok_result(stdout="all good\n", stderr=""):
++    return ProcessResult(0, True, stdout, stderr, "")
++
++
++class ProbeExecutionTests(unittest.TestCase):
++
++    def test_probe_runs_with_writes_off_and_is_recorded(self):
++        audit = MemoryAuditLog()
++        fake = _FakeRun(_ok_result())
++        with mock.patch.object(osal, "run", fake):
++            result = _executor(audit=audit).execute(
++                "run_probe", {"command": "health_check"})
++        self.assertTrue(result.ok, result.detail)
++        self.assertEqual(result.output["command"], "health_check")
++        self.assertEqual(result.output["argv"], ["probe-bin", "--check"])
++        self.assertEqual(result.output["exit_code"], 0)
++        self.assertEqual(result.output["stdout"], "all good\n")
++        self.assertEqual(result.output["stderr"], "")
++        # The argv that ran is the declared argv, unchanged.
++        self.assertEqual(fake.calls, [["probe-bin", "--check"]])
++        # The execution landed in the audit chain like any other action.
++        actions = [r for r in audit.records
++                   if r.get("kind") == KIND_ACTION]
++        self.assertEqual(len(actions), 1)
++        self.assertEqual(actions[0]["action"], "run_probe")
++        self.assertTrue(actions[0]["ok"])
++
++    def test_probe_runs_unkeyed_through_a_driver(self):
++        settings = load_settings(
++            env={"DRIVER_PROBES": "health_check=probe-bin --check"})
++        self.assertFalse(settings.keyed)
++        self.assertFalse(settings.allow_write)
++        driver = Driver(settings=settings, audit=MemoryAuditLog())
++        fake = _FakeRun(_ok_result())
++        with mock.patch.object(osal, "run", fake):
++            result = driver.executor.execute(
++                "run_probe", {"command": "health_check"})
++        self.assertTrue(result.ok, result.detail)
++        self.assertEqual(fake.calls, [["probe-bin", "--check"]])
++
++    def test_undeclared_command_shapes_are_refused_and_nothing_runs(self):
++        fake = _FakeRun(_ok_result())
++        executor = _executor()
++        with mock.patch.object(osal, "run", fake):
++            for name in ("rm -rf /", "health_check; rm -rf /", "health",
++                         "health_check --force"):
++                with self.subTest(name=name):
++                    result = executor.execute(
++                        "run_probe", {"command": name})
++                    self.assertFalse(result.ok)
++                    self.assertIn("not a declared read-only probe",
++                                  result.detail)
++        self.assertEqual(fake.calls, [])
++
++    def test_non_zero_exit_is_an_answer_not_a_refusal(self):
++        fake = _FakeRun(ProcessResult(3, False, "", "check failed", ""))
++        with mock.patch.object(osal, "run", fake):
++            result = _executor().execute(
++                "run_probe", {"command": "health_check"})
++        self.assertTrue(result.ok, result.detail)
++        self.assertEqual(result.output["exit_code"], 3)
++        self.assertEqual(result.output["stderr"], "check failed")
++
++    def test_a_probe_that_cannot_start_is_refused(self):
++        fake = _FakeRun(ProcessResult(0, False, "", "",
++                                      "not found: probe-bin",
++                                      reason="not_found"))
++        with mock.patch.object(osal, "run", fake):
++            result = _executor().execute(
++                "run_probe", {"command": "health_check"})
++        self.assertFalse(result.ok)
++        self.assertIn("could not run", result.detail)
++        self.assertIn("not found: probe-bin", result.detail)
++
++    def test_probe_does_not_run_in_dry_run(self):
++        fake = _FakeRun(_ok_result())
++        with mock.patch.object(osal, "run", fake):
++            result = _executor(dry_run=True).execute(
++                "run_probe", {"command": "health_check"})
++        self.assertTrue(result.ok)
++        self.assertTrue(result.dry_run)
++        self.assertEqual(fake.calls, [])
++
++    def test_a_real_probe_runs_the_declared_argv_end_to_end(self):
++        executor = _executor(probes={"interp": (
++            sys.executable, "-c",
++            "import sys; print('probe-ran'); sys.exit(3)")})
++        result = executor.execute("run_probe", {"command": "interp"})
++        self.assertTrue(result.ok, result.detail)
++        self.assertIn("probe-ran", result.output["stdout"])
++        self.assertEqual(result.output["exit_code"], 3)
++
++    def test_a_string_argv_declaration_is_refused_at_build_time(self):
++        with self.assertRaises(ExecutorError):
++            build_driver_registry(probes={"bad": "probe-bin --check"})
++        with self.assertRaises(ExecutorError):
++            build_driver_registry(probes={"bad": ()})
++
++
++class WriteGateTests(unittest.TestCase):
++
++    def test_mutating_actions_still_refuse_with_writes_off(self):
++        executor = _executor()
++        # Resolved first: consent is checked against the normalised
++        # params, so the grant must name the resolved path for execution
++        # to reach the registry refusal this test is about.
++        target = osal.resolve_path("probe-gate-target.txt")
++        cases = (
++            ("write_file", {"path": target, "content": "y"}),
++            ("delete_file", {"path": target}),
++        )
++        for name, params in cases:
++            with self.subTest(name=name):
++                with self.assertRaises(ExecutorError) as ctx:
++                    executor.execute(name, params,
++                                     consent=Consent(True, name, params))
++                self.assertIn("DRIVER_ALLOW_WRITE", str(ctx.exception))
++
++    def test_write_on_behaviour_is_unchanged(self):
++        registry = build_driver_registry(allow_write=True, probes=PROBES)
++        for name in WRITE_EXECUTORS:
++            self.assertIn(name, registry.names())
++        self.assertIn("run_probe", registry.names())
++        executor = Executor(vocabulary=DEFAULT_VOCABULARY,
++                            registry=registry, audit=MemoryAuditLog())
++        with tempfile.TemporaryDirectory() as tmp:
++            path = osal.resolve_path(str(Path(tmp) / "out.txt"))
++            params = {"path": path, "content": "hello"}
++            result = executor.execute(
++                "write_file", params,
++                consent=Consent(True, "write_file", params))
++            self.assertTrue(result.ok, result.detail)
++            self.assertEqual(Path(path).read_text(encoding="utf-8"),
++                             "hello")
++        fake = _FakeRun(_ok_result())
++        with mock.patch.object(osal, "run", fake):
++            result = executor.execute(
++                "run_probe", {"command": "health_check"})
++        self.assertTrue(result.ok, result.detail)
++
++
++class VocabularyReasonTests(unittest.TestCase):
++    """The vocabulary output must not blame the write gate for read-only."""
++
++    def _by_name(self, driver):
++        view = Service(driver, token="t").handle(
++            "vocabulary", {})["body"]
++        return {a["name"]: a for a in view["vocabulary"]["actions"]}
++
++    def test_declared_probe_is_executable_with_writes_off(self):
++        settings = load_settings(
++            env={}, allow_write=False,
++            probes=(("health_check", "probe-bin --check"),))
++        actions = self._by_name(
++            Driver(settings=settings, audit=MemoryAuditLog()))
++        self.assertTrue(actions["run_probe"]["executable"])
++        self.assertEqual(actions["run_probe"]["needs"], [])
++
++    def test_read_only_refusals_do_not_name_the_write_gate(self):
++        settings = load_settings(env={}, allow_write=False)
++        actions = self._by_name(
++            Driver(settings=settings, audit=MemoryAuditLog()))
++        for name in ("run_probe", "call_read_tool", "read_dom"):
++            with self.subTest(name=name):
++                self.assertFalse(actions[name]["executable"])
++                self.assertNotIn("DRIVER_ALLOW_WRITE",
++                                 " ".join(actions[name]["needs"]))
++        self.assertIn("DRIVER_ALLOW_WRITE",
++                      " ".join(actions["click"]["needs"]))
++
++    def test_executability_helper_scopes_the_note_the_same_way(self):
++        registry = build_driver_registry(allow_write=False)
++        ok, needs = executability(
++            DEFAULT_VOCABULARY.resolve("run_probe"), registry)
++        self.assertFalse(ok)
++        self.assertNotIn("DRIVER_ALLOW_WRITE", " ".join(needs))
++        ok, needs = executability(
++            DEFAULT_VOCABULARY.resolve("click"), registry)
++        self.assertFalse(ok)
++        self.assertIn("DRIVER_ALLOW_WRITE", " ".join(needs))
++
++
++class ProbeDeclarationTests(unittest.TestCase):
++
++    def test_env_declaration_parses(self):
++        settings = load_settings(
++            env={"DRIVER_PROBES": "a=cmd --flag; b=other -x"})
++        self.assertEqual(settings.probes,
++                         (("a", "cmd --flag"), ("b", "other -x")))
++
++    def test_malformed_env_declaration_raises(self):
++        with self.assertRaises(ConfigError):
++            load_settings(env={"DRIVER_PROBES": "noequals"})
++
++    def test_unusable_declarations_raise_at_settings_build(self):
++        for probes in ((("bad name", "cmd"),), (("ok", "  "),),
++                       (("dup", "a"), ("dup", "b"))):
++            with self.subTest(probes=probes):
++                with self.assertRaises(ConfigError):
++                    Settings(probes=probes)
++
++    def test_configured_probes_split_like_declared_commands(self):
++        settings = load_settings(
++            env={}, probes=(("win", r'"C:\Program Files\tool.exe"'
++                             " --check"),))
++        self.assertEqual(
++            configured_probes(settings),
++            {"win": (r"C:\Program Files\tool.exe", "--check")})
++
++
++if __name__ == "__main__":
++    unittest.main()
