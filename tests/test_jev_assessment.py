@@ -215,13 +215,15 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(json.loads(out.getvalue())["decision"], BLOCK)
 
-    def test_malformed_json_exits_two_with_an_error(self):
-        out = io.StringIO()
-        with mock.patch("sys.stdin", io.StringIO("not json")):
-            with redirect_stdout(out):
-                code = run_cli(["--input", "-"])
-        self.assertEqual(code, 2)
-        self.assertFalse(json.loads(out.getvalue())["ok"])
+    def test_empty_and_malformed_json_exit_two_with_an_error(self):
+        for raw in ("", "not json"):
+            with self.subTest(raw=raw):
+                out = io.StringIO()
+                with mock.patch("sys.stdin", io.StringIO(raw)):
+                    with redirect_stdout(out):
+                        code = run_cli(["--input", "-"])
+                self.assertEqual(code, 2)
+                self.assertFalse(json.loads(out.getvalue())["ok"])
 
     def test_the_payload_reader_refuses_unknown_fields(self):
         payload = self._payload()
@@ -243,6 +245,74 @@ class CliTests(unittest.TestCase):
                 ">=90": 1.0, "85-89": 0.0, "<85": 0.0})
         with self.assertRaisesRegex(AssessmentError, "AspectJudgment instances"):
             assess([object()])
+
+    def test_payload_relevance_requires_a_boolean_and_preserves_false(self):
+        for invalid in (0, 1, "false", None, [], {}):
+            payload = self._payload()
+            payload["aspects"]["correctness"] = {
+                "relevant": invalid,
+                "reason": "fixture omission",
+                "probabilities": None,
+            }
+            with self.subTest(relevant=invalid):
+                with self.assertRaisesRegex(
+                        AssessmentError, "relevant must be a boolean"):
+                    verdict_for_payload(payload)
+
+        with self.assertRaisesRegex(
+                AssessmentError, "relevant must be a boolean"):
+            AspectJudgment(
+                "correctness",
+                probabilities={">=90": 1.0, "85-89": 0.0, "<85": 0.0},
+                relevant=1)
+
+        payload = self._payload()
+        payload["aspects"]["correctness"] = {
+            "relevant": False,
+            "reason": "the artifact makes no correctness claim",
+            "probabilities": None,
+        }
+        self.assertEqual(verdict_for_payload(payload).decision, PASS)
+
+    def test_aspect_text_fields_reject_bad_types_and_keep_null_absence(self):
+        for field_name, invalid in (
+                ("reason", ["not text"]),
+                ("risk", []),
+                ("investigation", 123)):
+            payload = self._payload()
+            entry = payload["aspects"]["correctness"]
+            if field_name == "reason":
+                entry = {
+                    "relevant": False,
+                    "reason": invalid,
+                    "probabilities": None,
+                }
+                payload["aspects"]["correctness"] = entry
+            else:
+                entry[field_name] = invalid
+            with self.subTest(field=field_name):
+                with self.assertRaisesRegex(
+                        AssessmentError, field_name + " must be text or null"):
+                    verdict_for_payload(payload)
+
+        payload = self._payload()
+        for field_name in ("reason", "investigation", "risk"):
+            payload["aspects"]["correctness"][field_name] = None
+        self.assertEqual(verdict_for_payload(payload).decision, PASS)
+
+    def test_stalled_rounds_reject_lossy_types_and_preserve_null_default(self):
+        for invalid in (True, False, -1, 1.5, "3", [], {}):
+            payload = dict(self._payload(), stalled_rounds=invalid)
+            with self.subTest(stalled_rounds=invalid):
+                with self.assertRaisesRegex(
+                        AssessmentError,
+                        "stalled_rounds must be a non-negative integer"):
+                    verdict_for_payload(payload)
+
+        null_count = dict(self._payload(), stalled_rounds=None)
+        self.assertEqual(verdict_for_payload(null_count).decision, PASS)
+        stopped = dict(self._payload(), stalled_rounds=3)
+        self.assertEqual(verdict_for_payload(stopped).decision, STOP)
 
     def test_payload_parser_refuses_wrong_container_and_aspect_shapes(self):
         with self.assertRaisesRegex(AssessmentError, "payload must be an object"):
@@ -280,6 +350,20 @@ class CliTests(unittest.TestCase):
         code, verdict = invoke(good)
         self.assertEqual(code, 0)
         self.assertEqual(verdict["decision"], PASS)
+        self.assertEqual([item["aspect"] for item in verdict["aspects"]],
+                         list(ASPECTS))
+
+        malformed = self._payload()
+        malformed["aspects"]["correctness"]["relevant"] = 0
+        code, error = invoke(json.dumps(malformed))
+        self.assertEqual(code, 2)
+        self.assertIn("relevant must be a boolean", error["error"])
+
+        bad_count = dict(self._payload(), stalled_rounds=[])
+        code, error = invoke(json.dumps(bad_count))
+        self.assertEqual(code, 2)
+        self.assertIn("stalled_rounds must be a non-negative integer",
+                      error["error"])
 
         stopped = self._payload()
         stopped["stalled_rounds"] = 3
@@ -298,6 +382,7 @@ class CliTests(unittest.TestCase):
             code, verdict = invoke(good, path)
         self.assertEqual(code, 0)
         self.assertEqual(verdict["decision"], PASS)
+        self.assertFalse(os.path.exists(path))
 
 
 if __name__ == "__main__":  # pragma: no cover

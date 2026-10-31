@@ -119,21 +119,29 @@ class AspectJudgment:
     The gate does not perform the investigation -- it cannot read a diff --
     so it requires the finding to be recorded here before it will clear a
     flex or uncertain aspect. ``risk`` is a *named actual risk*; an empty
-    string means the investigation found none, which is what the policy
-    allows to clear an investigation.
+    string or null means the investigation found none, which is what the
+    policy allows to clear an investigation.
     """
 
     name: str
     probabilities: Optional[Dict[str, float]] = None
     relevant: bool = True
-    reason: str = ""
-    investigation: str = ""
-    risk: str = ""
+    reason: Optional[str] = ""
+    investigation: Optional[str] = ""
+    risk: Optional[str] = ""
 
     def __post_init__(self):
         if self.name not in ASPECTS:
             raise AssessmentError(
                 f"{self.name!r} is not one of the five aspects {list(ASPECTS)}")
+        if not isinstance(self.relevant, bool):
+            raise AssessmentError(
+                f"aspect {self.name!r} relevant must be a boolean")
+        for field_name in ("reason", "investigation", "risk"):
+            value = getattr(self, field_name)
+            if value is not None and not isinstance(value, str):
+                raise AssessmentError(
+                    f"aspect {self.name!r} {field_name} must be text or null")
         if not self.relevant:
             if not (self.reason or "").strip():
                 raise AssessmentError(
@@ -218,6 +226,11 @@ def assess(judgments, *, stalled_rounds: int = 0,
        note -- that is the flexibility and single-point rule;
     5. five green aspects pass.
     """
+    if (isinstance(stalled_rounds, bool)
+            or not isinstance(stalled_rounds, int)
+            or stalled_rounds < 0):
+        raise AssessmentError(
+            "stalled_rounds must be a non-negative integer")
     by_name = {}
     for judgment in judgments or []:
         if not isinstance(judgment, AspectJudgment):
@@ -316,7 +329,7 @@ def from_payload(payload: Dict[str, Any]) -> List[AspectJudgment]:
         judgments.append(AspectJudgment(
             name=name,
             probabilities=entry.get("probabilities"),
-            relevant=bool(entry.get("relevant", True)),
+            relevant=entry.get("relevant", True),
             reason=entry.get("reason", ""),
             investigation=entry.get("investigation", ""),
             risk=entry.get("risk", ""),
@@ -331,8 +344,10 @@ def verdict_for_payload(payload: Dict[str, Any]) -> AssessmentVerdict:
     extra = sorted(set(payload) - allowed)
     if extra:
         raise AssessmentError(f"unknown payload field(s) {extra}")
-    return assess(from_payload(payload),
-                  stalled_rounds=int(payload.get("stalled_rounds", 0) or 0),
+    stalled_rounds = payload.get("stalled_rounds", 0)
+    if stalled_rounds is None:
+        stalled_rounds = 0
+    return assess(from_payload(payload), stalled_rounds=stalled_rounds,
                   composer=payload.get("composer"))
 
 
