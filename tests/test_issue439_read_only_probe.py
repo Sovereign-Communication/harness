@@ -74,6 +74,7 @@ class ReadOnlyProbeTests(unittest.TestCase):
         self.assertEqual(recorded["stdout"], result.output["stdout"])
         self.assertEqual(recorded["stderr"], result.output["stderr"])
         self.assertIn("ZeroDivisionError", recorded["stderr"])
+        self.assertTrue(self.audit.verify().ok)
 
     def test_a_non_allowlisted_shape_is_refused_before_a_process_starts(self):
         result = self.executor.execute(
