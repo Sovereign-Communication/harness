@@ -19,6 +19,7 @@ from harness.errors import HarnessError
 from harness.jev import JevEvaluationResult
 from harness.jev_packs import validate_repo_summary_pack
 from harness.repo_summary import (
+    JudgmentStateError,
     SCHEMA,
     analyze_repo,
     load_judgment_rows,
@@ -536,7 +537,6 @@ class DefensiveAggregateTests(unittest.TestCase):
         self.state_path = os.path.join(self.state_dir.name, "judged.jsonl")
 
     def test_resume_state_refuses_a_broken_tail_unless_recovery_is_explicit(self):
-        from harness.repo_summary import JudgmentStateError, load_judgment_rows
         with open(self.state_path, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(json.dumps({"id": "file:a"}) + "\n")
             fh.write("\n")
@@ -552,6 +552,29 @@ class DefensiveAggregateTests(unittest.TestCase):
         self.assertEqual(
             load_judgment_rows(os.path.join(self.state_dir.name, "none.jsonl")),
             [])
+
+    def test_middle_corruption_refuses_before_policy_dispatch_and_preserves_file(self):
+        valid_first = json.dumps({"id": "file:a"}).encode() + b"\n"
+        valid_last = json.dumps({"id": "file:c"}).encode() + b"\n"
+        original = valid_first + b"{truncated-in-middle\n" + valid_last
+        Path(self.state_path).write_bytes(original)
+        policy_factory_calls = []
+
+        def make_policy(cumulative):
+            policy_factory_calls.append(cumulative)
+            self.fail("malformed resume state reached the policy factory")
+
+        with self.assertRaises(JudgmentStateError) as raised:
+            analyze_repo(self.tmp.name, self.pack, make_policy,
+                         state_path=self.state_path, symbol_limit=0,
+                         generated_at="T")
+
+        self.assertIn(f"{self.state_path} line 2: malformed judgment row",
+                      str(raised.exception))
+        self.assertEqual(policy_factory_calls, [])
+        self.assertEqual(Path(self.state_path).read_bytes(), original)
+        with self.assertRaises(JudgmentStateError):
+            load_judgment_rows(self.state_path)
 
     def test_foreign_drive_exclude_is_skipped_not_fatal(self):
         env = analyze_repo(
@@ -648,6 +671,58 @@ class DefensiveAggregateTests(unittest.TestCase):
 
 
 class CliFaceEdgeTests(CliFaceTests):
+    def test_cli_resume_reports_tail_recovery_then_appends_readable_row(self):
+        state_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(state_dir.cleanup)
+        state_path = os.path.join(state_dir.name, "judgments.jsonl")
+        first = json.dumps({"id": "file:prior"}, sort_keys=True).encode()
+        Path(state_path).write_bytes(first + b"\n{\"id\": \"file:partial\"")
+        opts = self._opts(state=state_path, save_to=None, map=None,
+                          limit=1, symbols=0)
+
+        with mock.patch("harness.cli.eprint") as emit_error:
+            _cmd_repo_summary(opts, self.settings)
+
+        recovery_messages = [call.args[0] for call in emit_error.call_args_list]
+        self.assertTrue(any("recovered a truncated final judgment" in message
+                            and state_path in message and "line 2" in message
+                            for message in recovery_messages))
+        rows = load_judgment_rows(state_path)
+        self.assertEqual(rows[0]["id"], "file:prior")
+        self.assertGreater(len(rows), 1)
+        self.assertTrue(Path(state_path).read_bytes().endswith(b"\n"))
+        self.assertEqual(
+            len(rows), len([line for line in Path(state_path).read_text(
+                encoding="utf-8").splitlines() if line.strip()]))
+
+    def test_cli_reports_tail_recovery_if_analysis_raises_after_truncating(self):
+        state_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(state_dir.cleanup)
+        state_path = os.path.join(state_dir.name, "judgments.jsonl")
+        first = json.dumps({"id": "file:prior"}, sort_keys=True).encode()
+        Path(state_path).write_bytes(first + b"\n{\"id\": \"file:partial\"")
+        opts = self._opts(state=state_path, save_to=None, map=None,
+                          limit=1, symbols=0)
+
+        def failing_factory(*args, **kwargs):
+            def fail_before_judgment(cumulative):
+                raise RuntimeError("fixture policy construction failed")
+            return fail_before_judgment
+
+        with mock.patch("harness.cli._repo_summary_policy_factory",
+                        side_effect=failing_factory):
+            with mock.patch("harness.cli.eprint") as emit_error:
+                with self.assertRaisesRegex(
+                        RuntimeError, "fixture policy construction failed"):
+                    _cmd_repo_summary(opts, self.settings)
+
+        recovery_messages = [call.args[0] for call in emit_error.call_args_list]
+        self.assertTrue(any("recovered a truncated final judgment" in message
+                            and state_path in message and "line 2" in message
+                            for message in recovery_messages))
+        self.assertEqual(load_judgment_rows(state_path), [{"id": "file:prior"}])
+        self.assertEqual(Path(state_path).read_bytes(), first + b"\n")
+
     def test_invalid_pack_refuses_with_fatal_error(self):
         bad_path = os.path.join(self.tmp.name, "bad-pack.json")
         Path(bad_path).write_text(json.dumps({"id": "x"}), encoding="utf-8")

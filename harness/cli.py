@@ -688,18 +688,24 @@ def _cmd_repo_summary(opts, settings):
     state_path = getattr(opts, "state", None)
     if not state_path and getattr(opts, "save_to", None):
         state_path = str(opts.save_to) + ".judgments.jsonl"
+    recovery_report = []
     make_policy = _repo_summary_policy_factory(
         settings, getattr(opts, "max_cost", None), run_budget, ledger)
-    envelope = _repo_analyze(
-        opts.root, pack, make_policy,
-        state_path=state_path,
-        file_limit=getattr(opts, "limit", None),
-        symbol_limit=int(getattr(opts, "symbols", 200) or 0),
-        run_budget=run_budget,
-        task_id="repo-summary",
-        exclude=[getattr(opts, "save_to", None),
-                 getattr(opts, "map", None), state_path],
-    )
+    try:
+        envelope = _repo_analyze(
+            opts.root, pack, make_policy,
+            state_path=state_path,
+            file_limit=getattr(opts, "limit", None),
+            symbol_limit=int(getattr(opts, "symbols", 200) or 0),
+            run_budget=run_budget,
+            task_id="repo-summary",
+            exclude=[getattr(opts, "save_to", None),
+                     getattr(opts, "map", None), state_path],
+            recovery_report=recovery_report,
+        )
+    finally:
+        for recovery in recovery_report:
+            eprint(f"[repo-summary] {recovery}")
     written = {}
     if getattr(opts, "save_to", None):
         written["envelope"] = _repo_write_envelope(envelope, opts.save_to)
