@@ -165,6 +165,8 @@ jobs:
             python-version: "3.9"
           - os: ubuntu-latest
             python-version: "3.13"
+          - os: ubuntu-latest
+            python-version: "3.14"
     steps:
       - name: Docs/site-only matrix receipt
         if: env.RUN_HERMETIC != 'true'
