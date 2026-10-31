@@ -10,6 +10,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any, cast
 
 from harness import cli, mission_record as mr
 from harness.errors import HarnessError
@@ -227,11 +228,16 @@ class ReceiptsAndStatusTests(unittest.TestCase):
         receipts = mr.load_receipts(reloaded)
         self.assertEqual(len(receipts), 4)
         self.assertEqual([r["attempt"] for r in receipts], [1, 2, 3, 4])
-        # A torn trailing line must not destroy the valid prefix (ledger style).
+        # A torn trailing line is an integrity condition, not a shorter
+        # receipt sequence (#427): the reader refuses it by line and the
+        # valid prefix on disk is untouched, so nothing hides the damage.
         with open(receipts_path, "a", encoding="utf-8") as f:
             f.write("{not json\n")
-        again = mr.load_receipts(mr.load_mission_pack(self.root, self.pack.id))
-        self.assertEqual(len(again), 4)
+        before = receipts_path.read_bytes()
+        with self.assertRaises(HarnessError) as ctx:
+            mr.load_receipts(mr.load_mission_pack(self.root, self.pack.id))
+        self.assertIn(":5:", str(ctx.exception))
+        self.assertEqual(receipts_path.read_bytes(), before)
 
     def test_receipts_are_append_only(self):
         r1 = mr.append_receipt(self.pack, {"kind": "attempt", "attempt": 1})
@@ -242,6 +248,12 @@ class ReceiptsAndStatusTests(unittest.TestCase):
         self.assertIn(r1["ts"], raw2)
         self.assertIn(r2["ts"], raw2)
         self.assertEqual(mr.load_receipts(self.pack)[0]["attempt"], 1)
+
+    def test_receipt_loader_skips_blank_jsonl_lines(self):
+        receipt = mr.append_receipt(self.pack, {"kind": "attempt", "attempt": 1})
+        self.pack.receipts_path.write_text(
+            "\n" + json.dumps(receipt) + "\n\n", encoding="utf-8")
+        self.assertEqual(mr.load_receipts(self.pack), [receipt])
 
     def test_jev_evals_append_and_load(self):
         mr.append_jev_eval(self.pack, {"verdict": "pass", "confidence": 0.9})
@@ -649,7 +661,7 @@ class MissionErrorPathTests(unittest.TestCase):
                 "terminal_reserve": {"cost_usd": 0.0},
             })
         with self.assertRaises(HarnessError):
-            mr.working_remaining("bad", 0.0, 0.0)
+            mr.working_remaining(cast(Any, "bad"), 0.0, 0.0)
         with self.assertRaises(HarnessError):
             mr.build_mission_spec(
                 mission_id="m-neg",

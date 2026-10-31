@@ -110,13 +110,33 @@ What the executor actually implements (the vocabulary declares 14 actions;
 only these have an executor behind them, and anything else is refused as
 unregistered):
 
-- Always: three read-only executors, `no_action`, `observe` and `read_value`.
-  The other declared read-only actions (`read_dom`, `call_read_tool`,
-  `run_probe`) have no executor in this build and are refused.
+- Always: four read-only executors, `no_action`, `observe`, `read_value` and
+  `run_probe`. A probe is an observation with an exit code, so it must not
+  wait for write authority; the other declared read-only actions (`read_dom`,
+  `call_read_tool`) have no executor in this build and are refused.
 - Only when `DRIVER_ALLOW_WRITE` is set: `write_file` (back up, then atomic
   replace) and `delete_file` (irreversible). Input executors also require a
   registered backend; the native Windows backend makes only exact-title
   `focus` executable when `DRIVER_NATIVE_INPUT=1`.
+
+### Read-only probes
+
+`run_probe` takes `command` as an **argv list**, never a string: a string
+would need tokenising, and a second tokeniser is a second, weaker argv
+parser. The shape must be declared read-only before a process starts:
+
+- built in: `git status`, `log`, `diff`, `show`, `rev-parse`, `ls-files`,
+  `describe`, `blame`, `grep`;
+- operator-declared, in `DRIVER_PROBE_ALLOWLIST`, as `;`-separated exact
+  argv shapes (for example `DRIVER_PROBE_ALLOWLIST="python scripts/check.py"`).
+
+Custom declarations match the full argv: include every argument the check
+needs, because caller-supplied trailing arguments are refused. Built in Git
+subcommands accept their arguments, except `--output` is refused because it
+writes a file. A probe's argv, exit code, stdout and stderr are written to the
+action record in the driver's audit chain; that record is the evidence. A
+non-zero exit is an answer, a missing program is a refusal, and a timeout is
+reported as exit code 124.
 
 ## Consent is never invented
 
@@ -259,6 +279,7 @@ loopback default**. No Harness state file is written on the driver's behalf.
 |---|---|---|
 | Endpoint | `DRIVER_BASE_URL` | `http://127.0.0.1:8791` |
 | Token | `DRIVER_TOKEN` | generated per start when unset |
+| TypeSafe key | `DRIVER_JEV_API_KEY` | unset (keyless; see below) |
 | Config file | `DRIVER_CONFIG_PATH` | `$HARNESS_CONFIG_DIR/driver.json` (`~/.config/harness/driver.json` by default) |
 | Audit log | `DRIVER_AUDIT_PATH` | per-user state directory |
 | Allow side-effect executors | `DRIVER_ALLOW_WRITE` | off |
@@ -273,6 +294,41 @@ endpoint that can act on a machine should never be reachable by accident from
 another host. That is a floor, not a security claim: any local process that
 holds the token can drive it. The driver is configured entirely under
 `DRIVER_*` and reads nothing from Harness's environment.
+
+### Headless key provisioning
+
+A headless install (a sandbox, CI runner or oversight verifier with no
+desktop session) becomes keyed through one named environment variable:
+
+```bash
+export DRIVER_JEV_API_KEY="..."   # process environment only; never a file
+```
+
+There is no config-file key entry and no prompt: the value is read from the
+environment by `load_settings`, kept out of `repr`, and never printed,
+logged or returned. `DRIVER_JEV_API_KEY` is the whole path.
+
+Which surfaces are keyless is deliberate, not an accident of configuration:
+
+| Surface | Keyed? | Why |
+|---|---|---|
+| `health`, `verify`, `vocabulary` | keyless | A verifier must be able to check liveness, the audit chain and the declared action set with no credential at all. |
+| extraction (`observe`, vision) | keyed | Model-backed extraction is a provider call that costs money and needs a credential. |
+| Jev decisions | keyed | The decision tier is the credentialed model; an unkeyed client refuses rather than inventing a decision. |
+
+`health` reports `keyed` and, when unkeyed, a `key_provisioning` object naming
+`DRIVER_JEV_API_KEY` and this section. The CLI prints the same sentence. A
+keyed step records its spend in the ledger and `verify` reports it under
+`budget.spent_usd`.
+
+For a headless step followed by spend verification, keep `driver-core serve`
+running and call `POST /step` followed by `GET /verify` on that service. Those
+routes share the same per-process budget, so `verify` includes the step's spend.
+Standalone `driver-core step` and `driver-core verify` commands start separate
+processes; their in-memory budgets are separate even when they use the same
+persistent audit path.
+
+## Status
 
 ## Status
 

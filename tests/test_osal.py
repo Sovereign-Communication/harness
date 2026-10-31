@@ -41,6 +41,86 @@ class OsalRunTest(TempTree):
         self.assertEqual(result.returncode, 3)
         self.assertIn("warn", result.combined)
 
+    def test_run_bytes_keeps_non_text_output_intact(self):
+        """Git path lists are NUL-separated and may carry non-UTF-8 bytes.
+        Decoding with replacement would name a file that does not exist."""
+        result = osal.run_bytes([sys.executable, "-c",
+                                 "import sys; sys.stdout.buffer.write(b'a\\x00b\\xff')"])
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, b"a\x00b\xff")
+
+    def test_run_bytes_reports_missing_executable_as_127(self):
+        result = osal.run_bytes(["harness-no-such-executable"])
+        self.assertEqual(result.returncode, 127)
+
+    def test_run_bytes_rejects_shell_strings_and_empty_argv(self):
+        with self.assertRaisesRegex(osal.OsalError, "argv list"):
+            osal.run_bytes("echo unsafe")
+        with self.assertRaisesRegex(osal.OsalError, "empty argv"):
+            osal.run_bytes([])
+
+    def test_run_bytes_maps_timeout_permission_and_os_errors(self):
+        cases = (
+            (subprocess.TimeoutExpired(["fixture"], 0.1), 124),
+            (PermissionError("fixture"), 126),
+            (OSError("fixture"), 126),
+        )
+        for error, expected in cases:
+            with self.subTest(error=type(error).__name__), mock.patch.object(
+                    subprocess, "run", side_effect=error):
+                result = osal.run_bytes(["fixture"], timeout=0.1)
+                self.assertEqual(result.returncode, expected)
+
+    def test_run_tree_normalizes_text_streams_to_utf8(self):
+        process = mock.Mock()
+        process.communicate.return_value = ("stdout fixture", "stderr fixture")
+        process.returncode = 0
+        with mock.patch.object(subprocess, "Popen", return_value=process):
+            result = osal.run_tree(["fixture"])
+        self.assertEqual(result.stdout, "stdout fixture")
+        self.assertEqual(result.stderr, "stderr fixture")
+
+    def test_run_tree_timeout_drain_skips_absent_posix_pipes(self):
+        process = mock.Mock()
+        process.stdout = None
+        process.stderr = None
+        process.returncode = -9
+        process.communicate.side_effect = [
+            subprocess.TimeoutExpired(["fixture"], 0.001),
+            subprocess.TimeoutExpired(["fixture"], osal._DRAIN_SECONDS),
+        ]
+        with (mock.patch.object(osal, "IS_WINDOWS", False),
+              mock.patch.object(osal.time, "monotonic", side_effect=[0, 1]),
+              mock.patch.object(osal, "_kill_tree"),
+              mock.patch.object(subprocess, "Popen", return_value=process)):
+            result = osal.run_tree(["fixture"], timeout=0.001)
+        self.assertEqual(result.returncode, 124)
+        process.wait.assert_called_once()
+
+    def test_windows_spawn_uses_hidden_startup_without_console(self):
+        class StartupInfo:
+            def __init__(self):
+                self.dwFlags = 0
+                self.wShowWindow = -1
+
+        with (mock.patch.object(osal, "IS_WINDOWS", True),
+              mock.patch.object(subprocess, "STARTUPINFO", StartupInfo,
+                                create=True),
+              mock.patch.object(subprocess, "STARTF_USESHOWWINDOW", 1,
+                                create=True),
+              mock.patch.object(subprocess, "SW_HIDE", 0, create=True),
+              mock.patch.object(subprocess, "CREATE_NO_WINDOW", 128,
+                                create=True),
+              mock.patch.object(subprocess, "Popen", return_value=object())
+              as popen):
+            result = osal.spawn_piped_process([sys.executable])
+
+        self.assertIsNotNone(result)
+        startupinfo = popen.call_args.kwargs["startupinfo"]
+        self.assertEqual(startupinfo.dwFlags, 1)
+        self.assertEqual(startupinfo.wShowWindow, 0)
+        self.assertEqual(popen.call_args.kwargs["creationflags"], 128)
+
     def test_a_command_string_is_refused(self):
         """The whole point: gates are data. A string is a shell waiting."""
         with self.assertRaises(osal.OsalError):
@@ -77,6 +157,9 @@ class OsalRunTest(TempTree):
         proc = subprocess.Popen(
             [sys.executable, "-c", script], stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=root)
+        assert proc.stdin is not None
+        assert proc.stdout is not None
+        assert proc.stderr is not None
         try:
             proc.wait(timeout=20)
             stderr = proc.stderr.read()
@@ -222,6 +305,8 @@ class OsalBoundedRunTest(TempTree):
         out = osal.run_bounded([sys.executable, "-c",
                                 "import os,sys; sys.stdout.write(os.getcwd())"],
                                max_bytes=4096, cwd=self.root)
+        self.assertIsNotNone(out)
+        assert out is not None
         self.assertEqual(osal.norm_path(out.decode("utf-8")),
                          osal.norm_path(self.root))
 
@@ -237,7 +322,7 @@ class OsalBoundedRunTest(TempTree):
                 super().__init__(value)
                 self.bytes_read = 0
 
-            def read1(self, size=-1):
+            def read1(self, size=-1, /):
                 value = super().read(size)
                 self.bytes_read += len(value)
                 return value
@@ -464,8 +549,18 @@ class OsalUiTest(unittest.TestCase):
         self.assertEqual(osal.python_exe(), sys.executable)
 
     def test_which_finds_the_running_interpreter(self):
-        self.assertIsNotNone(osal.which(os.path.basename(sys.executable))
-                             or osal.which("python"))
+        """PATH is the input, not the environment.
+
+        A bare venv invoked by absolute path has no ``python`` on PATH; the
+        2026-10-29 full-suite run on such a checkout went red here while CI
+        was green, because CI's setup-python always exports one. Pointing
+        PATH at the running interpreter's own directory tests the lookup
+        without inheriting that accident.
+        """
+        interpreter = os.path.basename(sys.executable)
+        with mock.patch.dict(os.environ,
+                             {"PATH": os.path.dirname(sys.executable)}):
+            self.assertIsNotNone(osal.which(interpreter))
         self.assertIsNone(osal.which("harness-definitely-not-a-real-binary-xyz"))
 
 

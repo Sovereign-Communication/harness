@@ -36,8 +36,10 @@ import re
 import signal
 import subprocess
 import sys
+import stat
 import tempfile
 import threading
+from typing import Any, Dict, Optional
 import time
 from dataclasses import dataclass
 
@@ -85,6 +87,15 @@ class CommandResult:
     @property
     def combined(self):
         return self.stdout + self.stderr
+
+
+@dataclass(frozen=True)
+class ByteCommandResult:
+    """Outcome of a shell-free command whose bytes must not be decoded."""
+
+    returncode: int
+    stdout: bytes = b""
+    stderr: bytes = b""
 
 
 def run(argv, cwd=None, timeout=None, input_text=None, env=None):
@@ -142,6 +153,85 @@ def run(argv, cwd=None, timeout=None, input_text=None, env=None):
     return CommandResult(proc.returncode, proc.stdout or "", proc.stderr or "")
 
 
+def run_bytes(argv, cwd=None, timeout=None, input_bytes=None):
+    """Run an argv list shell-free and keep stdout/stderr as raw bytes.
+
+    :func:`run` decodes UTF-8 with replacement, which is right for gate
+    evidence and wrong for a query whose answer is a path or a NUL-separated
+    list: a non-UTF-8 filename would come back corrupted and a later resume
+    receipt would name a file that does not exist. Exit-code conventions match
+    :func:`run` (124 timeout, 126 not executable, 127 not found).
+    """
+    if isinstance(argv, str):
+        raise OsalError(
+            "osal.run_bytes takes an argv list, not a command string "
+            "(a string is a shell waiting to happen)")
+    argv = [str(a) for a in argv]
+    if not argv:
+        raise OsalError("osal.run_bytes: empty argv")
+    kwargs: Dict[str, Any] = {"capture_output": True, "shell": False}
+    if cwd is not None:
+        kwargs["cwd"] = cwd
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+    if input_bytes is not None:
+        kwargs["input"] = input_bytes
+    else:
+        kwargs["stdin"] = subprocess.DEVNULL
+    try:
+        proc = subprocess.run(argv, **kwargs)
+    except subprocess.TimeoutExpired:
+        return ByteCommandResult(
+            124, b"", "command timed out after {}s".format(timeout).encode())
+    except FileNotFoundError:
+        return ByteCommandResult(
+            127, b"", "executable not found: {}".format(argv[0]).encode())
+    except PermissionError:
+        return ByteCommandResult(
+            126, b"", "not executable: {}".format(argv[0]).encode())
+    except OSError as exc:
+        return ByteCommandResult(
+            126, b"", "cannot run {}: {}".format(argv[0], exc).encode())
+    return ByteCommandResult(proc.returncode, proc.stdout or b"",
+                             proc.stderr or b"")
+
+
+def acquire_file_lock(path):
+    """Acquire a nonblocking, process-released lock on a retained file."""
+    fd = None
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_BINARY", 0)
+    try:
+        fd = os.open(str(path), flags, 0o600)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OsalError("lock path must be a regular file")
+        if os.fstat(fd).st_size == 0 and os.write(fd, b"\0") != 1:
+            raise OsalError("cannot initialize lock file")
+        os.lseek(fd, 0, os.SEEK_SET)
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (ImportError, OSError) as exc:
+            raise OsalError("file lock is already held or unavailable") from exc
+        return fd
+    except OsalError:
+        if fd is not None:
+            os.close(fd)
+        raise
+    except OSError as exc:
+        if fd is not None:
+            os.close(fd)
+        raise OsalError("cannot open lock file") from exc
+
+
+def release_file_lock(fd):
+    """Release a lock acquired by :func:`acquire_file_lock`."""
+    os.close(fd)
+
+
 def spawn_piped_process(argv, *, cwd=None, env=None):
     """Start a shell-free child with private stdin/stdout/stderr pipes.
 
@@ -165,9 +255,11 @@ def spawn_piped_process(argv, *, cwd=None, env=None):
     if env is not None:
         kwargs["env"] = env
     if IS_WINDOWS:
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = subprocess.SW_HIDE
+        # Typeshed exposes these names only for Windows; keep cross-platform
+        # static checking from treating the guarded Windows path as invalid.
+        startupinfo = getattr(subprocess, "STARTUPINFO")()
+        startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW")
+        startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE")
         kwargs["startupinfo"] = startupinfo
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     return subprocess.Popen(argv, **kwargs)
@@ -237,7 +329,10 @@ def _kill_tree(process):
             pass
     else:
         try:
-            os.killpg(os.getpgid(process.pid), getattr(signal, "SIGKILL", signal.SIGTERM))
+            killpg = getattr(os, "killpg")
+            getpgid = getattr(os, "getpgid")
+            killpg(getpgid(process.pid),
+                   getattr(signal, "SIGKILL", signal.SIGTERM))
         except OSError:
             pass
     try:
@@ -309,6 +404,8 @@ def run_tree(argv, cwd=None, timeout=None, env=None, cancel_check=None):
             # immediate and remains the right cleanup.
             if not IS_WINDOWS:
                 for pipe in (process.stdout, process.stderr):
+                    if pipe is None:
+                        continue
                     try:
                         pipe.close()
                     except OSError:
@@ -320,6 +417,7 @@ def run_tree(argv, cwd=None, timeout=None, env=None, cancel_check=None):
 
     cancelled = False
     timed_out = False
+    out = err = b""
     if cancel_check is None and timeout is None:
         out, err = process.communicate()
     else:
@@ -351,9 +449,15 @@ def run_tree(argv, cwd=None, timeout=None, env=None, cancel_check=None):
         drain_after_kill()
         return CommandResult(
             124, f"command timed out after {timeout}s: {' '.join(argv)}")
+    final_out = out if out is not None else b""
+    final_err = err if err is not None else b""
+    if isinstance(final_out, str):
+        final_out = final_out.encode(ENCODING)
+    if isinstance(final_err, str):
+        final_err = final_err.encode(ENCODING)
     return CommandResult(process.returncode,
-                         (out or b"").decode(ENCODING, errors="replace"),
-                         (err or b"").decode(ENCODING, errors="replace"))
+                         final_out.decode(ENCODING, errors="replace"),
+                         final_err.decode(ENCODING, errors="replace"))
 
 
 def run_bounded(argv, max_bytes, timeout=10, cwd=None):
@@ -388,11 +492,13 @@ def run_bounded(argv, max_bytes, timeout=10, cwd=None):
 
     captured = bytearray()
     oversized = threading.Event()
+    stream = process.stdout
+    assert stream is not None
 
     def drain_stdout():
         while True:
             remaining = max_bytes + 1 - len(captured)
-            reader = getattr(process.stdout, "read1", None) or process.stdout.read
+            reader = getattr(stream, "read1", None) or stream.read
             chunk = reader(min(65536, remaining))
             if not chunk:
                 return
@@ -475,7 +581,8 @@ def detect_newline(path):
     return None
 
 
-def atomic_write_text(path, content, follow=False, newline="preserve"):
+def atomic_write_text(path, content, follow=False,
+                      newline: Optional[str] = "preserve"):
     """Atomically replace `path` with `content`, refusing unsafe targets.
 
     Without ``follow=True`` a pre-existing symlink is never followed (the

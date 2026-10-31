@@ -26,8 +26,11 @@ import json
 import os
 import tempfile
 import time
+import uuid
 from pathlib import Path
+from typing import Any, Dict, cast
 from . import jev_calibration as _jcal
+from .jev_assessment import AssessmentError, parse_payload_json, verdict_for_payload
 from . import provision as _pv
 from . import refine as _refine
 from . import repo_cards as _rc
@@ -97,6 +100,9 @@ from .repo_summary import analyze_repo as _repo_analyze
 from .repo_summary import render_repo_map as _repo_render_map
 from .repo_summary import write_envelope as _repo_write_envelope
 from .repo_summary import write_map as _repo_write_map
+from .source_audit import run_source_audit as _source_audit_run
+from .source_audit import source_audit_policy_factory as _source_audit_policy_factory
+from .source_audit import write_report as _source_audit_write_report
 from .log_analysis import analyze_log as _log_analyze, load_log_text as _log_load_text, write_analysis as _log_write_analysis
 from .mission_driver import pack_probe_attempt as _mission_pack_probe
 from .mission_driver import run_mission as _mission_run
@@ -114,7 +120,6 @@ from .results import terminal_exit_code, verify_terminal_status
 from .saturation import advise
 from .validation import finite_number
 import sys
-import uuid
 
 from ._http import HttpTransport
 from .apply import validate_continuation
@@ -275,6 +280,7 @@ def _cmd_dogfood(opts, settings):
     Any phase that cannot prove its precondition stops the run with the
     phase's own evidence. Exit 0 only if every phase proved its claim.
     """
+    fixture = ""  # set by the --from-ledger branch and written below
     if opts.from_ledger:
         if opts.claims_file:
             raise HarnessError(
@@ -378,8 +384,9 @@ def _cmd_dogfood(opts, settings):
     if report.get("status") == "not_confirmed":
         eprint("[dogfood] no defect survived the panel tally; nothing to apply.")
         sys.exit(3)
-    if "apply" in report:
-        code = terminal_exit_code(report["apply"].get("status"))
+    apply_report = report.get("apply")
+    if isinstance(apply_report, dict):
+        code = terminal_exit_code(apply_report.get("status"))
         if code:
             sys.exit(code)
 
@@ -412,7 +419,7 @@ def _cmd_brief(opts, settings=None):
         else:
             sys.stdout.write(rendered)
         return
-    out = {"brief": pack}
+    out: Dict[str, Any] = {"brief": pack}
     if getattr(opts, "validate", False):
         out["grounding_issues"] = validate_brief(pack)
         out["ok"] = not out["grounding_issues"]
@@ -638,7 +645,7 @@ def _repo_summary_policy_factory(settings, chunk_cap, run_budget, ledger):
     and the driver stops honestly with ``stop_reason=run_budget``. Unkeyed
     runs compose a governor-free hermetic policy and never stop early.
     """
-    state = {"gov": None, "policy": None}
+    state: Dict[str, Any] = {"gov": None, "policy": None}
 
     def make_policy(cumulative: float):
         if not getattr(settings, "jev_api_key", None):
@@ -681,18 +688,24 @@ def _cmd_repo_summary(opts, settings):
     state_path = getattr(opts, "state", None)
     if not state_path and getattr(opts, "save_to", None):
         state_path = str(opts.save_to) + ".judgments.jsonl"
+    recovery_report = []
     make_policy = _repo_summary_policy_factory(
         settings, getattr(opts, "max_cost", None), run_budget, ledger)
-    envelope = _repo_analyze(
-        opts.root, pack, make_policy,
-        state_path=state_path,
-        file_limit=getattr(opts, "limit", None),
-        symbol_limit=int(getattr(opts, "symbols", 200) or 0),
-        run_budget=run_budget,
-        task_id="repo-summary",
-        exclude=[getattr(opts, "save_to", None),
-                 getattr(opts, "map", None), state_path],
-    )
+    try:
+        envelope = _repo_analyze(
+            opts.root, pack, make_policy,
+            state_path=state_path,
+            file_limit=getattr(opts, "limit", None),
+            symbol_limit=int(getattr(opts, "symbols", 200) or 0),
+            run_budget=run_budget,
+            task_id="repo-summary",
+            exclude=[getattr(opts, "save_to", None),
+                     getattr(opts, "map", None), state_path],
+            recovery_report=recovery_report,
+        )
+    finally:
+        for recovery in recovery_report:
+            eprint(f"[repo-summary] {recovery}")
     written = {}
     if getattr(opts, "save_to", None):
         written["envelope"] = _repo_write_envelope(envelope, opts.save_to)
@@ -703,6 +716,46 @@ def _cmd_repo_summary(opts, settings):
                "axes", "attention", "nouls", "structural")}
     report["written"] = written
     report["state_path"] = state_path
+    _emit(report, opts.out)
+
+
+def _cmd_source_audit(opts, settings):
+    """Run the opt-in, resumable full-source audit under a required ceiling."""
+    root = Path(opts.root or Path.cwd()).resolve()
+    run_budget = finite_number(opts.run_budget, "run_budget", 0.000001,
+                               HARD_MAX_COST)
+    chunk_chars = int(opts.chunk_chars)
+    if not 512 <= chunk_chars <= 8000:
+        raise HarnessError("chunk_chars must be between 512 and 8000")
+    packs = {
+        "code": _read_json(opts.code_pack, "source-audit code pack"),
+        "docs": _read_json(opts.docs_pack, "source-audit docs pack"),
+        "evidence": _read_json(opts.evidence_pack, "source-audit evidence pack"),
+    }
+    state_path = opts.state or root / ".harness" / "source-audit.sqlite3"
+    dispositions = None
+    if opts.dispositions:
+        dispositions = _read_json(opts.dispositions, "source-audit dispositions")
+        if not isinstance(dispositions, dict):
+            raise HarnessError("source-audit dispositions must be a JSON object")
+    task_id = opts.task_id or "source-audit-{}".format(uuid.uuid4().hex[:12])
+    ledger = _ledger(settings)
+    ledger.ensure_offered_task_id(
+        task_id, model="(source-audit)", required=False, source="cli")
+    make_policy = _source_audit_policy_factory(settings, run_budget, ledger)
+    report = _source_audit_run(
+        root, packs, make_policy, state_path=state_path,
+        run_budget=run_budget, chunk_chars=chunk_chars,
+        exclude=[opts.save_to, opts.dispositions],
+        dispositions=dispositions, task_id=task_id,
+        recover_interrupted=bool(getattr(
+            opts, "recover_interrupted", False)))
+    report["task_id"] = task_id
+    written = {}
+    if opts.save_to:
+        written["report"] = _source_audit_write_report(report, opts.save_to)
+    report["written"] = written
+    report["state_path"] = str(state_path)
     _emit(report, opts.out)
 
 
@@ -852,7 +905,7 @@ def _cmd_models(opts, settings):
         # A different cache intent (full catalog, not the free-only filter),
         # but the same verified key -- no second governor needed.
         rows = []
-        for m in gov.fetch_models(refresh=True):
+        for m in (gov.fetch_models(refresh=True) or []):
             p = m.get("pricing") or {}
             def _p(v):
                 try:
@@ -874,7 +927,7 @@ def _cmd_models(opts, settings):
 
 def _cmd_spend(opts, settings):
     api_key, gov = _governor(settings)
-    status = gov.key_status()
+    status: Dict[str, Any] = gov.key_status()
     # Enrichment (Phase 1): the session-level budget view the governor
     # enforces, alongside the key-level data -- the same numbers a UI
     # dashboard needs, from the one owner.
@@ -999,6 +1052,10 @@ def _cmd_mission(opts, settings):
             result["resumed"] = not terminal_before
             _emit(result, opts.out)
             return
+        # Refuse damaged histories before the read-only resume path rewrites
+        # the validated resume projection.
+        mr.load_receipts(pack)
+        mr.load_jev_evals(pack)
         state = mr.load_resume(pack)
         validated = mr.validate_resume(state, expected_id=pack.id)
         mr.write_resume(pack, validated)
@@ -1168,7 +1225,7 @@ def _cmd_capabilities(opts, settings):
         # live catalog -- the twice-recurred stale-id defect class, now
         # machine-checked instead of audit-cadence-checked.
         api_key, gov = _governor(settings)
-        catalog = {m["id"] for m in gov.fetch_models(refresh=True)}
+        catalog = {m["id"] for m in (gov.fetch_models(refresh=True) or [])}
         stale = sorted(shipped_model_ids() - catalog)
         report = {"ok": not stale, "stale": stale,
                   "checked": len(shipped_model_ids()),
@@ -1411,6 +1468,7 @@ def _cmd_plan(opts, settings):
     # skip completed ok nodes.
     if resume_path or getattr(opts, "persist_state", None):
         state_path = resume_path or getattr(opts, "persist_state", None)
+        assert state_path  # the branch condition already required one
         merged = dict((pending_state or {}).get("node_results") or {})
         for key, res in all_results.items():
             if key == "final_gate":
@@ -1597,6 +1655,7 @@ def _cmd_jev_phase(opts, settings):
                 + ", ".join(board["false_complete"]))
         return
 
+    assert phase is not None  # the branch condition already required one
     result = dogfood_phase(
         opts.repo_root,
         phase,
@@ -1820,8 +1879,11 @@ def _cmd_provision(opts, settings):
                 if hasattr(sr, "status"):
                     print(f"  [{sr.status}] step {sr.step_id}: {sr.note or sr.status}")
                 else:
-                    print(f"  [{sr.get('status')}] step {sr.get('step_id')}: "
-                          f"{sr.get('note') or sr.get('status')}")
+                    # A result may be an object or a plain mapping; the
+                    # attribute check above distinguishes them at runtime.
+                    plain = cast(Any, sr)
+                    print(f"  [{plain.get('status')}] step {plain.get('step_id')}: "
+                          f"{plain.get('note') or plain.get('status')}")
         _emit(res, getattr(opts, "out", None), force_json=getattr(opts, "json", False))
 
 
@@ -1896,6 +1958,26 @@ def _cmd_jev_calibration(opts, settings):
     _emit(report, getattr(opts, "out", None), force_json=getattr(opts, "json", False))
 
 
+def _cmd_assess(opts, settings):
+    """v1 five-aspect assessment gate: JSON in, verdict out.
+
+    Exit 0 only for a pass; 1 for investigate/block/stop; 2 for a payload
+    that cannot be read. The gate is lane-workflow authority, not the audit
+    bar -- the verdict carries both facts so a caller cannot confuse them.
+    """
+    try:
+        raw = (sys.stdin.read() if getattr(opts, "input", "-") == "-"
+               else _read_text(opts.input, "assessment payload"))
+        verdict = verdict_for_payload(parse_payload_json(raw))
+    except (AssessmentError, ValueError) as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True))
+        sys.exit(2)
+    print(json.dumps(verdict.to_dict(), indent=2, sort_keys=True))
+    # The exit code is the gate (this CLI's convention): 0 pass, 1 anything
+    # that is not a pass. main() ignores handler returns, so say it here.
+    sys.exit(0 if verdict.ok else 1)
+
+
 def _cmd_refine(opts, settings):
     """Propose-Probe-Compose refinement loop (issue #239, Phase 0 pilot)."""
     ledger = _ledger(settings)
@@ -1949,6 +2031,7 @@ def _cmd_refine(opts, settings):
               getattr(opts, "out", None),
               force_json=getattr(opts, "json", False))
         return
+    assert family is not None  # required by the branch above
     if not _refine.valid_family(family):
         raise HarnessError(f"unknown task family: {family!r}")
     _emit({"family": family, "pilot_cycle": "validated (Phase 2 executes the loop)"},
@@ -2021,6 +2104,7 @@ _DISPATCH = {
     "issue-sort": _cmd_issue_sort,
     "log-judgment": _cmd_log_judgment,
     "repo-summary": _cmd_repo_summary,
+    "source-audit": _cmd_source_audit,
     "route": _cmd_route,
     "site-export": _cmd_site_export,
     "ledger": _cmd_ledger,
@@ -2041,6 +2125,7 @@ _DISPATCH = {
     "repo-cards": _cmd_repo_cards,
     "jev-calibration": _cmd_jev_calibration,
     "refine": _cmd_refine,
+    "assess": _cmd_assess,
 }
 
 

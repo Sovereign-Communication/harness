@@ -8,6 +8,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest import mock
 
 from harness.apply import ApplyEngine
@@ -412,7 +413,7 @@ class McpProtocolTests(unittest.TestCase):
         marker = "Tools (`tools/list` order):"
         inventory = readme.split(marker, 1)[1].split(
             "\n`economics_report` reports", 1)[0]
-        documented = re.findall(r"`([a-z_]+)`", inventory)
+        documented = re.findall(r"`([a-z_][a-z_0-9]*)`", inventory)
         self.assertEqual(documented, names)
 
         mcp_doc = (root / "docs" / "mcp.md").read_text(encoding="utf-8")
@@ -845,7 +846,7 @@ class McpProtocolTests(unittest.TestCase):
                 release.set()
                 return ""
 
-        server._call_tool = delayed_call
+        setattr(server, "_call_tool", delayed_call)
         responses = _serve(server, Feed())
         self.assertEqual(len(responses), 2)
         self.assertEqual(sum("error" in response for response in responses), 1)
@@ -929,7 +930,8 @@ class McpProtocolTests(unittest.TestCase):
 
         def malformed_error(request, timeout):
             raise urllib.error.HTTPError(
-                request.full_url, 502, "bad gateway", {}, io.BytesIO(b"[]"))
+                request.full_url, 502, "bad gateway",
+                cast(Any, {}), io.BytesIO(b"[]"))
 
         def make_adapter():
             return PerceptionAdapter(
@@ -1262,6 +1264,7 @@ class LaneSchedulingTests(unittest.TestCase):
              "plan_and_execute": "mutation",
              "continue_work": "mutation",
              "script_run": "mutation",
+             "source_audit": "mutation",
              "jev_freeze": "mutation",
              "dogfood": "mutation",
              "ask": "spendy",
@@ -1282,12 +1285,100 @@ class LaneSchedulingTests(unittest.TestCase):
              "driver_health": "observe",
              "driver_vocabulary": "observe",
              "driver_verify": "observe",
+             "lucas_gate_v2": "observe",
              "jev_phase": "observe",
              "host_provision_probe": "observe",
              "host_provision_plan": "spendy",
              "repo_cards": "observe",
              "jev_calibration": "observe",
              "economics_report": "observe"})
+
+
+class SourceAuditMcpTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name) / "workspace"
+        self.root.mkdir()
+        self._transport, self.server = make_server(
+            allow_write=False, allowed_roots=[self.root])
+        self.server.settings = SimpleNamespace(max_cost=0.1, jev_api_key=None)
+        self.args = {
+            "root": str(self.root),
+            "code_pack": {"id": "code"},
+            "docs_pack": {"id": "docs"},
+            "evidence_pack": {"id": "evidence"},
+            "run_budget": 0.01,
+            "state_path": ".harness/source-audit.sqlite3",
+            "allow_write": True,
+        }
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_source_audit_requires_explicit_write_permission(self):
+        self.args["allow_write"] = False
+        with self.assertRaisesRegex(HarnessError, "source_audit writes resume state"):
+            self.server._invoke("source_audit", self.args)
+        self.assertFalse((self.root / ".harness").exists())
+
+    def test_source_audit_uses_allowed_root_and_shared_policy_factory(self):
+        report = {"schema": "source-audit-v1", "leads": []}
+        with (mock.patch("harness.mcp.source_audit_policy_factory",
+                         return_value=lambda _spent: object()) as factory,
+              mock.patch("harness.mcp.run_source_audit",
+                         return_value=report) as audit):
+            result = self.server._invoke("source_audit", self.args)
+        self.assertEqual(result["schema"], "source-audit-v1")
+        self.assertEqual(result["state_path"],
+                         str(self.root.resolve() / ".harness" /
+                             "source-audit.sqlite3"))
+        factory.assert_called_once()
+        audit.assert_called_once()
+        self.assertTrue(os.path.samefile(audit.call_args.args[0], self.root))
+        self.assertFalse((self.root / ".harness").exists())
+        self.assertIn("source_audit", {tool["name"] for tool in TOOL_SCHEMAS})
+
+    def test_source_audit_confines_both_persistent_output_paths(self):
+        outside = Path(self.temp.name) / "outside.sqlite3"
+        with mock.patch.object(self.server, "_file_for", return_value=outside):
+            with self.assertRaisesRegex(HarnessError,
+                                        "state path must stay inside"):
+                self.server._invoke("source_audit", self.args)
+
+        args = dict(self.args, report_path="audit.json")
+        with mock.patch.object(self.server, "_file_for",
+                               side_effect=[self.root / ".harness" / "state.sqlite3",
+                                            outside]):
+            with self.assertRaisesRegex(HarnessError,
+                                        "report path must stay inside"):
+                self.server._invoke("source_audit", args)
+
+    def test_source_audit_rejects_bad_dispositions_and_missing_settings(self):
+        args = dict(self.args, dispositions=[])
+        with self.assertRaisesRegex(HarnessError,
+                                    "dispositions must be an object"):
+            self.server._invoke("source_audit", args)
+
+        self.server.settings = None
+        if getattr(self.server, "engine", None) is not None:
+            setattr(self.server.engine, "settings", None)
+        with self.assertRaisesRegex(HarnessError,
+                                    "requires configured Jev settings"):
+            self.server._invoke("source_audit", self.args)
+
+    def test_source_audit_writes_a_requested_report(self):
+        report = {"schema": "source-audit-v1", "leads": []}
+        args = dict(self.args, report_path="reports/audit.json")
+        target = (self.root / "reports" / "audit.json").resolve()
+        with (mock.patch("harness.mcp.source_audit_policy_factory",
+                         return_value=lambda _spent: object()),
+              mock.patch("harness.mcp.run_source_audit",
+                         return_value=report),
+              mock.patch("harness.mcp.write_report",
+                         return_value=str(target)) as write_report):
+            result = self.server._invoke("source_audit", args)
+        self.assertEqual(result["written"], {"report": str(target)})
+        write_report.assert_called_once_with(report, target)
 
     def test_unknown_and_missing_names_ride_observe(self):
         self.assertEqual(lane_for("not_a_tool"), "observe")
@@ -1309,6 +1400,27 @@ class MainCliFlagsTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn(__version__, out.getvalue())
 
+    def test_help_and_version_flags_are_order_independent(self):
+        from harness.mcp import _handle_cli_flags
+
+        for args in (["--help", "--version"], ["--version", "--help"]):
+            with self.subTest(args=args):
+                out = io.StringIO()
+                err = io.StringIO()
+                self.assertEqual(_handle_cli_flags(args, stdout=out,
+                                                   stderr=err), 0)
+                self.assertIn("usage: harness-mcp", out.getvalue())
+                self.assertFalse(out.getvalue().startswith("harness-mcp "))
+                self.assertEqual(err.getvalue(), "")
+
+    def test_repeated_version_flag_prints_once(self):
+        from harness.mcp import _handle_cli_flags, __version__
+
+        out = io.StringIO()
+        self.assertEqual(_handle_cli_flags(
+            ["--version", "--version", "--version"], stdout=out), 0)
+        self.assertEqual(out.getvalue(), f"harness-mcp {__version__}\n")
+
     def test_help_flag_prints_usage_and_returns_exit_code(self):
         from harness.mcp import _handle_cli_flags
 
@@ -1328,12 +1440,35 @@ class MainCliFlagsTests(unittest.TestCase):
         self.assertIsNone(_handle_cli_flags([], stdout=out))
         self.assertEqual(out.getvalue(), "")
 
-    def test_unrecognized_args_fall_through_to_serve(self):
+    def test_unrecognized_args_return_usage_error_without_serving(self):
         from harness.mcp import _handle_cli_flags
 
         out = io.StringIO()
-        self.assertIsNone(_handle_cli_flags(["--some-other-flag"], stdout=out))
+        err = io.StringIO()
+        self.assertEqual(
+            _handle_cli_flags(["--some-other-flag"], stdout=out, stderr=err), 2
+        )
         self.assertEqual(out.getvalue(), "")
+        self.assertIn("unrecognized arguments: --some-other-flag", err.getvalue())
+
+    def test_main_returns_early_on_unrecognized_args(self):
+        from harness import mcp
+
+        with mock.patch("harness.mcp.load_settings") as load_settings, \
+             mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.assertEqual(mcp.main(["--version", "--some-other-flag"]), 2)
+            self.assertIn("unrecognized arguments", err.getvalue())
+            load_settings.assert_not_called()
+
+    def test_unrecognized_args_fail_even_beside_help(self):
+        from harness.mcp import _handle_cli_flags
+
+        out = io.StringIO()
+        err = io.StringIO()
+        self.assertEqual(_handle_cli_flags(
+            ["--help", "--not-a-flag"], stdout=out, stderr=err), 2)
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("unrecognized arguments: --not-a-flag", err.getvalue())
 
     def test_main_returns_early_on_version_without_touching_serve_setup(self):
         # main() itself must short-circuit on a handled flag before its
@@ -1351,6 +1486,18 @@ class MainCliFlagsTests(unittest.TestCase):
         with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
             self.assertEqual(mcp.main(["--help"]), 0)
             self.assertIn("usage: harness-mcp", out.getvalue())
+
+    def test_module_entrypoint_propagates_unknown_flag_exit_code(self):
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "harness.mcp", "--unknown"],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("unrecognized arguments: --unknown", result.stderr)
 
     def test_main_passes_the_settings_seam_to_the_server(self):
         """HV-4/HV-3-use reachability: `main` must wire the settings seam.
@@ -1940,7 +2087,9 @@ class ContinueWorkToolTests(unittest.TestCase):
                 "jsonrpc": "2.0", "id": 25, "method": "tools/call",
                 "params": {"name": "spend_status", "arguments": {}},
             })
+        assert reply is not None
         result = reply["result"]
+        assert result is not None
         self.assertTrue(result["isError"])
         self.assertEqual(result["errorKind"], "provider_spend_limit")
         self.assertEqual(result["error_kind"], "provider_spend_limit")

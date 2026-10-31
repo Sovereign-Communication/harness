@@ -256,7 +256,7 @@
         "label": "full suite green hermetically",
         "score": 1.0,
         "status": "pass",
-        "evidence": "unittest: Ran 5159 tests in 341.556s\n\nOK (env clean; empty home)"
+        "evidence": "unittest: Ran 5297 tests in 380.946s\n\nOK (env clean; empty home)"
       },
       {
         "id": "R14",
@@ -300,14 +300,14 @@
         "label": "ruff clean",
         "score": 1.0,
         "status": "pass",
-        "evidence": "ruff check harness tests: clean via shared resolver `C:\\Users\\SCM\\.freebuff\\worktrees\\e208075a\\Harness\\.venv\\Scripts\\python.exe -m ruff check harness tests`"
+        "evidence": "ruff check harness tests: clean via shared resolver `C:\\Users\\SCM\\Documents\\GitHub\\Harness\\.venv\\Scripts\\python.exe -m ruff check harness tests`"
       },
       {
         "id": "S6",
         "label": "test tree mirrors product tree",
         "score": 1.0,
         "status": "pass",
-        "evidence": "113/113 modules imported by tests"
+        "evidence": "116/116 modules imported by tests"
       },
       {
         "id": "S7",
@@ -330,7 +330,7 @@
         "label": "MCP tool parity with README",
         "score": 1.0,
         "status": "pass",
-        "evidence": "README documents all 30 MCP tools, no stale names"
+        "evidence": "README documents all 32 MCP tools, no stale names"
       },
       {
         "id": "D2",
@@ -372,7 +372,7 @@
         "label": "docs reference only real modules",
         "score": 1.0,
         "status": "pass",
-        "evidence": "all module references across 32 docs resolve to real files"
+        "evidence": "all module references across 33 docs resolve to real files"
       },
       {
         "id": "D8",
@@ -407,7 +407,7 @@
         "label": "changed lines suite-executed (coverage)",
         "score": 1.0,
         "status": "pass",
-        "evidence": "no executable harness changes vs merge-base 69889792b2 (origin/main)"
+        "evidence": "changed harness lines are suite-executed (changed-line coverage 1037/1090 = 95% (bar 95%) vs merge-base 0780ea7473 (origin/main; traced battery at merge-base 0780ea7473); untested: osal.py:206,208,215,216,218,221,222,223...; source_audit.py:163,179,184,214,223,369,371,423...)"
       }
     ]
   }

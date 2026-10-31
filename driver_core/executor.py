@@ -293,7 +293,7 @@ class Executor:
             f"params {params}; re-confirmation is required")
 
     def execute(self, action_name, params=None, *, consent=NO_CONSENT_NEEDED,
-                step_id="step"):
+                step_id="step") -> ExecutionResult:
         """Perform one declared action, or explain why it was not performed."""
         action, checked = self.resolve(action_name, params or {})
         self.check_consent(action, checked, consent)
@@ -352,15 +352,26 @@ class Executor:
                                 "have occurred and replay remains blocked") from exc
                         raise
 
+        # ``_invoke`` always returns a result: it catches executor failure
+        # and turns it into an unsuccessful record. The assert states that
+        # invariant for the type checker and for a reader.
+        assert result is not None
         if self.audit is not None:
-            self.audit.append(
-                KIND_ACTION, step_id=step_id, action=action.name,
+            record = dict(
+                step_id=step_id, action=action.name,
                 action_class=action.action_class, ok=result.ok,
                 detail=result.detail, dry_run=result.dry_run,
                 consent=consent.to_dict() if consent else None)
+            # Declared per action, not inferred from the name: a probe's
+            # stdout/stderr/exit code *are* its evidence, and the action
+            # record is the only place they survive. Adding the key changes
+            # no existing record -- a probe record did not exist before.
+            if action.records_output and result.output is not None:
+                record["output"] = result.output
+            self.audit.append(KIND_ACTION, **record)
         return result
 
-    def _invoke(self, handler, action, params):
+    def _invoke(self, handler, action, params) -> ExecutionResult:
         try:
             output = handler(action, params)
         except Exception as exc:

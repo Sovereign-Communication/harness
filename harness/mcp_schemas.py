@@ -238,6 +238,42 @@ TOOL_SCHEMAS = [
         }, "required": ["issue", "pack"]},
     },
     {
+        "name": "source_audit",
+        "title": "Run a resumable full-source Jev audit",
+        "description": (
+            "Opt-in, cost-capped source audit over a Git snapshot. Requires "
+            "operator packs for code/configuration, documentation, and evidence/data. "
+            "Excludes sensitive paths, ignored files, binaries, and generated artifacts; "
+            "stores only hashes, line ranges, typed results, usage receipts, and lead "
+            "dispositions. Never returns source text. Writes resume state and may incur "
+            "Jev provider cost."),
+        "inputSchema": {"type": "object", "properties": {
+            "root": {"type": "string",
+                     "description": "Selected Git repository root inside configured allowed roots"},
+            "code_pack": {"type": "object",
+                          "description": "Operator repo-summary pack for code/configuration"},
+            "docs_pack": {"type": "object",
+                          "description": "Operator repo-summary pack for documentation"},
+            "evidence_pack": {"type": "object",
+                              "description": "Operator repo-summary pack for evidence/data"},
+            "run_budget": {"type": "number", "minimum": 0.000001, "maximum": 0.25,
+                            "description": "Required cumulative USD ceiling for this audit run"},
+            "chunk_chars": {"type": "integer", "default": 4000,
+                            "minimum": 512, "maximum": 8000},
+            "state_path": {"type": "string",
+                           "description": "SQLite resume state path inside the selected repository"},
+            "report_path": {"type": "string",
+                            "description": "Optional source-safe JSON report path inside the selected repository"},
+            "dispositions": {"type": "object",
+                             "description": "Optional lead-id map to verified, false_positive, historical_fixture, or unresolved"},
+            "task_id": {"type": "string"},
+            "allow_write": {"type": "boolean",
+                            "description": "Explicit permission to persist resume state and optional report"},
+        }, "required": ["code_pack", "docs_pack", "evidence_pack",
+                        "run_budget", "state_path", "allow_write"]},
+        "annotations": {"readOnlyHint": False, "openWorldHint": True},
+    },
+    {
         "name": "route_query",
         "title": "Route a query onto the declared model ladder",
         "description": "SITE-2 route marketplace: compares the request against the "
@@ -346,6 +382,76 @@ TOOL_SCHEMAS = [
                             "description": "Also judge every Nth INFO record (0 = WARN/ERROR only)"},
             "task_id": {"type": "string"},
         }, "required": ["log_text", "pack"]},
+    },
+    {
+        "name": "lucas_gate_v2",
+        "title": "Lucas Gate v2 typed-track scorecard runner",
+        "description": "Read-only deterministic runner for a caller-produced Lucas "
+                       "Gate v2 typed-track assessment. The caller performs semantic "
+                       "judgment. Supply scores and evidence for applicable categories; "
+                       "mark non-applicable categories explicitly with a reason. At "
+                       "least one category must apply for a typed pass. Bias checks "
+                       "B1/B3/B4/B5/B8/B9/B10/B11 remain required. Applicable category "
+                       "bars remain 9.0, with 8.95 requiring category average 9.25, "
+                       "8.9 requiring 9.5, and 8.8 requiring overall average 9.9. One "
+                       "category from 8.5 to 8.9 may pass with an investigated reason "
+                       "when there is no actual risk. Bias floors: B1 10; B3/B4/B5/"
+                       "B8/B11 9; B9/B10 8. It never calls Jev or a model, and does not "
+                       "echo or persist assessment evidence.",
+        "inputSchema": {"type": "object", "additionalProperties": False,
+            "properties": {
+                "track": {"type": "string", "enum": ["typed"]},
+                "artifact_text": {"type": "string", "minLength": 1,
+                                  "maxLength": 100000},
+                "overall_average": {"type": "number", "minimum": 0, "maximum": 10},
+                "actual_risk": {"type": "boolean"},
+                "investigated_reason": {"type": "string", "maxLength": 4000},
+                "category_scores": {"type": "array", "minItems": 10, "maxItems": 10,
+                    "items": {"type": "object", "additionalProperties": False,
+                        "properties": {
+                            "id": {"type": "string", "enum": [
+                                "1", "2", "3", "4", "5", "6", "8", "9", "10", "11"]},
+                            "applicable": {"type": "boolean"},
+                            "not_applicable_reason": {
+                                "type": "string", "minLength": 1, "maxLength": 4000},
+                            "score": {"type": "number", "minimum": 0, "maximum": 10},
+                            "category_average": {
+                                "type": "number", "minimum": 0, "maximum": 10},
+                            "evidence": {"type": "string", "minLength": 1,
+                                         "maxLength": 4000},
+                            "precedent": {"type": "string", "minLength": 1,
+                                          "maxLength": 4000},
+                        },
+                        "required": ["id"],
+                        "allOf": [{
+                            "if": {"properties": {"applicable": {"const": False}},
+                                   "required": ["applicable"]},
+                            "then": {"required": ["not_applicable_reason"],
+                                     "not": {"anyOf": [
+                                         {"required": ["score"]},
+                                         {"required": ["category_average"]},
+                                         {"required": ["evidence"]},
+                                         {"required": ["precedent"]},
+                                     ]}},
+                            "else": {"required": ["score", "category_average",
+                                                  "evidence", "precedent"],
+                                     "not": {"required": ["not_applicable_reason"]}},
+                        }],
+                    }},
+                "bias_checks": {"type": "array", "minItems": 8, "maxItems": 8,
+                    "items": {"type": "object", "additionalProperties": False,
+                        "properties": {
+                            "id": {"type": "string", "enum": [
+                                "B1", "B3", "B4", "B5", "B8", "B9", "B10", "B11"]},
+                            "score": {"type": "number", "minimum": 0, "maximum": 10},
+                            "rationale": {"type": "string", "minLength": 1,
+                                          "maxLength": 4000},
+                        }, "required": ["id", "score", "rationale"]}},
+            },
+            "required": ["track", "artifact_text", "actual_risk",
+                         "category_scores", "bias_checks"]},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False,
+                        "openWorldHint": False},
     },
     {
         "name": "jev_phase",

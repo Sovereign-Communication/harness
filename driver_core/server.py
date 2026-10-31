@@ -28,6 +28,7 @@ README.
 import json
 import secrets
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import cast
 
 from . import __version__
 from .actions import IRREVERSIBLE
@@ -119,6 +120,9 @@ class Service:
             "status": "up",
             "version": __version__,
             "keyed": self.driver.settings.keyed,
+            # The actionable half of the keyed flag: names the provisioning
+            # step, never the value. See Settings.key_provisioning().
+            "key_provisioning": self.driver.settings.key_provisioning(),
             "settings": self.driver.settings.redacted(),
             "vocabulary": self._vocabulary_view(),
             "sources": [s.name for s in self.driver.sources],
@@ -338,6 +342,17 @@ class Service:
         return _wrapped(200, outcome)
 
 
+class _ServiceServer(ThreadingHTTPServer):
+    """The one server type this module binds, with its service typed.
+
+    ``BaseServer`` has no ``service`` attribute, so reaching it through
+    ``self.server`` was invisible to the type checker and to a reader. The
+    subclass is the declaration that a bound server always carries one.
+    """
+
+    service: "Service"
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "driver-core"
 
@@ -345,8 +360,12 @@ class Handler(BaseHTTPRequestHandler):
     #: that the refusal reaches the client. See :meth:`_refuse`.
     max_drain_bytes = 1 << 20
 
-    def log_message(self, fmt, *args):  # keep the console usable
+    def log_message(self, format, *args):  # keep the console usable
         pass
+
+    @property
+    def _service(self) -> "Service":
+        return cast(_ServiceServer, self.server).service
 
     def _authorised(self):
         """Whether this request carries the service token.
@@ -362,7 +381,7 @@ class Handler(BaseHTTPRequestHandler):
         """
         supplied = (self.headers.get("Authorization") or "").removeprefix(
             "Bearer ").strip()
-        expected = self.server.service.token
+        expected = self._service.token
         return secrets.compare_digest(supplied.encode("utf-8"),
                                       expected.encode("utf-8"))
 
@@ -414,7 +433,7 @@ class Handler(BaseHTTPRequestHandler):
             self._refuse()
             return
         route = self.path.lstrip("/").split("?")[0] or "health"
-        outcome = self.server.service.handle(route, {})
+        outcome = self._service.handle(route, {})
         self._respond(outcome["status"], outcome.get("body", outcome))
 
     def do_POST(self):
@@ -432,7 +451,7 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(body, dict):
             self._respond(400, {"ok": False, "error": "body must be an object"})
             return
-        outcome = self.server.service.handle(route, body)
+        outcome = self._service.handle(route, body)
         self._respond(outcome["status"], outcome.get("body", outcome))
 
 
@@ -462,7 +481,7 @@ def serve(host=None, port=None, *, service=None, block=True, announce=None):
     if port is None:
         port = settings.port
     service = service or Service(driver_from_settings(settings))
-    httpd = ThreadingHTTPServer((host, port), Handler)
+    httpd = _ServiceServer((host, port), Handler)
     httpd.service = service
     if announce is not None:
         announce(httpd.server_address[:2])

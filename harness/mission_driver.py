@@ -226,6 +226,10 @@ def _run_mission(
     _require_callable(attempt_fn, "attempt_fn")
 
     spec = pack.spec()
+    # Validate both append-only histories before creating resume state,
+    # invoking the attempt seat, or writing terminal/status artifacts.
+    mr.load_receipts(pack)
+    mr.load_jev_evals(pack)
     if not pack.resume_path.is_file():
         mr.write_resume(pack, mr.build_resume_state(pack))
     resume = mr.load_resume(pack)
@@ -398,8 +402,8 @@ def _run_mission(
                     reason=reason_text,
                     attempts=attempts,
                     stall_counter=stall_counter,
-                    spent=budget.get("spent"),
-                    working_remaining=budget.get("working_remaining"),
+                    spent=budget["spent"],
+                    working_remaining=budget["working_remaining"],
                     determination=last_determination,
                 )
                 resume_after = mr.mark_terminal(pack, outcome="blocked", findings=body)
@@ -436,7 +440,8 @@ def _run_mission(
                     "reasons": [str(exc)],
                     "site": "hul_scope",
                 }
-            if last_determination.get("complete"):
+            if (last_determination is not None
+                    and last_determination.get("complete")):
                 outcome = "complete"
                 reason = (
                     "HUL-C scope determination complete "

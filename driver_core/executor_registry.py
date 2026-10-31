@@ -35,6 +35,8 @@ on. :mod:`driver_core.osal` is that module, and the boundary test holds
 everything else out of it. Every handler below reaches the outside world
 *through* it and never around it.
 """
+import os
+
 from . import osal
 from .errors import ExecutorError
 
@@ -258,6 +260,149 @@ def _noop(action, params):
     return {"action": action.name, "note": "no action required"}
 
 
+# --------------------------------------------------------------------------
+# read-only probes
+# --------------------------------------------------------------------------
+
+#: Program subcommands a probe may run with write authority off. The list
+#: is read-only *by construction* rather than by review: ``status``, ``log``
+#: and ``diff`` never write to the repository. ``branch``, ``config`` and
+#: ``remote`` are absent because each has a writing spelling, and a probe
+#: that could create a branch is not a probe.
+PROBE_PREFIXES = (
+    ("git", "status"),
+    ("git", "log"),
+    ("git", "diff"),
+    ("git", "show"),
+    ("git", "rev-parse"),
+    ("git", "ls-files"),
+    ("git", "describe"),
+    ("git", "blame"),
+    ("git", "grep"),
+)
+
+#: An operator's own declaration of read-only command shapes, as
+#: ``;``-separated exact argv shapes (for example
+#: ``python scripts/check.py --mode read``). This is how a headless verifier
+#: runs the repo's own check script without holding write authority: the
+#: operator declares every argument, and the probe refuses extra arguments.
+#: Never a shell string -- the value is tokenised on whitespace and passed to
+#: ``osal.run`` as argv.
+PROBE_ENV = "DRIVER_PROBE_ALLOWLIST"
+
+#: Git options that write a file or dispatch an external command even under
+#: an otherwise read-only subcommand.
+PROBE_FORBIDDEN_OPTIONS = ("--output", "--open-files-in-pager", "-O")
+
+#: Bound on one probe. A read-only check that has not finished in thirty
+#: seconds is a check whose answer nobody is waiting for, and the action
+#: must not become a way to occupy the driver.
+PROBE_TIMEOUT = 30
+
+
+def _head(token):
+    """The comparable program name: basename, case-folded, ``.exe`` off."""
+    name = os.path.basename(str(token)).lower()
+    return name[:-4] if name.endswith(".exe") else name
+
+
+def _declared_probe_shapes(env=None):
+    """Parse operator-declared exact argv shapes from the environment."""
+    env = os.environ if env is None else env
+    declared = []
+    for entry in str(env.get(PROBE_ENV, "")).split(";"):
+        tokens = tuple(token for token in entry.split() if token)
+        if tokens:
+            declared.append(tokens)
+    return tuple(declared)
+
+
+def _matches_probe_shape(argv, shape, *, exact):
+    if (len(argv) < len(shape) or
+            (exact and len(argv) != len(shape)) or
+            _head(argv[0]) != _head(shape[0])):
+        return False
+    return all(token == declared
+               for token, declared in zip(argv[1:], shape[1:]))
+
+
+def probe_shapes(env=None):
+    """The built-in read-only prefixes plus exact operator-declared shapes."""
+    return tuple(PROBE_PREFIXES) + _declared_probe_shapes(env)
+
+
+def probe_argv(command, env=None):
+    """Validate one probe shape and return its argv list.
+
+    Refusals happen before a process starts, and they name the shape that
+    was refused. A string is refused outright rather than tokenised: the
+    vocabulary says ``command``, and a caller taught to pass a string is a
+    caller one refactor away from a shell.
+    """
+    if isinstance(command, (str, bytes)) or not isinstance(command, (list, tuple)):
+        raise ExecutorError(
+            "run_probe takes an argv list, not a command string; the string "
+            "form is refused because tokenising it here would make this "
+            "executor a second, weaker argv parser")
+    if not command:
+        raise ExecutorError("run_probe needs a non-empty argv")
+    if any(not isinstance(token, str) or not token for token in command):
+        raise ExecutorError("run_probe argv tokens must be non-empty strings")
+    argv = list(command)
+    allowed = any(_matches_probe_shape(argv, prefix, exact=False)
+                  for prefix in PROBE_PREFIXES)
+    if not allowed:
+        allowed = any(_matches_probe_shape(argv, shape, exact=True)
+                      for shape in _declared_probe_shapes(env))
+    if not allowed:
+        raise ExecutorError(
+            f"probe shape {argv!r} is not allowlisted; declared read-only "
+            f"shapes: {_progress_shapes(env)}")
+    for token in argv[1:]:
+        for option in PROBE_FORBIDDEN_OPTIONS:
+            matches = token == option or token.startswith(option + "=")
+            if option == "-O":
+                matches = token.startswith(option)
+            if matches:
+                effect = ("writes a file" if option == "--output"
+                          else "can launch an external pager")
+                raise ExecutorError(
+                    f"probe option {token!r} {effect}; a read-only probe "
+                    f"cannot use it")
+    return argv
+
+
+def _progress_shapes(env=None):
+    return [" ".join(shape) for shape in probe_shapes(env)]
+
+
+def _run_probe(action, params, *, env=None):
+    """``run_probe``: run one declared read-only command, no shell.
+
+    A probe is the verifier's substitute for write authority: it can ask a
+    live machine a question and record the answer without being able to
+    change the answer. The refusal surface is therefore data (the declared
+    shapes) and the execution is ``osal.run`` -- an argv list through the
+    one OS-boundary module, never a shell.
+    """
+    argv = probe_argv(params.get("command"), env=env)
+    result = osal.run(argv, timeout=PROBE_TIMEOUT)
+    if result.reason == "not_found":
+        raise ExecutorError(f"probe program not found: {argv[0]}")
+    if result.reason == "os_error":
+        raise ExecutorError(f"probe could not start: {result.error}")
+    exit_code = 124 if result.reason == "timeout" else result.returncode
+    output = {
+        "argv": argv,
+        "exit_code": exit_code,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+    }
+    if result.reason == "timeout":
+        output["timed_out"] = True
+    return output
+
+
 def _read_value(action, params, state=None):
     """`read_value`: pull one field out of the current verified state."""
     if state is None:
@@ -293,6 +438,11 @@ def build_read_only_registry(state_provider=None, *,
         "no_action": _noop,
         "read_value": lambda a, p: _read_value(a, p, _state()),
         "observe": lambda a, p: _observe(a, p, _state()),
+        # A probe is an observation with an exit code, so it belongs with the
+        # read-only built-ins and must not wait for DRIVER_ALLOW_WRITE. The
+        # 2026-10-28 oversight audit found the vocabulary advertising it as
+        # read-only while the write gate refused it.
+        "run_probe": _run_probe,
     }, input_backend=input_backend)
     return registry
 

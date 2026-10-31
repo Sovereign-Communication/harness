@@ -19,7 +19,9 @@ import inspect
 import os
 import pathlib
 import re
+import sys
 import unittest
+from typing import Any, cast
 
 import driver_core
 from driver_core import osal
@@ -87,7 +89,8 @@ class OsBoundaryTests(unittest.TestCase):
             for node in ast.walk(tree):
                 for label, predicate in BANNED:
                     if predicate(node):
-                        findings.append(f"{name}:{node.lineno} {label}")
+                        findings.append(
+                            f"{name}:{getattr(node, 'lineno', 0)} {label}")
         self.assertEqual(findings, [],
                          "OS contact escaped the boundary: " + "; ".join(findings))
 
@@ -113,13 +116,13 @@ class OsBoundaryTests(unittest.TestCase):
         self.assertEqual(result.reason, "not_found")
 
     def test_a_non_zero_exit_is_an_answer_not_a_failure(self):
-        result = osal.run(["python", "-c", "import sys; sys.exit(3)"])
+        result = osal.run([sys.executable, "-c", "import sys; sys.exit(3)"])
         self.assertEqual(result.returncode, 3)
         self.assertFalse(result.ok)
         self.assertEqual(result.reason, "")
 
     def test_a_command_that_actually_runs_returns_its_output(self):
-        result = osal.run(["python", "-c", "print('hello')"])
+        result = osal.run([sys.executable, "-c", "print('hello')"])
         self.assertTrue(result.ok)
         self.assertIn("hello", result.stdout)
 
@@ -354,12 +357,15 @@ class AuditIsRequiredTests(unittest.TestCase):
             ["Driver", "Executor", "JevClient", "VisionExtractor"])
 
     def test_an_executor_cannot_be_built_without_a_chain(self):
+        # Deliberately omit the required ``audit`` argument; the cast keeps
+        # the static checker from demanding the very argument under test.
         with self.assertRaises(TypeError):
-            Executor(vocabulary=DEFAULT_VOCABULARY, registry={})
+            Executor(**cast(Any, {"vocabulary": DEFAULT_VOCABULARY,
+                                  "registry": {}}))
 
     def test_a_driver_cannot_be_built_without_a_chain(self):
         with self.assertRaises(TypeError):
-            Driver()
+            Driver(**cast(Any, {}))
 
     def test_none_is_refused_by_name(self):
         """Passing ``audit=None`` explicitly is the same mistake with more
