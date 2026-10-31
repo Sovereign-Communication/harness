@@ -240,6 +240,9 @@ class CliTests(unittest.TestCase):
         with self.assertRaisesRegex(AssessmentError, r"outside \[0, 1\]"):
             AspectJudgment(name="correctness", probabilities={
                 ">=90": 1.1, "85-89": 0.0, "<85": 0.0})
+        with self.assertRaisesRegex(AssessmentError, "not finite"):
+            AspectJudgment(name="correctness", probabilities={
+                ">=90": float("nan"), "85-89": 0.0, "<85": 1.0})
         with self.assertRaisesRegex(AssessmentError, "not one of the five aspects"):
             AspectJudgment(name="extra", probabilities={
                 ">=90": 1.0, "85-89": 0.0, "<85": 0.0})
@@ -364,7 +367,13 @@ class CliTests(unittest.TestCase):
             ">=90": 0.6, "85-89": float("nan"), "<85": 0.4}
         code, error = invoke(json.dumps(non_finite))
         self.assertEqual(code, 2)
-        self.assertIn("not finite", error["error"])
+        self.assertIn("non-finite JSON numbers", error["error"])
+
+        for number in ("NaN", "1e999"):
+            composer_nan = good[:-1] + ',"composer":{"metadata":' + number + '}}'
+            code, error = invoke(composer_nan)
+            self.assertEqual(code, 2)
+            self.assertIn("non-finite JSON numbers", error["error"])
 
         duplicate_base = json.dumps(self._payload())
         green = json.dumps(self._payload()["aspects"]["correctness"])

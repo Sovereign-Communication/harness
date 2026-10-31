@@ -353,7 +353,7 @@ def verdict_for_payload(payload: Dict[str, Any]) -> AssessmentVerdict:
 
 
 def parse_payload_json(raw: str) -> Any:
-    """Parse CLI assessment JSON without accepting ambiguous duplicate keys."""
+    """Parse CLI assessment JSON without ambiguous keys or non-finite numbers."""
     import json
 
     def reject_duplicate_keys(pairs: List[Any]) -> Dict[str, Any]:
@@ -364,7 +364,18 @@ def parse_payload_json(raw: str) -> Any:
             result[key] = value
         return result
 
-    return json.loads(raw, object_pairs_hook=reject_duplicate_keys)
+    def parse_finite_float(value: str) -> float:
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            raise AssessmentError("non-finite JSON numbers are not allowed")
+        return parsed
+
+    def reject_non_finite_constant(value: str) -> Any:
+        raise AssessmentError("non-finite JSON numbers are not allowed")
+
+    return json.loads(raw, object_pairs_hook=reject_duplicate_keys,
+                      parse_float=parse_finite_float,
+                      parse_constant=reject_non_finite_constant)
 
 
 def run_cli(argv=None) -> int:
