@@ -339,6 +339,42 @@ class CliTests(unittest.TestCase):
         with self.assertRaisesRegex(AssessmentError, "unknown payload field"):
             verdict_for_payload(dict(self._payload(), extra=True))
 
+    def test_public_assess_cli_refuses_malformed_files_without_mutating_input(self):
+        valid = json.dumps(self._payload())
+        correctness = json.dumps(self._payload()["aspects"]["correctness"])
+        duplicate_aspect = valid.replace(
+            '"correctness": ' + correctness,
+            '"correctness": ' + correctness + ', "correctness": ' + correctness,
+            1)
+        non_finite_composer = valid[:-1] + ',"composer":{"metadata":1e999}}'
+
+        cases = (
+            (duplicate_aspect, "duplicate JSON object keys"),
+            (non_finite_composer, "non-finite JSON numbers"),
+        )
+        with tempfile.TemporaryDirectory() as workdir:
+            for raw, expected_error in cases:
+                with self.subTest(expected_error=expected_error):
+                    path = os.path.join(workdir, "assessment.json")
+                    original = raw.encode("utf-8")
+                    with open(path, "wb") as handle:
+                        handle.write(original)
+
+                    out = io.StringIO()
+                    with mock.patch(
+                            "harness.cli.load_settings",
+                            return_value=SimpleNamespace()):
+                        with redirect_stdout(out):
+                            with self.assertRaises(SystemExit) as raised:
+                                cli.main(["assess", "--input", path])
+
+                    self.assertEqual(raised.exception.code, 2)
+                    error = json.loads(out.getvalue())
+                    self.assertFalse(error["ok"])
+                    self.assertIn(expected_error, error["error"])
+                    with open(path, "rb") as handle:
+                        self.assertEqual(handle.read(), original)
+
     def test_harness_cli_assessment_handler_reports_all_exit_classes(self):
         def invoke(payload_text, input_path="-"):
             out = io.StringIO()
