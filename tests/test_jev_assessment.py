@@ -264,7 +264,7 @@ class CliTests(unittest.TestCase):
             AspectJudgment(
                 "correctness",
                 probabilities={">=90": 1.0, "85-89": 0.0, "<85": 0.0},
-                relevant=1)
+                relevant=cast(Any, 1))
 
         payload = self._payload()
         payload["aspects"]["correctness"] = {
