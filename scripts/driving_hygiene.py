@@ -145,10 +145,10 @@ def _markdown_headings(text):
     for line_number, line in enumerate(text.splitlines(), 1):
         fence_match = re.match(r"^\s*(`{3,}|~{3,})", line)
         if fence_match:
-            marker = fence_match.group(1)[0]
+            marker = fence_match.group(1)
             if fence is None:
-                fence = marker
-            elif marker == fence:
+                fence = (marker[0], len(marker))
+            elif marker[0] == fence[0] and len(marker) >= fence[1]:
                 fence = None
             continue
         if fence is not None:

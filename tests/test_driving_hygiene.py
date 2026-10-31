@@ -79,6 +79,16 @@ class DrivingHygieneTests(unittest.TestCase):
             self.assertTrue(findings)
             self.assertTrue(all(f.check == "planning-structure" for f in findings))
 
+            valid.write_text(
+                "# Issue #42 - Example\n\n## Status\n\n"
+                "````markdown\n```\n## Fake verification\n```\n````\n",
+                encoding="utf-8",
+            )
+            findings = check_planning_structure(root)
+            self.assertTrue(any(
+                "at least two level-two sections" in finding.message
+                for finding in findings))
+
     def test_all_existing_issue_plan_documents_meet_the_structure_rule(self):
         root = Path(__file__).resolve().parents[1]
         self.assertEqual(check_planning_structure(root), [])
