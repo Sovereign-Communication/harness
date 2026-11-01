@@ -76,3 +76,7 @@
 - `docs/issue-plans/branch-cleanup-derived-2026-10-28.md`: the 67 merged-PR head branches staged with head SHAs + merged-PR numbers; re-derive, compare, delete at the lane's pace.
 
 - `docs/issue-plans/sweep-2026-10-31/` (oversight sweep delivery, 2026-10-31): harness-438.patch + harness-report.md (issue 438 draft), harness-439.patch + harness-439-report.md (issue 439 draft + issue 433 assessment). Drafts for lane adoption on lane/burndown; the lane's own on-branch implementations exist for both issues - see the relay comment on PR 442 for the reconciliation.
+
+CURRENT LANE INPUT (2026-10-31, supersedes PRIORITY PROMPT v3 where they conflict):
+- `docs/issue-plans/burndown-v4-mission.md` (mission, 3,663 chars, under the 4,000 cap) + `docs/issue-plans/burndown-v4-prompt.md` (full build-mode plan): CLEAN BURNDOWN v4 - all 80 open issues in surface-grouped batches B0-B13, Lucas Gate first (policy reference below), Jev v1, questions deferred to the session's final status comment, reserved items parked.
+- `docs/issue-plans/lucas-gate-policy-reference.md`: the lane-accessible Lucas Gate policy reference (Jev v1 summary, Lucas Gate v2 operating rules, locked averages, bias pass, decision-signal mode, escalation triggers). The personal profile itself stays owner-provisioned and unpublished.
