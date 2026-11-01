@@ -10,7 +10,7 @@ import unittest
 from driver_core.actions import DEFAULT_VOCABULARY
 from driver_core.audit import MemoryAuditLog
 from driver_core.budget import Budget
-from driver_core.config import load_settings
+from driver_core.config import ConfigError, load_settings
 from driver_core.driver import Driver
 from driver_core.ev import FakeJev, FakeTransport, action_answer, ok_response
 from driver_core.executor_registry import build_read_only_registry
@@ -83,6 +83,21 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(provisioning["variable"], "DRIVER_JEV_API_KEY")
         self.assertIn("DRIVER_JEV_API_KEY", provisioning["detail"])
         self.assertIn("docs/driver.md", provisioning["docs"])
+
+    def test_a_declared_blank_key_is_named_not_silently_keyless(self):
+        """Issue #438: a provisioning script that declares the variable
+        blank has made a mistake worth naming at settings load. Unset is
+        the supported keyless state; blank is a configuration fault."""
+        for value in ("", "   ", "\t"):
+            with self.subTest(value=repr(value)):
+                with self.assertRaises(ConfigError) as ctx:
+                    load_settings(env={"DRIVER_JEV_API_KEY": value})
+                self.assertIn("DRIVER_JEV_API_KEY", str(ctx.exception))
+                self.assertIn("blank", str(ctx.exception))
+        # Unset stays keyless and loadable, the documented default.
+        settings = load_settings(env={})
+        self.assertFalse(settings.keyed)
+        self.assertEqual(settings.jev_api_key, "")
 
     def test_a_keyed_headless_step_spends_and_verify_reports_it(self):
         """The headless path end to end: env key, real Jev client, spend.

@@ -272,6 +272,17 @@ def load_settings(env=None, **overrides):
     # ``.get(..., "")`` would silently collapse those two into one.
     token = validated_token(env[ENV_PREFIX + "TOKEN"], "DRIVER_TOKEN") \
         if ENV_PREFIX + "TOKEN" in env else ""
+    # The key gets the same presence rule as the token, for the same reason:
+    # an operator whose provisioning script declares DRIVER_JEV_API_KEY blank
+    # has made a mistake worth naming. Read with ``.get(..., "")`` it would
+    # silently collapse into "keyless", and the install would refuse every
+    # model-backed step for what looks like a product fault rather than a
+    # typo. Unset means keyless, and keyless is a supported state that health
+    # describes honestly -- see :meth:`Settings.key_provisioning`.
+    if KEY_ENV in env and not str(env[KEY_ENV]).strip():
+        raise ConfigError(
+            f"{KEY_ENV} was declared but is blank; either give it a real "
+            f"value or unset it to run keyless")
     settings = Settings(
         base_url=env.get(ENV_PREFIX + "BASE_URL", DEFAULT_BASE_URL).rstrip("/"),
         host=env.get(ENV_PREFIX + "HOST", DEFAULT_HOST),
