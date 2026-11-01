@@ -141,6 +141,46 @@ class ReadOnlyProbeTests(unittest.TestCase):
                 self.assertEqual(audit.read_all()[0]["action"], "run_probe")
                 self.assertTrue(audit.verify().ok)
 
+    def test_options_that_dispatch_an_external_program_are_refused(self):
+        """``--ext-diff`` and ``--textconv`` run configured external
+        drivers even under a read-only subcommand, so they are refused
+        before a process starts, like the pager options (#439)."""
+        commands = (
+            ["git", "diff", "--ext-diff"],
+            ["git", "diff", "--textconv"],
+            ["git", "show", "--textconv"],
+            ["git", "log", "-p", "--ext-diff"],
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                with mock.patch(
+                        "driver_core.executor_registry.osal.run") as run:
+                    result = self.executor.execute(
+                        "run_probe", {"command": command})
+                self.assertFalse(result.ok)
+                self.assertIn("external program", result.detail)
+                run.assert_not_called()
+        # The negations are the safe direction and stay allowed.
+        self.assertEqual(probe_argv(["git", "diff", "--no-textconv"]),
+                         ["git", "diff", "--no-textconv"])
+
+    def test_an_unwired_read_only_action_does_not_blame_the_write_switch(self):
+        """``read_dom`` has no executor in this build; its refusal is a
+        wiring matter, and must not name DRIVER_ALLOW_WRITE (#439)."""
+        read_dom = DEFAULT_VOCABULARY.resolve("read_dom")
+        executable, needs = executability(read_dom, self.registry)
+        self.assertFalse(executable)
+        self.assertTrue(needs)
+        self.assertNotIn("DRIVER_ALLOW_WRITE", " ".join(needs))
+        with self.assertRaises(ExecutorError) as ctx:
+            self.executor.execute("read_dom", {"selector": "#app"})
+        self.assertIn("not registered", str(ctx.exception))
+        self.assertNotIn("DRIVER_ALLOW_WRITE", str(ctx.exception))
+        # The write executors keep the note: it names their actual gate.
+        write_file = DEFAULT_VOCABULARY.resolve("write_file")
+        _, write_needs = executability(write_file, self.registry)
+        self.assertIn("DRIVER_ALLOW_WRITE", " ".join(write_needs))
+
     def test_read_only_git_subcommands_are_allowlisted_by_default(self):
         self.assertEqual(probe_argv(["git", "status", "--short"]),
                          ["git", "status", "--short"])

@@ -132,8 +132,10 @@ parser. The shape must be declared read-only before a process starts:
 
 Custom declarations match the full argv: include every argument the check
 needs, because caller-supplied trailing arguments are refused. Built in Git
-subcommands accept their arguments, except `--output` is refused because it
-writes a file. A probe's argv, exit code, stdout and stderr are written to the
+subcommands accept their arguments, except options that write a file
+(`--output`), launch an external pager (`--open-files-in-pager`, `-O`), or
+dispatch an external program (`--ext-diff`, `--textconv`) are refused. A
+probe's argv, exit code, stdout and stderr are written to the
 action record in the driver's audit chain; that record is the evidence. A
 non-zero exit is an answer, a missing program is a refusal, and a timeout is
 reported as exit code 124.

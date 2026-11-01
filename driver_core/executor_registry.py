@@ -188,8 +188,17 @@ def executability(action, registry):
     """
     needs = []
     if registry.get(action.executor) is None:
+        # The write-policy note explains a *write* refusal, so it is attached
+        # only when the missing executor is one ``DRIVER_ALLOW_WRITE`` would
+        # have registered. Attaching it to an unwired read-only action (an
+        # ``executability`` view of ``read_dom`` in a build without it) would
+        # name the wrong gate, and a refusal whose stated reason contradicts
+        # the action's class sends the operator to fix a switch that is not
+        # the problem (#439).
+        note = (registry.policy_note
+                if action.executor in WRITE_EXECUTORS else "")
         needs.append(f"executor {action.executor!r} is not registered."
-                     f"{registry.policy_note}")
+                     f"{note}")
     needs.extend(input_backend_needs(action, registry))
     return (not needs), needs
 
@@ -290,9 +299,13 @@ PROBE_PREFIXES = (
 #: ``osal.run`` as argv.
 PROBE_ENV = "DRIVER_PROBE_ALLOWLIST"
 
-#: Git options that write a file or dispatch an external command even under
-#: an otherwise read-only subcommand.
-PROBE_FORBIDDEN_OPTIONS = ("--output", "--open-files-in-pager", "-O")
+#: Git options that write a file, dispatch an external program, or force an
+#: external pager even under an otherwise read-only subcommand. ``--ext-diff``
+#: and ``--textconv`` run configured diff or text-conversion drivers, so a
+#: probe carrying either is an observation that can execute code the
+#: declaration never reviewed.
+PROBE_FORBIDDEN_OPTIONS = ("--output", "--open-files-in-pager", "-O",
+                           "--ext-diff", "--textconv")
 
 #: Bound on one probe. A read-only check that has not finished in thirty
 #: seconds is a check whose answer nobody is waiting for, and the action
@@ -364,8 +377,13 @@ def probe_argv(command, env=None):
             if option == "-O":
                 matches = token.startswith(option)
             if matches:
-                effect = ("writes a file" if option == "--output"
-                          else "can launch an external pager")
+                if option == "--output":
+                    effect = "writes a file"
+                elif option in ("--open-files-in-pager", "-O"):
+                    effect = "can launch an external pager"
+                else:
+                    effect = ("can dispatch an external program (a "
+                              "configured diff or text-conversion driver)")
                 raise ExecutorError(
                     f"probe option {token!r} {effect}; a read-only probe "
                     f"cannot use it")
