@@ -83,3 +83,5 @@ CURRENT LANE INPUT (2026-10-31, supersedes PRIORITY PROMPT v3 where they conflic
 
 LAPTOP CLEANUP PACKAGE (2026-11-01, owner-ordered in the tracking thread; runs alongside v4, does not supersede it):
 - `docs/issue-plans/laptop-cleanup-prompt-2026-11-01.md` (full plan) + `docs/issue-plans/laptop-cleanup-mission-2026-11-01.md` (mission, 3,047 chars): [FreeBuff laptop] cleanup + unify - census all local checkouts/branches/stashes and ALL temp locations (C:\tmp, C:\temp, %TEMP%, any scratch dir), preserve everything to GitHub with per-item proof lines, unify to one local branch (lane/burndown), purge only the proven set, unknowns held in a manifest. Report: CLEANUP-REPORT-2026-11-01.md in the working folder + summary on PR #442 / tracker #295.
+
+HOLD NOTE (2026-11-01, owner sequencing guard): the cleanup package's TEMP steps (Step 1 inventory; temp-location parts of Steps 2 and 5) are HELD - temp locations machine-wide have one owning pass (the BigEnergyCo unified temp pass). The package's per-repo work (preserve, prove, unify, local census, purge of the proven local set) proceeds independently. Guard also posted on PR #442.
