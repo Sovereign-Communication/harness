@@ -1,4 +1,5 @@
 """Unit tests for task-to-model routing table and OpenRouter floor price controls (#PR-Cost-1)."""
+import json
 import unittest
 
 from harness.chat import chat
@@ -139,6 +140,37 @@ class RoutingTableTests(unittest.TestCase):
         self.assertEqual(unlisted_tier_fallbacks(), {})
         self.assertEqual(classify_model_tier("unknown-vendor/mystery-coder-7b"), TIER_1)
         self.assertIn("unknown-vendor/mystery-coder-7b", unlisted_tier_fallbacks())
+
+    def test_shipped_tier_snapshot_shape_is_deterministic(self):
+        """The committed artifact parses and carries a valid timestamp (#446).
+
+        Currency is not asserted here - that is the scheduled rankings job's
+        data check, and comparing against the wall clock inside the hermetic
+        suite is what made every head red on 2026-11-01. This pins the shape
+        and the timestamp's validity so a malformed or timestamp-less
+        snapshot fails immediately instead of only when the window expires.
+        """
+        from datetime import datetime
+        from harness.routing_table import TIERS_SNAPSHOT_PATH, load_tier_snapshot
+
+        with open(TIERS_SNAPSHOT_PATH, encoding="utf-8") as fh:
+            raw = json.load(fh)
+        snap = load_tier_snapshot()
+        self.assertEqual(snap["source"], "snapshot")
+        self.assertEqual(snap["schema"], 1)
+        captured = snap["captured_at"]
+        self.assertTrue(captured, "captured_at is empty")
+        parsed = datetime.fromisoformat(
+            captured[:-1] + "+00:00" if captured.endswith("Z") else captured)
+        self.assertIsNotNone(parsed.tzinfo)
+        self.assertGreater(int(snap["max_age_days"]), 0)
+        for tier in ("T0", "T1", "T2", "T3"):
+            self.assertTrue(snap["tiers"][tier], f"{tier} has no models")
+        self.assertTrue(raw.get("price_table"), "price_table is empty")
+        for model_id, entry in raw["price_table"].items():
+            self.assertIsInstance(model_id, str)
+            self.assertGreaterEqual(float(entry["prompt_per_token"]), 0.0)
+            self.assertGreaterEqual(float(entry["completion_per_token"]), 0.0)
 
     def test_task_class_routing_and_reversible_trial_mode(self):
         from harness.routing_table import TIER_MODELS, resolve_task_class

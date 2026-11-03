@@ -22,6 +22,7 @@ import os
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime, timezone
 from unittest import mock
 
 from harness.cli_parser import build_parser
@@ -219,14 +220,36 @@ class EconomicsReportAndExportTests(unittest.TestCase):
     """EV-5 CLI and site-export --economics surfaces."""
 
     def test_check_fresh_emits_tier_snapshot_freshness(self):
+        """The check-fresh face emits the freshness payload for a fresh snapshot.
+
+        #446: this assertion used to read the shipped snapshot's wall-clock
+        age, so the hermetic suite went red the day the committed artifact
+        aged out (2026-11-01) on every head, main included. The contract under
+        test is the CLI wiring: payload shape plus the exit-on-stale path. A
+        fixture snapshot captured now is pinned here, so the test cannot time
+        bomb. Shipped-data currency belongs to the scheduled rankings
+        workflow; tests/test_routing_table.py pins the committed artifact's
+        shape without comparing it to the clock.
+        """
         from harness.cli import _cmd_economics
         opts = build_parser().parse_args(["economics", "--check-fresh", "--json"])
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            _cmd_economics(opts, mock.Mock())
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "tiers.snapshot.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({
+                    "schema": 1,
+                    "captured_at": datetime.now(timezone.utc).strftime(
+                        "%Y-%m-%dT%H:%M:%SZ"),
+                    "max_age_days": 14,
+                    "tiers": {},
+                }, fh)
+            buf = io.StringIO()
+            with mock.patch("harness.routing_table.TIERS_SNAPSHOT_PATH", path),                     redirect_stdout(buf):
+                _cmd_economics(opts, mock.Mock())
         payload = json.loads(buf.getvalue())
         self.assertTrue(payload["ok"])
         self.assertIn("age_days", payload)
+        self.assertLess(payload["age_days"], 1.0)
 
     def test_report_and_propose_emit_full_economics_payload(self):
         from harness.cli import _cmd_economics
