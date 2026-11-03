@@ -187,6 +187,7 @@ These credentials are separate:
 |---|---|
 | Jev / System One | Optional for workflows that use Jev. Precedence: `HARNESS_JEV_KEY` in the environment, `jev_api_key` in `config.json`, `~/.config/scmorc/jev.env`, `$HARNESS_CONFIG_DIR/jev.env`, then `TYPESAFE_API_KEY` or `JEV_API_KEY` in the environment. |
 | Direct Fireworks lane | Only needed when selected. Key file order: `~/.config/scmorc/fireworks.env`, then `$HARNESS_CONFIG_DIR/fireworks.env`, then `FIREWORKS_API_KEY` in the environment. |
+| Direct Meta (Muse) lane | Only needed when selected (`HARNESS_USE_META=true` or `HARNESS_MODEL_PRESET=muse`). Key file order: `~/.config/scmorc/meta.env`, then `$HARNESS_CONFIG_DIR/meta.env`, then `META_API_KEY` (or `MUSE_API_KEY`) in the environment. Meta calls are capped by the local `HARNESS_META_BUDGET_USD` budget, which defaults to 0 (every Meta call refused) until set. |
 | Web / desktop UI | `harness serve --open` and `harness desktop` use `--auth-token`, then `HARNESS_UI_AUTH_TOKEN`, then a generated and reused `$HARNESS_CONFIG_DIR/desktop_token`. This token protects the local UI/API; it is not a model key. |
 | Local MCP stdio | No separate token by default; the MCP host process is the trust boundary. `HARNESS_MCP_AUTH_TOKEN` / `mcp_auth_token` can add a shared token. File edits still require allowed roots and write/verify authorization; see [docs/mcp.md](https://github.com/Sovereign-Communication/harness/blob/main/docs/mcp.md). |
 | Media adapter | Its service-specific token comes from `$HARNESS_CONFIG_DIR/media.json`, then `MEDIA_TOKEN`; `MEDIA_CONFIG_PATH` relocates that file. |
@@ -302,6 +303,16 @@ expecting the run to start.
 ## CLI
 
 ```bash
+# Muse-only mode: pin every model surface to Meta's Muse models on the
+# direct Meta provider (no OpenRouter), then ask a question end to end.
+# HARNESS_META_BUDGET_USD caps Meta spend locally; it defaults to 0, which
+# refuses every Meta call until set.
+HARNESS_MODEL_PRESET=muse HARNESS_META_BUDGET_USD=1.00 \
+  harness ask "What does the ledger's hash chain guarantee?"
+# (HARNESS_USE_META=true is the same switch without the preset name. With
+# the preset on, a non-Muse model named anywhere -- a pool override, a
+# trial model -- fails settings load instead of routing elsewhere.)
+
 # Verification: rotating panel + structured judge verdict (agreement/confidence/defer)
 harness verify --prompt-file question.txt --out verdict.json
 

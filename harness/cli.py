@@ -187,6 +187,12 @@ def _run_claims_verify(settings, *, prompt, task_id=None, max_tokens=None,
     Interfaces only prepare inputs and present results. Panel ordering
     (catalog seed, capability sort, degrade-to-given-order) is the panel
     lane's own job."""
+    # ensure_task_id: a CLI --task-id is a locally created run label (the
+    # local claims-verify runner passes stable names for its manifests), so
+    # the run self-offers it -- the batch/apply treatment for locally
+    # created tasks -- instead of refusing a local run whose label was
+    # never put through the consent offer flow. MCP never comes through
+    # this seam and keeps the fail-closed require for external IDs.
     return _service_verify(
         settings, prompt=prompt, task_id=task_id,
         max_cost=max_cost, judge=judge, reasoning_effort=reasoning_effort,
@@ -194,7 +200,7 @@ def _run_claims_verify(settings, *, prompt, task_id=None, max_tokens=None,
         convergence_model=convergence_model,
         specialist_pool=specialist_pool,
         reassurance_claims=reassurance_claims,
-        cancel_check=cancel_check)
+        cancel_check=cancel_check, ensure_task_id=True)
 
 
 def _run_meta(settings, gov):
