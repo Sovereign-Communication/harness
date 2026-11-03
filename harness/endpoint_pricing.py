@@ -65,6 +65,56 @@ LANE_WORKLOAD_SHAPES = {
 }
 
 
+def _endpoint_price(value, name):
+    if isinstance(value, bool):
+        raise HarnessError(f"{name} must be a finite, non-negative price")
+    return finite_number(value, name, 0.0)
+
+
+def _override_threshold(value, name):
+    if isinstance(value, bool):
+        raise HarnessError(f"{name} must be a non-negative integer")
+    number = finite_number(value, name, 0.0)
+    if not number.is_integer():
+        raise HarnessError(f"{name} must be a non-negative integer")
+    return int(number)
+
+
+@dataclass(frozen=True)
+class _EndpointOverride:
+    min_prompt_tokens: int
+    prompt: float
+    completion: float
+
+    def to_dict(self):
+        return {
+            "min_prompt_tokens": self.min_prompt_tokens,
+            "prompt": self.prompt,
+            "completion": self.completion,
+        }
+
+
+def _normalize_overrides(overrides):
+    if overrides is None:
+        return ()
+    if not isinstance(overrides, (list, tuple)):
+        raise HarnessError("endpoint pricing.overrides must be a list")
+    result = []
+    required = {"min_prompt_tokens", "prompt", "completion"}
+    for index, row in enumerate(overrides):
+        name = f"endpoint pricing.overrides[{index}]"
+        if not isinstance(row, dict) or set(row) != required:
+            raise HarnessError(
+                f"{name} must contain min_prompt_tokens, prompt, and completion")
+        result.append(_EndpointOverride(
+            min_prompt_tokens=_override_threshold(
+                row["min_prompt_tokens"], name + ".min_prompt_tokens"),
+            prompt=_endpoint_price(row["prompt"], name + ".prompt"),
+            completion=_endpoint_price(row["completion"], name + ".completion"),
+        ))
+    return tuple(result)
+
+
 @dataclass(frozen=True)
 class EndpointPrice:
     """One provider's offer for one model, exactly as published."""
@@ -100,8 +150,11 @@ class EndpointPrice:
              finite_number(self.completion, "endpoint pricing.completion"))
         set_(self, "discount",
              finite_number(self.discount, "endpoint pricing.discount", 0.0, 1.0))
-        set_(self, "overrides", tuple(self.overrides or ()))
-        set_(self, "input_cache_read", optional_float(self.input_cache_read))
+        set_(self, "overrides", _normalize_overrides(self.overrides))
+        cache_read = self.input_cache_read
+        set_(self, "input_cache_read",
+             None if cache_read is None else _endpoint_price(
+                 cache_read, "endpoint pricing.input_cache_read"))
         set_(self, "context_length", int(self.context_length or 0))
         set_(self, "max_completion_tokens", int(self.max_completion_tokens or 0))
         set_(self, "uptime_1d", optional_float(self.uptime_1d))
@@ -122,14 +175,10 @@ class EndpointPrice:
         """
         rate_in, rate_out = self.prompt, self.completion
         for override in sorted(self.overrides,
-                               key=lambda o: int(o.get("min_prompt_tokens", 0))):
-            if input_tokens >= int(override.get("min_prompt_tokens", 0)):
-                rate_in = optional_float(override.get("prompt"))
-                rate_out = optional_float(override.get("completion"))
-        if rate_in is None:
-            rate_in = self.prompt
-        if rate_out is None:
-            rate_out = self.completion
+                               key=lambda o: o.min_prompt_tokens):
+            if input_tokens >= override.min_prompt_tokens:
+                rate_in = override.prompt
+                rate_out = override.completion
         if cache_eligible and self.input_cache_read is not None:
             rate_in = self.input_cache_read
         if apply_discount and semantics == DISCOUNT_IS_MULTIPLIER and self.discount:
@@ -166,7 +215,8 @@ class EndpointPrice:
             "provider": self.provider_name, "tag": self.tag,
             "name": self.name,
             "prompt_per_token": self.prompt, "completion_per_token": self.completion,
-            "discount": self.discount, "overrides": list(self.overrides),
+            "discount": self.discount,
+            "overrides": [o.to_dict() for o in self.overrides],
             "input_cache_read": self.input_cache_read,
             "context_length": self.context_length,
             "max_completion_tokens": self.max_completion_tokens,
@@ -225,15 +275,10 @@ def _parse_endpoints(model_id, payload):
             continue
         pricing = raw.get("pricing")
         pricing = pricing if isinstance(pricing, dict) else {}
-        overrides = []
-        for override in pricing.get("overrides") or []:
-            if isinstance(override, dict):
-                overrides.append({
-                    "min_prompt_tokens": int(
-                        optional_float(override.get("min_prompt_tokens")) or 0),
-                    "prompt": override.get("prompt"),
-                    "completion": override.get("completion"),
-                })
+        overrides = pricing.get("overrides")
+        if overrides is not None and not isinstance(overrides, (list, tuple)):
+            raise HarnessError(
+                f"endpoints feed for {model_id} has malformed price overrides")
         parsed.append(EndpointPrice(
             raw.get("provider_name") or raw.get("name") or "unknown",
             pricing.get("prompt", 0), pricing.get("completion", 0),

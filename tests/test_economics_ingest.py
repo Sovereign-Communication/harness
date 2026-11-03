@@ -91,6 +91,30 @@ class FetchEndpointsTests(unittest.TestCase):
         self.assertAlmostEqual(above[0], 0.000004)
         self.assertAlmostEqual(above[1], 0.000015)
 
+    def test_rejects_invalid_optional_cache_and_override_feed_values(self):
+        invalid_fields = [
+            {"input_cache_read": "-0.00001"},
+            {"input_cache_read": "NaN"},
+            {"input_cache_read": "Infinity"},
+            {"overrides": [{"min_prompt_tokens": 10,
+                             "prompt": "-0.00001", "completion": "0.00001"}]},
+            {"overrides": [{"min_prompt_tokens": 10,
+                             "prompt": "0.00001", "completion": "NaN"}]},
+            {"overrides": [{"min_prompt_tokens": -1,
+                             "prompt": "0.00001", "completion": "0.00001"}]},
+            {"overrides": [{"min_prompt_tokens": 10.5,
+                             "prompt": "0.00001", "completion": "0.00001"}]},
+            {"overrides": [None]},
+            {"overrides": "malformed"},
+        ]
+        for fields in invalid_fields:
+            with self.subTest(fields=fields):
+                body = _endpoint_body(
+                    "acme/model", [_offer("Bad", 0.00001, 0.00002, **fields)])
+                with self.assertRaises(HarnessError):
+                    fetch_endpoints(FakeEndpoints({"acme/model": body}),
+                                    "k", "acme/model")
+
     def test_discount_only_applies_under_the_multiplier_reading(self):
         endpoint = EndpointPrice("P", 2e-6, 10e-6, discount=0.5)
         as_listed = endpoint.rates_for(100, True, DISCOUNT_LISTED_IS_EFFECTIVE)

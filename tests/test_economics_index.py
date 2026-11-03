@@ -61,6 +61,52 @@ class EffectivePriceTests(unittest.TestCase):
         stepped = effective_price(me, input_tokens=12000, output_tokens=500)
         self.assertAlmostEqual(stepped.usd, 12000 * 3e-6 + 500 * 4e-6, places=9)
 
+    def test_zero_cache_and_override_prices_remain_valid(self):
+        ep = EndpointPrice(
+            "FreeProv", prompt=0.0, completion=0.0, input_cache_read=0.0,
+            overrides=({"min_prompt_tokens": 0, "prompt": 0.0,
+                        "completion": 0.0},),
+        )
+        result = effective_price(
+            ModelEndpoints("acme/free", (ep,)), input_tokens=100,
+            output_tokens=50, cache_eligible=True,
+        )
+        self.assertEqual(result.usd, 0.0)
+        self.assertEqual(result.endpoint.to_dict()["overrides"], [
+            {"min_prompt_tokens": 0, "prompt": 0.0, "completion": 0.0}])
+
+    def test_rejects_invalid_cache_and_override_prices(self):
+        for value in (-1e-8, float("nan"), float("inf"), "not-a-price", True):
+            with self.subTest(cache_read=value):
+                with self.assertRaises(HarnessError):
+                    EndpointPrice("BadCache", prompt=1e-6, completion=1e-6,
+                                  input_cache_read=value)
+
+        invalid_overrides = [
+            [{"min_prompt_tokens": 1, "prompt": -1e-8,
+              "completion": 1e-6}],
+            [{"min_prompt_tokens": 1, "prompt": 1e-6,
+              "completion": float("nan")}],
+            [{"min_prompt_tokens": 1, "prompt": float("inf"),
+              "completion": 1e-6}],
+            [{"min_prompt_tokens": -1, "prompt": 1e-6,
+              "completion": 1e-6}],
+            [{"min_prompt_tokens": 1.5, "prompt": 1e-6,
+              "completion": 1e-6}],
+            [{"min_prompt_tokens": True, "prompt": 1e-6,
+              "completion": 1e-6}],
+            [{"min_prompt_tokens": 1, "prompt": 1e-6}],
+            [{"min_prompt_tokens": 1, "prompt": 1e-6,
+              "completion": 1e-6, "unexpected": 0}],
+            [None],
+            "malformed",
+        ]
+        for overrides in invalid_overrides:
+            with self.subTest(overrides=overrides):
+                with self.assertRaises(HarnessError):
+                    EndpointPrice("BadOverride", prompt=1e-6,
+                                  completion=1e-6, overrides=overrides)
+
     def test_uptime_gate_filters_unhealthy_endpoints(self):
         ep_down = EndpointPrice("DownProv", prompt=1e-8, completion=1e-8, uptime_1d=0.50)
         ep_up = EndpointPrice("UpProv", prompt=1e-6, completion=1e-6, uptime_1d=0.99)
