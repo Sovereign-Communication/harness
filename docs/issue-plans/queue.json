@@ -1,10 +1,10 @@
 {
   "schema": "harness-issue-queue-v1",
   "source": "docs/jev-roadmap.md#issue295-implementation-plan + GitHub open issues at generation",
-  "generated": "2026-10-26",
+  "generated": "2026-10-27",
   "batch": 1,
-  "notes": "Derived execution view; the canon register remains authoritative. The live inventory had 58 open issues before #287 final disposition; six tracking issues (#377-#382, opened 2026-10-25) are appended, for 64 queue rows. Seven queue rows are complete: #330 0737e62, #347 4d9fea4, #327 8c4324a, #278 4155b68, #276 f54f8aa, #333 919d2ac, and #287 receipt merge 82f9381; #339 76a95f6 and #331 52f51b9 landed outside this queue. Before final receipt PR #402, main is at 82f9381; main CI run 40291446055 passed all 13 jobs and main site run 40291446088 passed build-and-test. After PR #402 closed #287, 57 issues remained open; the queue then had 7 complete and 57 queued rows. #306 is explicitly blocked: the one-shot Fireworks probe returned HTTP 200 without the required reply, and its marker/receipt prohibit another call; the named unblocker is an operator decision on a non-repeating remedy or another already-existing valid receipt. See the gated status comment on issue #306. Receipts: docs/issue-plans/276.md, docs/issue-plans/287.md, docs/issue-plans/331.md, docs/issue-plans/333.md. The #306 plan receipt is recorded in docs/issue-plans/306.md and its existing provider receipt remains at audits/self/dogfood/FIREWORKS_VERIFY_RECEIPT.json. #277 remains reserved for the final cross-surface verification round under the current burndown directive. PR #403 then merged #279 as 707c01726d077844a69041b8a6ef3699029ac93b; PR-head CI 40313371689 and post-merge main CI 40314362212 both passed 13/13 checks, including D12 and all five hermetic suites. The queue now has 8 complete and 56 queued rows; GitHub reports 56 open issues. Receipt: docs/issue-plans/279.md. PR #405 merged #282 at ef21e2323f050e9c6c9f50bbc88492e8489849d3; PR-head CI 40347408727 passed all 14 checks and post-merge main CI 40351113572 passed all 14 jobs. The queue now has 9 complete and 55 queued rows; GitHub reports 55 open issues. Receipt: docs/issue-plans/282.md. PR #406 merged at 84e646e76abb5ed883ed8accd10d3ea27bc2617d; post-merge main CI 40363250338 passed all 14 jobs and site workflow 40363250314 passed with deploy skipped because CF_API_TOKEN is absent. VIS issue #407 was filed; the queue has 65 rows: 9 complete, 55 queued, 1 blocked; GitHub reports 56 open issues. #407 is queued but implementation is blocked on the documented revocation-versus-aggregate-only ambiguity. The public results source is updated on main; no public deployment is claimed. Receipt: docs/issue-plans/407.md.",
-  "open_issue_count": 56,
+  "notes": "Derived execution view; the canon register remains authoritative. The live inventory had 58 open issues before #287 final disposition; six tracking issues (#377-#382, opened 2026-10-25) are appended, for 64 queue rows. Seven queue rows are complete: #330 0737e62, #347 4d9fea4, #327 8c4324a, #278 4155b68, #276 f54f8aa, #333 919d2ac, and #287 receipt merge 82f9381; #339 76a95f6 and #331 52f51b9 landed outside this queue. Before final receipt PR #402, main is at 82f9381; main CI run 40291446055 passed all 13 jobs and main site run 40291446088 passed build-and-test. After PR #402 closed #287, 57 issues remained open; the queue then had 7 complete and 57 queued rows. #306 is explicitly blocked: the one-shot Fireworks probe returned HTTP 200 without the required reply, and its marker/receipt prohibit another call; the named unblocker is an operator decision on a non-repeating remedy or another already-existing valid receipt. See the gated status comment on issue #306. Receipts: docs/issue-plans/276.md, docs/issue-plans/287.md, docs/issue-plans/331.md, docs/issue-plans/333.md. The #306 plan receipt is recorded in docs/issue-plans/306.md and its existing provider receipt remains at audits/self/dogfood/FIREWORKS_VERIFY_RECEIPT.json. #277 remains reserved for the final cross-surface verification round under the current burndown directive. PR #403 then merged #279 as 707c01726d077844a69041b8a6ef3699029ac93b; PR-head CI 40313371689 and post-merge main CI 40314362212 both passed 13/13 checks, including D12 and all five hermetic suites. The queue now has 8 complete and 56 queued rows; GitHub reports 56 open issues. Receipt: docs/issue-plans/279.md. PR #405 merged #282 at ef21e2323f050e9c6c9f50bbc88492e8489849d3; PR-head CI 40347408727 passed all 14 checks and post-merge main CI 40351113572 passed all 14 jobs. The queue now has 9 complete and 55 queued rows; GitHub reports 55 open issues. Receipt: docs/issue-plans/282.md. PR #406 merged at 84e646e76abb5ed883ed8accd10d3ea27bc2617d; post-merge main CI 40363250338 passed all 14 jobs and site workflow 40363250314 passed with deploy skipped because CF_API_TOKEN is absent. VIS issue #407 was filed; the queue has 65 rows: 9 complete, 55 queued, 1 blocked; GitHub reports 56 open issues. #407 is queued but implementation is blocked on the documented revocation-versus-aggregate-only ambiguity. The public results source is updated on main; no public deployment is claimed. Receipt: docs/issue-plans/407.md. Current reconciliation 2026-10-27 at origin/main 4ccee9927b44df21c714de47c542376882529372: GitHub has 63 open issues and 0 open PRs. PR #411 merged #288; issues #412-#419 are added. #347/#278/#276 are closed, making #290 the next eligible Wave 1 item; #277 remains reserved for final closeout. The latest #295 tracker comment is the older 56-open/65-row snapshot after PR #409. #306 remains blocked; #407 remains queued with its documented implementation ambiguity.",
+  "open_issue_count": 63,
   "issues": [
     {
       "issue": 347,
@@ -202,7 +202,7 @@
         276
       ],
       "acceptance": "Document checker/baseline; grandfather untouched errors, fail deliberate new error on changed code.",
-      "status": "queued"
+      "status": "complete"
     },
     {
       "issue": 289,
@@ -224,7 +224,7 @@
         278,
         276
       ],
-      "acceptance": "Effective-settings, environment failures, unknown usage and real-defect distinctions linked from contributor/audit docs.",
+      "acceptance": "For bare-python gates, S5 ruff, R13 hermetic leaks, and D12 staleness, give the symptom, likely environment cause, fix, and one distinguishing check with expected outputs in env-broken and code-broken cases; use jev_disabled/config.py:1031 as the worked example; link from contributor/audit docs so a fresh lane triages a red hermetic leg unaided.",
       "status": "queued"
     },
     {
@@ -646,6 +646,70 @@
       "owner": "Visibility site",
       "prerequisites": [],
       "acceptance": "Separate public site with explicit opt-in, aggregate-only receipt-backed metrics, installation links, privacy tests, and verified deployment; resolve revocation semantics before implementation.",
+      "status": "queued"
+    },
+    {
+      "issue": 412,
+      "title": "[gui] Verify first-use auth handoff live UX (audit: OPEN)",
+      "owner": "GUI first use",
+      "prerequisites": [],
+      "acceptance": "Record HTTP codes/screenshots for fresh-profile auth, empty/wrong code feedback, pairing, recovery after stop, and serve --open reuse; no stranded browser user.",
+      "status": "queued"
+    },
+    {
+      "issue": 413,
+      "title": "[driver] Verify loopback-browser round-trip end to end (audit: NOT VERIFIED)",
+      "owner": "Loopback browser driver",
+      "prerequisites": [],
+      "acceptance": "Record authenticated health/vocabulary and one read_dom/click round-trip; confirm driver identity 8791 and loopback-only binding.",
+      "status": "queued"
+    },
+    {
+      "issue": 414,
+      "title": "[mcp] Verify installed MCP runtime identity via real-client check (audit: NOT VERIFIED)",
+      "owner": "MCP runtime",
+      "prerequisites": [],
+      "acceptance": "From a real client, record initialize/tools-list and exact count, confirm ledger_status, and record one read-only call.",
+      "status": "queued"
+    },
+    {
+      "issue": 415,
+      "title": "[gui] Live model/Jev semantic approvals via GUI (audit: NOT RUN)",
+      "owner": "GUI model approvals",
+      "prerequisites": [],
+      "acceptance": "Run one GUI Jev semantic approval; record model, spend, verdict, and bounded spend without repeating paid attestation.",
+      "status": "queued"
+    },
+    {
+      "issue": 416,
+      "title": "[docs] GUI first-use acceptance doc + serve/auth doc corrections",
+      "owner": "GUI docs",
+      "prerequisites": [],
+      "acceptance": "Publish and verify one first-use acceptance doc; correct the default port to 8765 and document authenticated /api/status 200 vs unauthenticated 401.",
+      "status": "queued"
+    },
+    {
+      "issue": 417,
+      "title": "[driver-core] Verify must identify which audit store/chain it verified",
+      "owner": "Driver-core audit",
+      "prerequisites": [],
+      "acceptance": "Verification names the store path and chain; empty-CWD output cannot imply Harness evidence; document the distinction.",
+      "status": "queued"
+    },
+    {
+      "issue": 418,
+      "title": "[desktop] Preserve and recover long-running requests after restarts",
+      "owner": "Desktop request recovery",
+      "prerequisites": [],
+      "acceptance": "Persist stable request ID, privacy-conscious prompt reference, current state/timestamps, result/error, checkpoint, and retention across restarts; on startup/reconnect list recent requests and classify running/interrupted/completed/failed/unknown-stale. A focused process-termination test during a running request must recover an honest state. Offer valid-checkpoint resume or preserved-request restart; refused/no-evidence/zero-step or stale-consent checkpoints are not resumable, preserve the original prompt, and require fresh consent before dispatch. Reattach/resume/restart must not duplicate calls, spend, or side effects. Expose result/error/checkpoint through UI/API after restart with secrets redacted and retention documented.",
+      "status": "queued"
+    },
+    {
+      "issue": 419,
+      "title": "[desktop] Separate local server health from backend and request status",
+      "owner": "Desktop/backend status",
+      "prerequisites": [],
+      "acceptance": "Focused test keeps local API healthy while backend is unreachable and a saved checkpoint claims running although its candidate was refused and execution never started; show local/API, backend, and request states separately and label unconfirmed requests unknown/stale (never infer completed/failed/cancelled). Show last successful backend check and last confirmed checkpoint time with an actionable error; preserve request ID/original prompt and reconcile on recovery without duplicate submission/spend. Provide copyable endpoint/timestamp diagnostics with credentials redacted; mark trace/cost coverage partial when raw events are unavailable.",
       "status": "queued"
     }
   ]

@@ -58,6 +58,17 @@ no public update is claimed. The inventory remains 65 queue rows, 9 complete,
 its one-shot evidence and named operator-owned unblocker in [`306.md`](306.md).
 The #295 tracker comment records the same counts and deployment status.
 
+### Current reconciliation - 2026-10-27 (origin/main `4ccee99`)
+
+The live GitHub listing has **63 open issues** and **0 open PRs**. PR #411
+merged #288 at `4ccee99`; #347, #278, and #276 are closed, so #290 is the first
+eligible item in the remaining Wave 1 order. #277 remains open and reserved for
+final cross-surface closeout. Issues #412-#419, filed after the tracker snapshot,
+are now represented in the roadmap register and queue. The queue is refreshed to
+73 rows: 10 complete, 62 queued, 1 blocked. The latest #295 tracker comment
+still reports the earlier 56-open / 65-row snapshot after PR #409; no tracker
+comment, issue, PR, or remote state was changed in this reconciliation.
+
 ### Closing verification - #277 (reserved for last)
 
 [#277](https://github.com/Sovereign-Communication/harness/issues/277) remains

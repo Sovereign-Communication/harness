@@ -56,27 +56,30 @@ from the installed local environment, so #282's "identify the actual runtime"
 step currently resolves to the loopback browser path only. That is an access
 limit, not a passing GUI journey.
 
-### One next slice: #347
+### One next slice: #290
 
-Fix config-loader disabling/credential-override precedence in the existing
-config and public CLI test owners. Preserve JevEvaluator's correct explicit
-disable enforcement. Explicit disabling must not restore ambient credentials
-or dispatch a provider call; distinguish omitted from deliberately cleared
-credentials. Heuristic previews stay degraded, cannot be Jev-confirmed and
-cannot authorize execution. No research rewrite, refactor or UI feature belongs
-in this slice.
+Write the docs-only triage runbook with symptoms, likely environment causes,
+fixes, and a distinguishing check plus expected outputs for both env-broken and
+code-broken cases. Cover bare-`python` gate failures, S5 ruff resolution, R13
+hermetic leaks, and D12 baseline staleness. Use `jev_disabled` in
+`config.py:1031` as the worked example and link the runbook from contributor
+and audit docs so a fresh lane can triage a red hermetic leg unaided. Its
+prerequisites #347, #278, and #276 are closed (PRs #365, #367, and #369).
 
-This preparation precedes old Wave0 measurement because the recorded offline
-fixture attempted ambient-key dispatch. #327/#278 then make invocation
-trustworthy; #276/#331 are now complete, so #277's prerequisites are satisfied
-and #277 is the next chain item.
+Live reconciliation on 2026-10-27 at `origin/main` `4ccee99`: #290 is the first
+eligible remaining Wave 1 item. #277 remains open and reserved for the final
+cross-surface closeout under #295. PR #411 closed #288; the live GitHub listing
+has 63 open issues and zero open PRs. The latest #295 tracker comment still
+reflects the earlier 56-issue / 65-row snapshot, so the derived queue below is
+refreshed from the live issue set.
 
 ### Dependency and acceptance register
 
 Each row is a bounded packet, not permission for unbounded work. Dependencies
-are actual interface/merge prerequisites. The chosen #347-first order is a
-verification preparation rule, not an artificial dependency of unrelated
-features; independent packets may be prepared without waiting for config code.
+are actual interface/merge prerequisites. The historical #347-first
+verification preparation is complete; #290 is now the next eligible Wave 1
+packet. Independent packets may be prepared without waiting for unrelated
+features.
 Only one phase PR is active for landing and
 one merge occurs at a time. Every row inherits G0-G4 below.
 
@@ -111,7 +114,7 @@ one merge occurs at a time. Every row inherits G0-G4 below.
 | [#286](https://github.com/Sovereign-Communication/harness/issues/286) | MCP observability | none | Secret-scanned file logs, zero stdout contamination, additive-only schemas and truthful outcomes. |
 | [#335](https://github.com/Sovereign-Communication/harness/issues/335) | MCP annotations | none | Classify actual read/mutation/destructive effects, including ledger/config effects; descriptions and annotations agree. |
 | [#279](https://github.com/Sovereign-Communication/harness/issues/279) | Doctor | #278,#347 | Tool/key-presence/DNS/driver/GUI states with remediation, no secrets; distinguish local from separately budgeted live checks. |
-| [#290](https://github.com/Sovereign-Communication/harness/issues/290) | Triage runbook | #347,#278,#276 | Effective-settings, environment failures, unknown usage and real-defect distinctions linked from contributor/audit docs. |
+| [#290](https://github.com/Sovereign-Communication/harness/issues/290) | Triage runbook | #347,#278,#276 | For bare-python gates, S5 ruff, R13 hermetic leaks, and D12 staleness, give the symptom, likely environment cause, fix, and one distinguishing check with expected outputs in env-broken and code-broken cases; use jev_disabled/config.py:1031 as the worked example; link from contributor/audit docs so a fresh lane triages a red hermetic leg unaided. |
 | [#328](https://github.com/Sovereign-Communication/harness/issues/328) | CLI version | none | Standard version surface returns package version successfully; bad usage remains nonzero. |
 | [#329](https://github.com/Sovereign-Communication/harness/issues/329) | CLI help/flags | none | Correct desktop usage and actual out/quiet/events/no-color behavior; no parsed-but-inert flags. |
 | [#293](https://github.com/Sovereign-Communication/harness/issues/293) | Edge coverage | #276 | Map six historic lines to current source; execute or disposition with traced evidence; no shipped lifecycle replay. |
@@ -143,6 +146,14 @@ one merge occurs at a time. Every row inherits G0-G4 below.
 | [#314](https://github.com/Sovereign-Communication/harness/issues/314) | Optional offline judges | #325,#309 | Stage seam/provisioning/Laya/Kev/engine-gated Needle with calibrated provenance; no default change or offline substitute for native-required approval. |
 | [#294](https://github.com/Sovereign-Communication/harness/issues/294) | Onboarding evidence | #282,#277,#340 | Reconcile existing branch; pane journey,50 budgeted validations, live sweep and>=0.90 feature gate; operator retains router flag. |
 | [#295](https://github.com/Sovereign-Communication/harness/issues/295) | Tracker | all child dispositions | Evidence-backed closure/disposition, one phase PR/merge, green merge-result CI; roadmap owns plan, tracker owns execution receipts. |
+| [#412](https://github.com/Sovereign-Communication/harness/issues/412) | GUI first use | none | Record HTTP codes/screenshots for fresh-profile auth, empty/wrong code feedback, pairing, recovery after stop, and `serve --open` reuse; no stranded browser user. |
+| [#413](https://github.com/Sovereign-Communication/harness/issues/413) | Loopback browser driver | none | Record authenticated health/vocabulary and one `read_dom`/click round-trip; confirm driver identity 8791 and loopback-only binding. |
+| [#414](https://github.com/Sovereign-Communication/harness/issues/414) | MCP runtime | none | From a real client, record initialize/tools-list and exact count, confirm `ledger_status`, and record one read-only call. |
+| [#415](https://github.com/Sovereign-Communication/harness/issues/415) | GUI model approvals | none | Run one GUI Jev semantic approval; record model, spend, verdict, and bounded spend without repeating paid attestation. |
+| [#416](https://github.com/Sovereign-Communication/harness/issues/416) | GUI docs | none | Publish and verify one first-use acceptance doc; correct the default port to 8765 and document authenticated `/api/status` 200 vs unauthenticated 401. |
+| [#417](https://github.com/Sovereign-Communication/harness/issues/417) | Driver-core audit | none | Verification names the store path and chain; empty-CWD output cannot imply Harness evidence; document the distinction. |
+| [#418](https://github.com/Sovereign-Communication/harness/issues/418) | Desktop request recovery | none | Persist stable request ID, privacy-conscious prompt reference, current state/timestamps, result/error, checkpoint, and retention across restarts; on startup/reconnect list recent requests and classify running/interrupted/completed/failed/unknown-stale. A focused process-termination test during a running request must recover an honest state. Offer valid-checkpoint resume or preserved-request restart; refused/no-evidence/zero-step or stale-consent checkpoints are not resumable, preserve the original prompt, and require fresh consent before dispatch. Reattach/resume/restart must not duplicate calls, spend, or side effects. Expose result/error/checkpoint through UI/API after restart with secrets redacted and retention documented. |
+| [#419](https://github.com/Sovereign-Communication/harness/issues/419) | Desktop/backend status | none | Focused test keeps local API healthy while backend is unreachable and a saved checkpoint claims running although its candidate was refused and execution never started; show local/API, backend, and request states separately and label unconfirmed requests unknown/stale (never infer completed/failed/cancelled). Show last successful backend check and last confirmed checkpoint time with an actionable error; preserve request ID/original prompt and reconcile on recovery without duplicate submission/spend. Provide copyable endpoint/timestamp diagnostics with credentials redacted; mark trace/cost coverage partial when raw events are unavailable. |
 
 ### Shared research contract (#342 -> #343/#344)
 
@@ -233,7 +244,7 @@ complete rows stay complete; #344 is a residual, not a restart. Deferred jury,
 OC external-instance work and CIVICSCOPE retain their rulings. #308/#309 do not
 block targeted fixes. Preserve all dirty/parked worktrees.
 
-Every open issue has an owner, dependency and exit. Start only #347 after plan
+Every open issue has an owner, dependency and exit. Start only #290 after plan
 review and a new execution tranche. Refresh issue/canon state after each merge;
 deduplicate new findings rather than silently expand the current slice.
 ### Planning decisions clarified after independent review
@@ -252,9 +263,8 @@ depends on accurate cost provenance, not completion of the entire intake
 feature. #319 consumes approved evidence through its one intake owner.
 
 The action submitted for approval is publication of this docs-only plan and its
-native-review evidence to a review branch/PR. It is not approval to execute all
-61 issues or a declaration of product completion. Every issue is planned; only
-#347 is selected next. Implementation, functional verification and owner-held
+native-review evidence to a review branch/PR. It is not approval to execute the full issue set or a declaration of product completion. Every issue is planned; #290
+is the current next selection. Implementation, functional verification and owner-held
 flags/publication remain under the explicit gates above. Current branch scope
 is this roadmap and sanitized plan-review receipts; no runtime code, settings,
 credentials, historical status dispositions or dirty implementation files move.
@@ -783,7 +793,7 @@ The earlier 108 focused lifecycle/guard tests passed outside the sandbox after t
 
 Operator directive 2026-10-20: every remaining piece of work is filed, waved, and landed until the board is empty. Tracker: [#295](https://github.com/Sovereign-Communication/harness/issues/295) (execution state lives there; this section is the canon pointer). Verified state at open: `main` at PR #274 (`0c4210f3`), 0 open PRs, full hermetic suite 4,737 tests green, live keyed bench verified (9-task set, $0.00 tracked cost, 1.56 mean verify rounds). One PR at a time, green CI merges, no direct pushes to `main` — unchanged house rules.
 
-**Wave 0 — unblock the measurement, in order:** [#276](https://github.com/Sovereign-Communication/harness/issues/276) D12 coverage measured against the merge-base at CI time + S5 disposition (the 95% bar stays; fix the measurement, not the bar) → [#277](https://github.com/Sovereign-Communication/harness/issues/277) structured dogfood round 2 with a filed report (GUI/MCP/website weighted), explicitly after #276.
+**Wave 0 - measurement:** [#276](https://github.com/Sovereign-Communication/harness/issues/276) D12 coverage measured against the merge-base at CI time + S5 disposition (the 95% bar stays; fix the measurement, not the bar). [#277](https://github.com/Sovereign-Communication/harness/issues/277) structured dogfood round 2 is reserved for the final cross-surface closeout under the current #295 directive.
 
 **Wave 1 — defects and quick wins (one PR each):** [#278](https://github.com/Sovereign-Communication/harness/issues/278) unified external-tool resolution + preflight (apply/verify gates invoke bare `python`; on python3-only systems every gate fails identically and tasks abort `gate_broken` — defect, HIGH); [#279](https://github.com/Sovereign-Communication/harness/issues/279) `harness doctor` environment preflight; [#287](https://github.com/Sovereign-Communication/harness/issues/287) CI `cancel-in-progress` + `paths` filters; [#290](https://github.com/Sovereign-Communication/harness/issues/290) hermetic/audit triage runbook; [#284](https://github.com/Sovereign-Communication/harness/issues/284) MCP tool-description lint (When/What-in/What-out) in the driver_core audit; [#286](https://github.com/Sovereign-Communication/harness/issues/286) MCP structured file logging + additive-only tool versioning policy; [#299](https://github.com/Sovereign-Communication/harness/issues/299) GUI POST body size cap — 413 over the limit before the body is read (`harness/server.py:1303-1304`; found in the 2026-10-20 verification pass); [#301](https://github.com/Sovereign-Communication/harness/issues/301) bring `driver_core` into the CI ruff scope + remove the dead import it hides (F401, `driver_core/osal.py:52`); [#303](https://github.com/Sovereign-Communication/harness/issues/303) site-check scheme gate vs extractor normalization (`harness/web.py:535`; minor).
 
