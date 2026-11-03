@@ -115,6 +115,26 @@ def build_parser():
     passess.add_argument("--input", default="-",
                          help="JSON file with the aspect judgements, or - for stdin")
 
+    # Overlay verification (#434): compose a shipped tree with a change and
+    # run one command against the result. The base tree is never written to;
+    # composition happens in a scratch tree that is removed afterwards.
+    pover = sub.add_parser(
+        "overlay", help="Run one verification command against a composed "
+                        "base+overlay tree (the base is never modified)")
+    pover.add_argument("--base", required=True,
+                       help="shipped tree to compose")
+    pover.add_argument("--overlay", required=True,
+                       help="tree laid over the base (real files, no symlinks)")
+    pover.add_argument("--cwd", default=None,
+                       help="subdirectory of the composed tree to run from")
+    pover.add_argument("--timeout", type=float, default=None,
+                       help="per-run timeout in seconds (timeouts report 124)")
+    pover.add_argument("--keep-scratch", action="store_true",
+                       help="keep the composed tree and report its path")
+    _add_output_flags(pover)
+    pover.add_argument("command", nargs=argparse.REMAINDER,
+                       help="argv list to run in the composed tree, after --")
+
     # Structured so --help lists the UI faces alongside the data commands.
     sub.add_parser("serve", help="Local web UI + JSON API over the core (loopback; "
                                  "--auth-token optional, HARNESS_UI_AUTH_TOKEN)")

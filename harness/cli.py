@@ -2107,6 +2107,27 @@ def _cmd_doctor(opts, settings):
         raise SystemExit(report["exit_code"])
 
 
+def _cmd_overlay(opts, settings):
+    """Overlay verification (#434): run one command on a composed tree.
+
+    The verdict is the command's own exit status; a red suite is a reported
+    result (exit 1), not an exception. Refusals -- missing trees, a string
+    command, a cwd outside the scratch -- raise HarnessError before anything
+    runs, so a mistyped overlay cannot pass as a green suite.
+    """
+    from .overlay import run_overlay
+    command = list(getattr(opts, "command", None) or [])
+    if command[:1] == ["--"]:
+        command = command[1:]
+    result = run_overlay(
+        opts.base, opts.overlay, command,
+        cwd=getattr(opts, "cwd", None),
+        timeout=getattr(opts, "timeout", None),
+        keep_scratch=getattr(opts, "keep_scratch", False))
+    _emit(result, opts.out, force_json=getattr(opts, "json", False))
+    raise SystemExit(0 if result["ok"] else 1)
+
+
 # Command -> handler. `required=True` subparsers make an unknown command
 # unreachable here, so the table has no default arm; every handler takes
 # (opts, settings), so a signature drift fails loudly at dispatch instead of
@@ -2117,6 +2138,7 @@ _DISPATCH = {
     "script": _cmd_script,
     "site-check": _cmd_site_check,
     "verify": _cmd_verify,
+    "overlay": _cmd_overlay,
     "lint-claims": _cmd_lint_claims,
     "brief": _cmd_brief,
     "apply": _cmd_apply,

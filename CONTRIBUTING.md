@@ -230,6 +230,7 @@ cheap; losing either is not.
 | Path | Owns |
 |---|---|
 | `harness/config.py` | settings, key resolution, lane curation |
+| `harness/overlay.py` | overlay verification: compose base+overlay in a scratch tree, run one suite command |
 | `harness/paths.py` | shared per-user root for Harness-managed configuration and state |
 | `harness/spend.py` | SpendGovernor: spend ceilings, BYOK, model discovery |
 | `harness/router.py` | cheap-first routing ladder: model pools, rotation, gated escalation |
