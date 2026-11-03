@@ -224,7 +224,7 @@ class SpendGovernor:
     def key_status(self):
         if not self.key_info:
             self.verify_key()
-        out = dict(self.key_info, session_spent=self.spent)
+        out = dict(self.key_info or {}, session_spent=self.spent)
         if self.overruns:
             out["overruns"] = self.overruns
         return out
@@ -408,7 +408,7 @@ class SpendGovernor:
                     self._pricing_cache[mid] = (offer.prompt, offer.completion)
             if or_missing:
                 models = self.fetch_models(refresh=True)
-                by_id = {m_["id"]: m_ for m_ in models}
+                by_id = {m_["id"]: m_ for m_ in (models or [])}
                 for mid in or_missing:
                     if mid in FREE_ROUTER_MODEL_IDS:
                         self._pricing_cache[mid] = (0.0, 0.0)
@@ -906,7 +906,7 @@ def discover_free_models(transport, api_key, prefer=None, limit=40):
     """
     gov = SpendGovernor(transport, api_key)
     models = gov.fetch_models()
-    free = [m_["id"] for m_ in models if _is_free_model(m_)]
+    free = [m_["id"] for m_ in (models or []) if _is_free_model(m_)]
     free_set = set(free)
     ordered = []
     for pid in (prefer or []):

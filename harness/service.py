@@ -376,7 +376,7 @@ def run_dogfood(settings=None, *,
             dogfood_ledger, task_id, generated=False,
             model="(dogfood)", source="service_dogfood")
 
-    report = {"phases": []}
+    report: dict = {"phases": []}
 
     def _emit_phase(name, payload):
         report["phases"].append({"phase": name, **payload})
