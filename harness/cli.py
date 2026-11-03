@@ -54,6 +54,7 @@ from .errors import HarnessError
 from .lifecycle import LifecycleCoordinator
 from .fireworks import compare_fireworks_vs_openrouter
 from .fireworks_probe import run_fireworks_probe
+from .overlay import run_overlay
 from .routing_table import (
     SNAPSHOT_PRICE_TABLE,
     TIER_MODELS,
@@ -2115,7 +2116,6 @@ def _cmd_overlay(opts, settings):
     command, a cwd outside the scratch -- raise HarnessError before anything
     runs, so a mistyped overlay cannot pass as a green suite.
     """
-    from .overlay import run_overlay
     command = list(getattr(opts, "command", None) or [])
     if command[:1] == ["--"]:
         command = command[1:]
