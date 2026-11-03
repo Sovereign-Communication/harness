@@ -354,12 +354,36 @@ class EconomicsReportAndExportTests(unittest.TestCase):
                     "tiers": {},
                 }, fh)
             buf = io.StringIO()
-            with mock.patch("harness.routing_table.TIERS_SNAPSHOT_PATH", path),                     redirect_stdout(buf):
+            with mock.patch("harness.routing_table.TIERS_SNAPSHOT_PATH", path), \
+                 redirect_stdout(buf):
                 _cmd_economics(opts, mock.Mock())
         payload = json.loads(buf.getvalue())
         self.assertTrue(payload["ok"])
         self.assertIn("age_days", payload)
         self.assertLess(payload["age_days"], 1.0)
+
+    def test_check_fresh_names_the_route_that_actually_writes_the_artifact(self):
+        """#446's other half: the stale warning told operators to run
+        `economics --report`, and that path writes no snapshot -- so the only
+        advisory the gate ever emitted sent them to a dead end. The warning
+        must name the writer that exists.
+        """
+        from harness.cli import _cmd_economics
+        opts = build_parser().parse_args(["economics", "--check-fresh", "--json"])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "tiers.snapshot.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"schema": 1, "captured_at": "2020-01-01T00:00:00Z",
+                           "max_age_days": 14, "tiers": {}}, fh)
+            buf = io.StringIO()
+            with mock.patch("harness.routing_table.TIERS_SNAPSHOT_PATH", path), \
+                 redirect_stdout(buf), self.assertRaises(SystemExit) as ctx:
+                _cmd_economics(opts, mock.Mock())
+        self.assertEqual(ctx.exception.code, 2)
+        payload = json.loads(buf.getvalue())
+        self.assertFalse(payload["ok"])
+        self.assertIn("--refresh-snapshot", payload["warning"])
+        self.assertNotIn("--report", payload["warning"])
 
     def test_report_and_propose_emit_full_economics_payload(self):
         from harness.cli import _cmd_economics

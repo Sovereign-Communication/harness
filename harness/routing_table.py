@@ -161,7 +161,8 @@ def check_tier_snapshot_freshness(
     if not fresh:
         warning = (
             f"tiers.snapshot.json is {age_days:.1f} days old "
-            f"(exceeds max_age_days={limit_days:g}); refresh via `harness economics --report`."
+            f"(exceeds max_age_days={limit_days:g}); refresh via "
+            f"`harness economics --refresh-snapshot`."
         )
     return {
         "ok": fresh,
