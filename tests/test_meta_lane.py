@@ -99,7 +99,9 @@ class RouteTests(unittest.TestCase):
                                   fireworks_enabled=False, meta_enabled=True)
             self.assertEqual(route.provider, META_PROVIDER)
             self.assertEqual(route.wire_model, model)
-            self.assertEqual(route.offer.model, model)
+            offer = route.offer
+            assert offer is not None  # a Meta route always carries its offer
+            self.assertEqual(offer.model, model)
 
     def test_muse_model_with_meta_disabled_fails_closed(self):
         with self.assertRaisesRegex(HarnessError, "meta is disabled"):

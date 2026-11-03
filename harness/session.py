@@ -24,6 +24,31 @@ from .errors import HarnessError
 from .validation import finite_number
 
 
+def _flag(settings, name):
+    """Boolean settings flag, read tolerantly: only a real ``True`` counts.
+
+    The existing suite passes bare stub settings objects whose missing
+    attributes auto-vivify as truthy stand-ins; a flag read has to see
+    the settings value, not the stub's invention. Real Settings always
+    carry real bools here.
+    """
+    return getattr(settings, name, False) is True
+
+
+def _budget(settings, name):
+    """Per-provider budget from settings, read tolerantly.
+
+    Anything that is not a real number -- a stub settings object's
+    auto-vivified attribute, a stray string -- falls back to the config
+    default of 0.0 rather than feeding the governor's validation a
+    value the settings layer never produced.
+    """
+    value = getattr(settings, name, 0.0)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    return float(value)
+
+
 def governor_for(settings, max_cost_override=None):
     """Resolve the API key and verify it against OpenRouter, returning
     ``(api_key, governor)``. The key is threaded to every engine-routed
@@ -33,7 +58,7 @@ def governor_for(settings, max_cost_override=None):
     key and skip OpenRouter key verification: there is no OpenRouter key
     in those runs to verify, and the local per-provider budget is the
     spend control."""
-    if getattr(settings, "use_meta", False):
+    if _flag(settings, "use_meta"):
         meta_key = getattr(settings, "meta_key", "") or resolve_meta_key()
         if not meta_key:
             raise HarnessError(
@@ -49,10 +74,10 @@ def governor_for(settings, max_cost_override=None):
         gov = SpendGovernor(HttpTransport(), meta_key,
                             settings.expect_key_label,
                             max_cost,
-                            fireworks_budget_usd=getattr(
-                                settings, "fireworks_budget_usd", 0.0),
-                            meta_budget_usd=getattr(
-                                settings, "meta_budget_usd", 0.0))
+                            fireworks_budget_usd=_budget(
+                                settings, "fireworks_budget_usd"),
+                            meta_budget_usd=_budget(
+                                settings, "meta_budget_usd"))
         gov.key_info = {"label": "meta", "limit": max_cost, "remaining": max_cost}
         return meta_key, gov
     if getattr(settings, "use_fireworks", False):
@@ -71,8 +96,8 @@ def governor_for(settings, max_cost_override=None):
                             max_cost,
                             fireworks_budget_usd=getattr(
                                 settings, "fireworks_budget_usd", 0.0),
-                            meta_budget_usd=getattr(
-                                settings, "meta_budget_usd", 0.0))
+                            meta_budget_usd=_budget(
+                                settings, "meta_budget_usd"))
         gov.key_info = {"label": "fireworks", "limit": max_cost, "remaining": max_cost}
         return fw_key, gov
     api_key = resolve_api_key()
@@ -94,8 +119,8 @@ def governor_for(settings, max_cost_override=None):
                         max_cost,
                         fireworks_budget_usd=getattr(
                             settings, "fireworks_budget_usd", 0.0),
-                        meta_budget_usd=getattr(
-                            settings, "meta_budget_usd", 0.0))
+                        meta_budget_usd=_budget(
+                            settings, "meta_budget_usd"))
     gov.verify_key()
     return api_key, gov
 
