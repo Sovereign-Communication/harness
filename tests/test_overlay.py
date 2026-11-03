@@ -70,15 +70,20 @@ class CompositionTests(_Trees):
         self.assertEqual(composed["overlay_files"], 1)
         self.assertIn("actual=overlay", composed["stdout"])
 
+    @staticmethod
+    def _read(path):
+        # Closed explicitly: the suite runs with ResourceWarning as an error,
+        # and an unclosed read here would fail the whole battery.
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+
     def test_the_base_tree_is_never_written_to(self):
-        before = open(os.path.join(self.base, "value.txt"),
-                      encoding="utf-8").read()
+        value = os.path.join(self.base, "value.txt")
+        before = self._read(value)
         self._write(self.overlay, "value.txt", "overlay\n")
         run_overlay(self.base, self.overlay,
                     [sys.executable, "check.py", "overlay"])
-        self.assertEqual(
-            open(os.path.join(self.base, "value.txt"),
-                 encoding="utf-8").read(), before)
+        self.assertEqual(self._read(value), before)
 
     def test_a_red_suite_is_a_result_not_an_exception(self):
         payload = run_overlay(self.base, self.overlay,
