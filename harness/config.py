@@ -46,6 +46,19 @@ FIREWORKS_KEY_FILE = os.path.join(CONFIG_DIR, "fireworks.env")
 def is_fireworks_model_path(label):
     """True when a model id or spend label names a Fireworks serverless path."""
     return isinstance(label, str) and label.startswith(FIREWORKS_MODEL_PREFIX)
+
+
+# Meta direct provider lane (Muse models; tracks #379)
+META_CHAT_URL = "https://api.meta.ai/v1/chat/completions"
+META_MODEL_PREFIX = "muse-"
+META_PROVIDER = "meta"
+META_KEY_ENV = "META_API_KEY"
+META_KEY_FILE = os.path.join(CONFIG_DIR, "meta.env")
+
+
+def is_meta_model_id(label):
+    """True when a model id or spend label names a direct Meta Muse model."""
+    return isinstance(label, str) and label.startswith(META_MODEL_PREFIX)
 # Daily usage rankings (model_permaslug + total_tokens per day). The
 # evidence source for pool-candidate refresh (see harness/rankings.py).
 OPENROUTER_RANKINGS_URL = "https://openrouter.ai/api/v1/datasets/rankings-daily"
@@ -443,6 +456,24 @@ DEFAULT_FIREWORKS_PANEL_POOL = [
 ]
 DEFAULT_FIREWORKS_JUDGE_MODEL = "accounts/fireworks/models/glm-5"
 
+# ---- Meta direct lanes (use_meta=True / model_preset="muse") ----
+# The Muse-only preset: every surface pinned to Meta's Muse models, served
+# by the direct Meta provider, never OpenRouter. Spark is the fast, cheap
+# rung; Wonder is the deep rung. Bare ids are the Meta API's own model ids.
+DEFAULT_META_PANEL_POOL = [
+    "muse-spark-1.3",
+    "muse-wonder-1.0",
+]
+DEFAULT_META_APPLY_POOL = [
+    "muse-spark-1.3",
+    "muse-wonder-1.0",
+]
+DEFAULT_META_ESCALATION_POOL = [
+    "muse-spark-1.3",
+    "muse-wonder-1.0",
+]
+DEFAULT_META_JUDGE_MODEL = "muse-wonder-1.0"
+
 
 def shipped_model_ids():
     """Every default lane model id this install ships with, across both tier
@@ -462,6 +493,9 @@ _ENV_NAMES = {
     "use_free": "HARNESS_USE_FREE",
     "use_fireworks": "HARNESS_USE_FIREWORKS",
     "fireworks_key": "FIREWORKS_API_KEY",
+    "use_meta": "HARNESS_USE_META",
+    "meta_key": "META_API_KEY",
+    "model_preset": "HARNESS_MODEL_PRESET",
     "trial_model": "HARNESS_TRIAL_MODEL",
     "panel": "HARNESS_PANEL",
     "panel_pool": "HARNESS_PANEL_POOL",
@@ -510,6 +544,8 @@ _ENV_NAMES = {
     "openrouter_enabled": "HARNESS_OPENROUTER_ENABLED",
     "fireworks_enabled": "HARNESS_FIREWORKS_ENABLED",
     "fireworks_budget_usd": "HARNESS_FIREWORKS_BUDGET_USD",
+    "meta_enabled": "HARNESS_META_ENABLED",
+    "meta_budget_usd": "HARNESS_META_BUDGET_USD",
     "fetch_allowlist_enabled": "HARNESS_FETCH_ALLOWLIST_ENABLED",
     "fetch_allowlist_hosts": "HARNESS_FETCH_ALLOWLIST_HOSTS",
 }
@@ -630,6 +666,30 @@ def resolve_fireworks_key(key_file=None):
     return key or None
 
 
+def resolve_meta_key(key_file=None):
+    """Resolve the Meta (Muse) API key: scmorc file, harness file, then env.
+
+    The credential is the Meta Model API key. Both the META_API_KEY and
+    MUSE_API_KEY names are accepted, in key files and in the environment
+    (the CivicScope portal's env uses the latter). Only presence is ever
+    logged; the value is returned to the caller and never echoed.
+    """
+    candidates = ([key_file] if key_file else [
+        os.path.join(os.path.expanduser("~/.config/scmorc"), "meta.env"),
+        os.path.join(CONFIG_DIR, "meta.env"),
+    ])
+    for p in candidates:
+        k = _read_key_file(p, "META_API_KEY") or _read_key_file(p, "MUSE_API_KEY")
+        if k:
+            _warn_insecure_keyfile(p)
+            return k
+    key = os.environ.get("META_API_KEY") or os.environ.get("MUSE_API_KEY")
+    if key:
+        eprint("[warn] using META_API_KEY from the process environment; "
+               "prefer a 0600 key file for interactive use.")
+    return key or None
+
+
 def _as_bool(value):
     if isinstance(value, bool):
         return value
@@ -670,17 +730,25 @@ class Settings:
                   openrouter_enabled=True, fireworks_enabled=False,
                   fireworks_budget_usd=0.0,
                   use_fireworks=False, fireworks_key="", trial_model="",
-                  fetch_allowlist_enabled=True, fetch_allowlist_hosts=None):
+                  fetch_allowlist_enabled=True, fetch_allowlist_hosts=None,
+                  meta_enabled=False, use_meta=False, meta_key="",
+                  meta_budget_usd=0.0):
         self.use_free = use_free
         self.openrouter_enabled = bool(openrouter_enabled)
         self.fireworks_enabled = bool(fireworks_enabled or use_fireworks)
         self.fireworks_budget_usd = float(fireworks_budget_usd)
-        if not self.openrouter_enabled and not self.fireworks_enabled:
+        self.meta_enabled = bool(meta_enabled or use_meta)
+        self.meta_budget_usd = float(meta_budget_usd)
+        if not (self.openrouter_enabled or self.fireworks_enabled
+                or self.meta_enabled):
             raise HarnessError(
-                "at least one provider must be enabled: set openrouter_enabled "
-                "or fireworks_enabled (both off leaves no route for any model)")
+                "at least one provider must be enabled: set openrouter_enabled, "
+                "fireworks_enabled or meta_enabled (all off leaves no route "
+                "for any model)")
         self.use_fireworks = self.fireworks_enabled
         self.fireworks_key = str(fireworks_key or "")
+        self.use_meta = self.meta_enabled
+        self.meta_key = str(meta_key or "")
         # Per-run reversible model trial override (#197) -- never persisted by update_config.
         self.trial_model = str(trial_model or "")
         self.panel = list(panel)
@@ -775,7 +843,8 @@ class Settings:
             "jev_endpoint", "jev_model", "min_confidence",
             "token_budget_input", "token_budget_output",
             "hourglass_stages", "openrouter_enabled", "fireworks_enabled",
-            "fireworks_budget_usd", "fetch_allowlist_enabled",
+            "fireworks_budget_usd", "meta_enabled", "meta_budget_usd",
+            "fetch_allowlist_enabled",
             "fetch_allowlist_hosts")}
 
 
@@ -817,6 +886,7 @@ def update_config(values):
     allowed = {"use_free", "allow_escalation", "max_cost", "task_max_cost",
                "hourglass_stages", "token_budget_input", "token_budget_output",
                "openrouter_enabled", "fireworks_enabled", "fireworks_budget_usd",
+               "meta_enabled", "meta_budget_usd",
                "fetch_allowlist_enabled", "fetch_allowlist_hosts"}
     allowed |= set(JEV_FREEZE_KEYS)
     disallowed = set(values) - allowed
@@ -866,6 +936,41 @@ def update_config(values):
     return updated
 
 
+def _enforce_meta_allowlist(settings):
+    """Structural Muse-only pin for the Meta lane (#377/#378).
+
+    With use_meta on, every resolved model surface must name a routable
+    Muse model. A stray non-Muse id -- a pool override, a trial model, a
+    frontier pin -- fails closed here, at load, instead of silently routing
+    to another provider mid-run. Pinning is therefore a property of the
+    loaded Settings, not of how carefully the pools were written.
+    """
+    from .meta import resolve_offer  # local: meta.py holds no config import
+    surfaces = {
+        "panel": settings.panel,
+        "panel_pool": settings.panel_pool,
+        "judge": [settings.judge],
+        "judge_top": [settings.judge_top],
+        "convergence_model": [settings.convergence_model],
+        "specialist_pool": settings.specialist_pool,
+        "apply_model": [settings.apply_model],
+        "apply_pool": settings.apply_pool,
+        "escalation_pool": settings.escalation_pool,
+        "escalation_model": [settings.escalation_model],
+        "frontier_model": [settings.frontier_model],
+        "trial_model": [settings.trial_model],
+    }
+    for surface, models in surfaces.items():
+        for model in models:
+            if not model:
+                continue
+            if not is_meta_model_id(model):
+                raise HarnessError(
+                    f"the Muse-only preset pins every surface to Muse "
+                    f"models, but {surface} names '{model}'; refusing to load")
+            resolve_offer(model)  # raises for an unroutable Muse id
+
+
 def load_settings(overrides=None):
     cfg = {}
     cfg_path = os.path.join(CONFIG_DIR, "config.json")
@@ -893,6 +998,19 @@ def load_settings(overrides=None):
         raise HarnessError(
             "HARNESS_USE_FIREWORKS=true requires a Fireworks API key "
             f"(set ${FIREWORKS_KEY_ENV} or write {FIREWORKS_KEY_FILE}).")
+    # The Muse-only preset (#378): model_preset="muse" is the named,
+    # one-switch form of use_meta. An unknown preset fails closed rather
+    # than silently loading the default pools under a name nothing honors.
+    model_preset = str(get("model_preset", "") or "").strip().lower()
+    if model_preset not in ("", "muse"):
+        raise HarnessError(
+            f"unknown model_preset '{model_preset}' (only 'muse' is defined)")
+    use_meta = _as_bool(get("use_meta", False)) or model_preset == "muse"
+    meta_key = str(get("meta_key", "") or "").strip() or resolve_meta_key()
+    if use_meta and not meta_key:
+        raise HarnessError(
+            "HARNESS_USE_META=true requires a Meta API key "
+            f"(set ${META_KEY_ENV} or write {META_KEY_FILE}).")
     # Auto-escalation defaults ON when a paid key is connected: when the
     # cheap tier saturates (429 across the pool) or exhausts its verify
     # budget, the judge walks the escalation ladder into the lowest paid
@@ -904,7 +1022,14 @@ def load_settings(overrides=None):
         or (overrides or {}).get("api_key")
         or resolve_api_key()
     )
-    if use_fireworks:
+    if use_meta:
+        default_panel = list(DEFAULT_META_PANEL_POOL)
+        default_judge = DEFAULT_META_JUDGE_MODEL
+        default_judge_top = DEFAULT_META_JUDGE_MODEL
+        default_apply_pool = list(DEFAULT_META_APPLY_POOL)
+        default_specialist_pool = list(DEFAULT_META_APPLY_POOL[:1])
+        default_escalation_pool = list(DEFAULT_META_ESCALATION_POOL)
+    elif use_fireworks:
         default_panel = list(DEFAULT_FIREWORKS_PANEL_POOL)
         default_judge = DEFAULT_FIREWORKS_JUDGE_MODEL
         default_judge_top = DEFAULT_FIREWORKS_JUDGE_MODEL
@@ -998,10 +1123,12 @@ def load_settings(overrides=None):
     else:
         jev_api_key = get("jev_api_key", None) or resolve_jev_key()
 
-    return Settings(
+    settings = Settings(
         use_free=use_free,
         use_fireworks=use_fireworks,
         fireworks_key=fireworks_key,
+        use_meta=use_meta,
+        meta_key=meta_key or "",
         trial_model=trial_model,
         panel=panel,
         panel_pool=panel_pool,
@@ -1057,9 +1184,14 @@ def load_settings(overrides=None):
         openrouter_enabled=_as_bool(get("openrouter_enabled", True)),
         fireworks_enabled=_as_bool(get("fireworks_enabled", use_fireworks)),
         fireworks_budget_usd=_num("fireworks_budget_usd", float, 0.0, 1_000_000.0, 0.0),
+        meta_enabled=_as_bool(get("meta_enabled", use_meta)),
+        meta_budget_usd=_num("meta_budget_usd", float, 0.0, 1_000_000.0, 0.0),
         fetch_allowlist_enabled=_as_bool(get("fetch_allowlist_enabled", True)),
         fetch_allowlist_hosts=_split_list(str(get("fetch_allowlist_hosts", ""))),
     )
+    if settings.use_meta:
+        _enforce_meta_allowlist(settings)
+    return settings
 
 
 def load_vision_preflight_settings(*, max_cost_override=None):
