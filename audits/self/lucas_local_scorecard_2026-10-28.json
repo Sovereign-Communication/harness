@@ -1,0 +1,71 @@
+{
+  "sample_id": "lane-state-2026-10-28-local-only",
+  "category": "local-verification",
+  "score": 0,
+  "scorer_version": "synthetic-local-only-no-profile",
+  "timestamp": "2026-10-28T00:00:00Z",
+  "gated": false,
+  "gate_pass": false,
+  "reason_no_gate": "real Lucas v2 profile absent from this lane; prompt rule 16: synthetic pass is not a semantic gate pass",
+  "local_checks": {
+    "hermetic_tests_rc": 0,
+    "hermetic_tests_tail": [
+      "............................                                             [100%]",
+      "28 passed, 5131 deselected in 2.62s"
+    ],
+    "ruff_rc": 0,
+    "ruff_tail": [
+      "All checks passed!"
+    ],
+    "pyright_new_files_rc": 4,
+    "pyright_new_files_tail": [
+      "File or directory \"file:///c%3A/Users/SCM/.freebuff/worktrees/4676c2d5/Harness/harness/lucas_gate.py\" does not exist"
+    ],
+    "git_status_short": [
+      "A  docs/jev_cluster_triage_2026-10-28.md",
+      "AM docs/overnight-ledger-2026-10-28.md",
+      "M  harness/mcp_schemas.py",
+      "?? audits/self/lucas_local_scorecard_2026-10-28.json",
+      "?? check_tools.py",
+      "?? derive_ledger.py",
+      "?? docs/ledger-reconcil-2026-10-28.md",
+      "?? docs/roadmap_chain_reconcile_2026-10-28.md",
+      "?? docs/runner_env_status.json",
+      "?? docs/status_batch_2026-10-28.md",
+      "?? find_runner.py",
+      "?? find_venv.py",
+      "?? invoke_lucas_semantic.py",
+      "?? issue_270.json",
+      "?? issue_422.json",
+      "?? issue_423.json",
+      "?? read_jev_cluster.py",
+      "?? reconcile_roadmap_chains.py",
+      "?? refresh_ledger.py",
+      "?? show_scorecard.py",
+      "?? status_batch.py",
+      "?? tests_run_tail.txt",
+      "?? verify_fresh.py",
+      "?? verify_tools.py",
+      "?? verify_venv.py"
+    ],
+    "diff_main_head": [
+      "(clean checkout of main)"
+    ]
+  },
+  "lane": {
+    "branch": "freebuff/harness-overnight-burndown-full-polish-continuous--4676c2d5-a427-43a6-a820-c28dd0f78979",
+    "head": "4ccee9927b44df21c714de47c542376882529372",
+    "main": "4ccee9927b44df21c714de47c542376882529372",
+    "pr_431_draft_head": "114e8101660066618369addfa6a3e8b8ba6a996f",
+    "open_issues_live": 169,
+    "prompt_open_issues": 74,
+    "worktrees": 7,
+    "lucas_runner_present": false,
+    "mcp_catalog_tools": 30,
+    "lucas_gate_v2_in_catalog": false,
+    "lucas_v2_profile_present": false,
+    "using_python_lint": "C:\\Python314\\python.exe",
+    "using_python_pyright": ".venv\\Scripts\\python.exe",
+    "using_python_tests": ".venv\\Scripts\\python.exe"
+  }
+}

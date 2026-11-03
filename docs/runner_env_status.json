@@ -1,0 +1,10 @@
+{
+  "python_label": "system314",
+  "python_path": "C:\\Python314\\python.exe",
+  "ensure_status": "created-and-installed",
+  "ensure_ok": true,
+  "chosen_python": ".venv\\Scripts\\python.exe",
+  "pytest_ok": true,
+  "pyright_ok": true,
+  "ruff_ok": false
+}

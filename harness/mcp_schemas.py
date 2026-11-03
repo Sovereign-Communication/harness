@@ -536,5 +536,39 @@ TOOL_SCHEMAS = [
         }},
         "annotations": {"readOnlyHint": True, "openWorldHint": True},
     },
+    {
+        "name": "lucas_gate_v2",
+        "title": "Lucas Gate v2 typed-track runner",
+        "description": (
+            "Runs the Lucas Gate v2 semantic judgment over a coded change and returns "
+            "pass / investigate / escalate / needs_improvement with a structured "
+            "scorecard plus the validator-validated profile verdict. Profile-based "
+            "semantic judgments are sourced only from the operator-loaded private "
+            "baseline; never ships, pastes, or logs any profile content."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "change_description": {
+                    "type": "string",
+                    "description": (
+                        "Short description of the change under judgment (diff summary "
+                        "or commit message body is a good fit)."
+                    ),
+                },
+                "scorecard": {
+                    "type": "object",
+                    "description": (
+                        "Callers supply their own Lucas Gate v2 scorecard for the "
+                        "change. The runner validates the scorecard shape, range, and "
+                        "arithmetic only; it does not author semantic judgments -- "
+                        "those come from the operator-loaded private profile."
+                    ),
+                },
+            },
+            "required": ["change_description", "scorecard"],
+        },
+        "annotations": {"readOnlyHint": True, "openWorldHint": True},
+    },
 ]
 
