@@ -14,7 +14,8 @@ records the price-based selection as deferred to EV-1.
 from dataclasses import dataclass
 from typing import Optional
 
-from .config import FIREWORKS_PROVIDER, is_fireworks_model_path
+from .config import (FIREWORKS_PROVIDER, META_PROVIDER, is_fireworks_model_path,
+                     is_meta_model_id)
 from .endpoint_pricing import FireworksOffer, fireworks_offers
 from .errors import HarnessError
 
@@ -34,12 +35,21 @@ def resolve_offer(model):
     raise HarnessError(f"no confirmed Fireworks endpoint for '{model}'")
 
 
-def resolve_route(model, *, openrouter_enabled, fireworks_enabled):
+def resolve_route(model, *, openrouter_enabled, fireworks_enabled,
+                  meta_enabled=False):
     """Pick the provider for one model. Fails closed rather than falling back.
 
     A Fireworks path with Fireworks disabled raises instead of quietly moving
-    to OpenRouter, because the operator asked for that provider by name.
+    to OpenRouter, because the operator asked for that provider by name. The
+    same rule holds for a Muse model id with the Meta lane disabled.
     """
+    if is_meta_model_id(model):
+        if not meta_enabled:
+            raise HarnessError(
+                f"model '{model}' is a Meta Muse model but meta is disabled "
+                "(HARNESS_META_ENABLED)")
+        from .meta import resolve_offer as _meta_offer
+        return Route(META_PROVIDER, model, _meta_offer(model))
     if is_fireworks_model_path(model):
         if not fireworks_enabled:
             raise HarnessError(

@@ -24,6 +24,7 @@ from .config import (
     OPENROUTER_KEY_URL, OPENROUTER_MODELS_URL,
     BYOK_DENYLIST_PREFIXES, BYOK_PREFIXES_PATH, load_byok_prefixes,
     save_byok_prefixes, DEFAULT_MAX_COST, is_fireworks_model_path,
+    is_meta_model_id,
 )
 from .errors import HarnessError, ToolCancelled
 from .provider_errors import ProviderSpendLimitError
@@ -140,13 +141,16 @@ class SpendGovernor:
 
     def __init__(self, transport, api_key, expect_key_label=None,
                  max_cost=DEFAULT_MAX_COST, byok_prefixes_path=BYOK_PREFIXES_PATH,
-                 terminal_reserve=0.0, fireworks_budget_usd=0.0):
+                 terminal_reserve=0.0, fireworks_budget_usd=0.0,
+                 meta_budget_usd=0.0):
         self.transport = transport
         self.api_key = api_key
         self.expect_key_label = expect_key_label
         self.max_cost = finite_number(max_cost, "max_cost", 0.0)
         self.fireworks_budget_usd = finite_number(
             fireworks_budget_usd, "fireworks_budget_usd", 0.0)
+        self.meta_budget_usd = finite_number(
+            meta_budget_usd, "meta_budget_usd", 0.0)
         self.terminal_reserve = finite_number(
             terminal_reserve, "terminal_reserve", 0.0)
         if self.terminal_reserve > self.max_cost:
@@ -379,7 +383,10 @@ class SpendGovernor:
         if missing:
             from .fireworks import is_fireworks_model_path
             fw_missing = [m_ for m_ in missing if is_fireworks_model_path(m_)]
-            or_missing = [m_ for m_ in missing if not is_fireworks_model_path(m_)]
+            meta_missing = [m_ for m_ in missing if is_meta_model_id(m_)]
+            or_missing = [m_ for m_ in missing
+                          if not is_fireworks_model_path(m_)
+                          and not is_meta_model_id(m_)]
             if fw_missing:
                 from .endpoint_pricing import load_fireworks_endpoints
                 fw_pack = load_fireworks_endpoints()
@@ -390,6 +397,15 @@ class SpendGovernor:
                             f"model '{mid}' not found in fireworks endpoints pack.")
                     ep = fw_eps[mid]
                     self._pricing_cache[mid] = (ep.prompt, ep.completion)
+            if meta_missing:
+                # Muse ids are priced from the committed offers, never the
+                # OpenRouter catalog: the direct lane must stay priced (and
+                # usable) exactly when OpenRouter is unavailable or unusable.
+                # An uncommitted muse- id raises here, fail closed.
+                from .meta import resolve_offer as _meta_offer
+                for mid in meta_missing:
+                    offer = _meta_offer(mid)
+                    self._pricing_cache[mid] = (offer.prompt, offer.completion)
             if or_missing:
                 models = self.fetch_models(refresh=True)
                 by_id = {m_["id"]: m_ for m_ in models}
@@ -420,6 +436,8 @@ class SpendGovernor:
             return True
         from .fireworks import is_fireworks_model_path
         if is_fireworks_model_path(model_id):
+            return True
+        if is_meta_model_id(model_id):
             return True
         from .routing_table import strip_variant_suffix
         canonical = strip_variant_suffix(model_id)
@@ -679,6 +697,25 @@ class SpendGovernor:
                 f"${self.fireworks_budget_usd:.6f} (HARNESS_FIREWORKS_BUDGET_USD) "
                 f"for '{label}'; refusing to send.")
 
+    def meta_spent(self):
+        """Recorded spend on Meta labels (see is_meta_model_id)."""
+        with self._spend_lock:
+            return sum(v for k, v in self._cost_by_model.items()
+                       if is_meta_model_id(k))
+
+    def assert_meta_budget(self, amount, label):
+        """Refuse a Meta call whose worst case would pass the local cap.
+
+        Called before dispatch with the worst-case estimate, so a call that
+        cannot fit is never sent. A cap of zero refuses every Meta call.
+        """
+        projected = self.meta_spent() + float(amount)
+        if projected > self.meta_budget_usd:
+            raise HarnessError(
+                f"Meta spend ${projected:.6f} would exceed the local budget "
+                f"${self.meta_budget_usd:.6f} (HARNESS_META_BUDGET_USD) "
+                f"for '{label}'; refusing to send.")
+
     # 5
     def record_actual(self, cost, label, lane="apply"):
         """Record a billable response without ever moving ``spent`` over the
@@ -695,6 +732,13 @@ class SpendGovernor:
                     raise HarnessError(
                         f"Fireworks spend ${projected:.6f} would exceed the local "
                         f"budget ${self.fireworks_budget_usd:.6f} after '{label}'. "
+                        "Aborting.")
+            if is_meta_model_id(label) and actual > 0.0:
+                projected = self.meta_spent() + actual
+                if projected > self.meta_budget_usd:
+                    raise HarnessError(
+                        f"Meta spend ${projected:.6f} would exceed the local "
+                        f"budget ${self.meta_budget_usd:.6f} after '{label}'. "
                         "Aborting.")
             if actual > 0.0 and self.spent + self._outstanding + actual > ceiling:
                 if (self._phase == PHASE_ATTEMPT

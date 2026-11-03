@@ -18,12 +18,17 @@ from .config import (
     CONFIG_DIR,
     FIREWORKS_CHAT_URL,
     FIREWORKS_PROVIDER,
+    META_CHAT_URL,
+    META_PROVIDER,
     OPENROUTER_CHAT_URL,
     is_fireworks_model_path,
+    is_meta_model_id,
 )
 from .errors import HarnessError, ProviderUsageUnknown, ToolCancelled
 from .events import emit, provider_request_context
 from .fireworks import cost_estimate, resolve_offer
+from .meta import cost_estimate as meta_cost_estimate
+from .meta import resolve_offer as resolve_meta_offer
 from .output import eprint
 from .provider_errors import (
     ProviderSpendLimitError,
@@ -660,11 +665,20 @@ def governed_completion(transport, api_key, governor, model, prompt, max_tokens,
     from .errors import HarnessError
     governor.check_byok(model)
     governor.preflight(prompt, [(label, model, max_tokens, 0)])
-    status, resp = chat(transport, api_key, model,
-                        [{"role": "user", "content": prompt}],
-                        max_tokens, reasoning_effort=reasoning_effort,
-                        reasoning_token_budget=reasoning_token_budget,
-                        governor=governor)
+    if is_meta_model_id(model):
+        # Direct Meta lane: the api_key threaded here is the key the
+        # caller's governor resolution returned -- in use_meta mode that is
+        # the Meta key (session.governor_for), never the OpenRouter key.
+        status, resp = _chat_meta(
+            transport, api_key, model,
+            [{"role": "user", "content": prompt}], max_tokens,
+            governor=governor)
+    else:
+        status, resp = chat(transport, api_key, model,
+                            [{"role": "user", "content": prompt}],
+                            max_tokens, reasoning_effort=reasoning_effort,
+                            reasoning_token_budget=reasoning_token_budget,
+                            governor=governor)
     if status != 200:
         from .results import _http_error
         raise HarnessError(_http_error(status, resp))
@@ -765,15 +779,65 @@ def _chat_fireworks(transport, api_key, model, messages, max_tokens,
     return status, resp
 
 
+def _ensure_meta_accounted(offer, usage):
+    """Estimate a missing Meta usage.cost from the committed Muse rates.
+
+    The Meta API reports token counts but no cost. The same fail-closed
+    rule as the Fireworks path: with neither a cost nor token counts the
+    call is refused rather than booked as free.
+    """
+    prompt_tokens, completion_tokens = _usage_counts(usage)
+    if not prompt_tokens and not completion_tokens:
+        raise HarnessError(
+            f"Meta omitted usage accounting (no cost, no token counts) for "
+            f"'{offer.model}'; refusing to bill blind")
+    usage["cost"] = meta_cost_estimate(offer, prompt_tokens, completion_tokens)
+    usage["cost_estimated"] = True
+
+
+def _chat_meta(transport, api_key, model, messages, max_tokens,
+               governor=None):
+    """One direct Meta chat completion.
+
+    The payload is plain: no OpenRouter provider object, no floor, and no
+    reasoning parameter, mirroring the Fireworks lane's conservative shape.
+    The worst case is checked against the local Meta budget before anything
+    is sent.
+    """
+    offer = resolve_meta_offer(model)
+    payload = {"model": model, "messages": messages, "max_tokens": max_tokens}
+    if governor is not None:
+        governor.check_byok(model)
+        governor.assert_no_tools(payload, model)
+        prompt_text = "\n".join(str(m.get("content", "")) for m in messages)
+        worst = meta_cost_estimate(
+            offer, estimate_prompt_tokens(prompt_text), max_tokens)
+        governor.assert_meta_budget(worst, model)
+    status, resp = transport.post(META_CHAT_URL, api_key, payload)
+    if governor is not None and status == 200 and isinstance(resp, dict):
+        usage = resp.get("usage")
+        if isinstance(usage, dict) and "cost" not in usage:
+            _ensure_meta_accounted(offer, usage)
+    return status, resp
+
+
 def chat_for_route(route, transport, openrouter_key, fireworks_key, messages,
-                   max_tokens, governor=None):
+                   max_tokens, governor=None, meta_key=None):
     """Dispatch one call to the provider a Route names.
 
     OpenRouter routes go through the unchanged chat() path with its defaults.
-    Fireworks routes use the plain Fireworks payload and never reach
-    OpenRouter. No per-call options: the only caller sends the fixed
+    Fireworks and Meta routes use their plain direct payloads and never
+    reach OpenRouter. No per-call options: the only caller sends the fixed
     verification shape, and EV-1 will own selection policy when it lands.
     """
+    if route.provider == META_PROVIDER:
+        if not meta_key:
+            raise HarnessError(
+                "Meta key missing: set ~/.config/scmorc/meta.env, "
+                "$HARNESS_CONFIG_DIR/meta.env (default: "
+                "~/.config/harness/meta.env), META_API_KEY, or MUSE_API_KEY")
+        return _chat_meta(transport, meta_key, route.wire_model,
+                          messages, max_tokens, governor)
     if route.provider == FIREWORKS_PROVIDER:
         if not fireworks_key:
             raise HarnessError(

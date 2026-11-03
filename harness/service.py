@@ -35,11 +35,19 @@ from .prompts import MAX_FILE_LINES
 PROMPT_ENCODING = "utf-8-sig"
 
 
-def _preflight_task_id(ledger, task_id, *, generated, model, source):
-    """Record internal task IDs and reject external IDs without an offer."""
+def _preflight_task_id(ledger, task_id, *, generated, model, source,
+                       ensure=False):
+    """Record internal task IDs and reject external IDs without an offer.
+
+    ``ensure`` marks a supplied ID as locally created by the calling entry
+    point (a run label, like the repo-summary face's fixed ID): the entry
+    point self-offers it instead of requiring a prior offer. External
+    references -- an MCP peer naming a task it did not create here -- never
+    pass ``ensure`` and keep the fail-closed require.
+    """
     if task_id is None:
         return
-    if generated:
+    if generated or ensure:
         ensure_offered_task_id(
             ledger, task_id, model=model, required=False, source=source)
         return
@@ -213,7 +221,7 @@ def run_verify(settings=None, *, prompt, task_id=None, cancel_check=None,
                governor=None, ledger=None, transport=None,
                reasoning_token_budget=None, max_panelists=None,
                free_tier=None, router=None, generate_task_id=True,
-               attach_meta=True, task_max_cost=None):
+               attach_meta=True, task_max_cost=None, ensure_task_id=False):
     """The ONE verify-lane execution: governor, ledger, pre-run look-ahead,
     panel_judge, cost attribution, meta. The web server's verify runner,
     the CLI's verify command, and MCP's panel tool all call this; a behavior
@@ -231,6 +239,14 @@ def run_verify(settings=None, *, prompt, task_id=None, cancel_check=None,
     tally); `reassurance_claims` is a comma-separated claim-id list mapped to
     reassurance polarity. Both are lane concerns, not interface concerns, so
     they live here rather than in each caller's kwargs threading.
+
+    `ensure_task_id` is for local entry points whose ``task_id`` is a run
+    label they create themselves (the CLI verify face): the run self-offers
+    the ID, the way batch/apply entry points ensure locally created task
+    IDs, instead of demanding a prior consent offer for a local
+    claims-verify run. Callers relaying an external reference (MCP, which
+    injects its session governor/ledger) leave it False, and an unknown ID
+    still fails closed before any provider call.
     """
     if governor is None:
         if settings is None:
@@ -271,7 +287,8 @@ def run_verify(settings=None, *, prompt, task_id=None, cancel_check=None,
         task_id = uuid.uuid4().hex[:8]
     _preflight_task_id(
         ledger, task_id, generated=generated_task_id,
-        model="(verify)", source="service_verify")
+        model="(verify)", source="service_verify",
+        ensure=ensure_task_id)
 
     resolved = ResolvedVerifyInputs(
         settings=settings, router=router, panel=panel, judge=judge,

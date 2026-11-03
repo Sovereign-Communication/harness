@@ -18,7 +18,8 @@ from .ledger import AutonomyLedger
 from .router import Router
 from .saturation import pre_run_warning
 from .spend import SpendGovernor
-from .config import HARD_MAX_COST, resolve_api_key, resolve_fireworks_key
+from .config import (HARD_MAX_COST, resolve_api_key, resolve_fireworks_key,
+                     resolve_meta_key)
 from .errors import HarnessError
 from .validation import finite_number
 
@@ -26,7 +27,34 @@ from .validation import finite_number
 def governor_for(settings, max_cost_override=None):
     """Resolve the API key and verify it against OpenRouter, returning
     ``(api_key, governor)``. The key is threaded to every engine-routed
-    chat call by engine_for -- regression-pinned (the round-1 401 failure)."""
+    chat call by engine_for -- regression-pinned (the round-1 401 failure).
+
+    The direct-provider modes (use_meta, use_fireworks) resolve their own
+    key and skip OpenRouter key verification: there is no OpenRouter key
+    in those runs to verify, and the local per-provider budget is the
+    spend control."""
+    if getattr(settings, "use_meta", False):
+        meta_key = getattr(settings, "meta_key", "") or resolve_meta_key()
+        if not meta_key:
+            raise HarnessError(
+                "no Meta API key found (META_API_KEY or MUSE_API_KEY env, "
+                "~/.config/scmorc/meta.env, or "
+                "$HARNESS_CONFIG_DIR/meta.env (default: "
+                "~/.config/harness/meta.env).")
+        if max_cost_override is None:
+            max_cost = settings.max_cost
+        else:
+            max_cost = finite_number(max_cost_override, "max_cost", 0.0,
+                                     HARD_MAX_COST)
+        gov = SpendGovernor(HttpTransport(), meta_key,
+                            settings.expect_key_label,
+                            max_cost,
+                            fireworks_budget_usd=getattr(
+                                settings, "fireworks_budget_usd", 0.0),
+                            meta_budget_usd=getattr(
+                                settings, "meta_budget_usd", 0.0))
+        gov.key_info = {"label": "meta", "limit": max_cost, "remaining": max_cost}
+        return meta_key, gov
     if getattr(settings, "use_fireworks", False):
         fw_key = getattr(settings, "fireworks_key", "") or resolve_fireworks_key()
         if not fw_key:
@@ -42,7 +70,9 @@ def governor_for(settings, max_cost_override=None):
         gov = SpendGovernor(HttpTransport(), fw_key, settings.expect_key_label,
                             max_cost,
                             fireworks_budget_usd=getattr(
-                                settings, "fireworks_budget_usd", 0.0))
+                                settings, "fireworks_budget_usd", 0.0),
+                            meta_budget_usd=getattr(
+                                settings, "meta_budget_usd", 0.0))
         gov.key_info = {"label": "fireworks", "limit": max_cost, "remaining": max_cost}
         return fw_key, gov
     api_key = resolve_api_key()
@@ -63,7 +93,9 @@ def governor_for(settings, max_cost_override=None):
     gov = SpendGovernor(HttpTransport(), api_key, settings.expect_key_label,
                         max_cost,
                         fireworks_budget_usd=getattr(
-                            settings, "fireworks_budget_usd", 0.0))
+                            settings, "fireworks_budget_usd", 0.0),
+                        meta_budget_usd=getattr(
+                            settings, "meta_budget_usd", 0.0))
     gov.verify_key()
     return api_key, gov
 
