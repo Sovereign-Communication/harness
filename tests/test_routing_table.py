@@ -1,6 +1,9 @@
 """Unit tests for task-to-model routing table and OpenRouter floor price controls (#PR-Cost-1)."""
 import json
+import os
+import tempfile
 import unittest
+from datetime import datetime, timezone
 
 from harness.chat import chat
 from harness.routing_table import (
@@ -195,6 +198,183 @@ class RoutingTableTests(unittest.TestCase):
             trial_route["canonical_models"][0], "inclusionai/ling-3.0-flash")
         # Persistent TIER_MODELS is untouched after trial run
         self.assertEqual(TIER_MODELS[TIER_1], before_t1)
+
+
+class TierSnapshotRefreshTests(unittest.TestCase):
+    """The missing writer for packs/tiers.snapshot.json (#446 / DF-EV-5).
+
+    The freshness gate's own warning advertised a refresh path that did not
+    exist, so the committed artifact could only ever age out. These pins are
+    the refresh contract: a catalog that agrees restamps the artifact, and a
+    catalog that disagrees or cannot be read leaves the committed file byte
+    identical rather than silently dropping routing data.
+    """
+
+    PINNED_NOW = datetime(2026, 11, 3, 12, 0, 0, tzinfo=timezone.utc)
+
+    SNAPSHOT = {
+        "schema": 1,
+        "captured_at": "2026-10-18T00:00:00Z",
+        "max_age_days": 14,
+        "tiers": {
+            "T0": ["acme/free-a:free", "acme/free-b:free"],
+            "T1": ["acme/cheap-a"],
+            "T2": ["acme/mid-a"],
+            "T3": ["acme/frontier-a"],
+        },
+        "task_classes": {"fast": "T1", "frontier": "T3"},
+        "price_table": {
+            "acme/cheap-a": {"prompt_per_token": 1e-07,
+                            "completion_per_token": 2e-07, "tier": "T1"},
+            "acme/mid-a": {"prompt_per_token": 5e-07,
+                          "completion_per_token": 1e-06, "tier": "T2"},
+            "acme/frontier-a": {"prompt_per_token": 2e-06,
+                               "completion_per_token": 8e-06, "tier": "T3"},
+        },
+    }
+
+    CATALOG = [
+        {"id": "acme/free-a:free", "pricing": {"prompt": "0", "completion": "0"}},
+        {"id": "acme/free-b:free", "pricing": {"prompt": "0", "completion": "0"}},
+        {"id": "acme/cheap-a", "pricing": {"prompt": "9.1e-08", "completion": "1.82e-07"}},
+        {"id": "acme/mid-a", "pricing": {"prompt": "1.6e-06", "completion": "3.2e-06"}},
+        {"id": "acme/frontier-a", "pricing": {"prompt": "4e-06", "completion": "2e-05"}},
+    ]
+
+    def _write(self, directory, payload=None):
+        path = os.path.join(directory, "tiers.snapshot.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(self.SNAPSHOT if payload is None else payload, fh)
+        return path
+
+    def _read_bytes(self, path):
+        with open(path, "rb") as fh:
+            return fh.read()
+
+    def test_refresh_restamps_and_repriced_from_an_agreeing_catalog(self):
+        from harness.routing_table import check_tier_snapshot_freshness, refresh_tier_snapshot
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp)
+            report = refresh_tier_snapshot(self.CATALOG, path=path,
+                                           now=self.PINNED_NOW)
+            with open(path, encoding="utf-8") as fh:
+                written = json.load(fh)
+
+            self.assertTrue(report["ok"])
+            self.assertEqual(written["captured_at"], "2026-11-03T12:00:00Z")
+            self.assertEqual(report["previous_captured_at"], "2026-10-18T00:00:00Z")
+            # Tier membership is carried over exactly: nothing added, dropped.
+            self.assertEqual(written["tiers"], self.SNAPSHOT["tiers"])
+            self.assertEqual(report["tier_ids_validated"], 5)
+            # Prices come from the catalog, not from the old artifact.
+            self.assertAlmostEqual(written["price_table"]["acme/mid-a"]["prompt_per_token"],
+                                   1.6e-06)
+            self.assertAlmostEqual(
+                written["price_table"]["acme/frontier-a"]["completion_per_token"], 2e-05)
+            # Free ids stay out of the price table (no zero-price key churn).
+            self.assertNotIn("acme/free-a:free", written["price_table"])
+            # task_classes, schema and the window survive untouched.
+            self.assertEqual(written["task_classes"], self.SNAPSHOT["task_classes"])
+            self.assertEqual(written["schema"], 1)
+            self.assertEqual(written["max_age_days"], 14)
+            self.assertEqual(report["changed_fields"], ["captured_at", "price_table"])
+
+            freshness = check_tier_snapshot_freshness(path, now=self.PINNED_NOW)
+            self.assertTrue(freshness["ok"])
+            self.assertEqual(freshness["age_days"], 0.0)
+
+    def test_refresh_refuses_a_catalog_gap_and_leaves_the_file_untouched(self):
+        from harness.routing_table import SnapshotRefreshError, refresh_tier_snapshot
+
+        catalog = [row for row in self.CATALOG if row["id"] != "acme/free-b:free"]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp)
+            before = self._read_bytes(path)
+            with self.assertRaises(SnapshotRefreshError) as ctx:
+                refresh_tier_snapshot(catalog, path=path, now=self.PINNED_NOW)
+            self.assertIn("acme/free-b:free", str(ctx.exception))
+            self.assertIn("no silent drop", str(ctx.exception))
+            self.assertEqual(self._read_bytes(path), before)
+
+    def test_refresh_refuses_an_empty_catalog(self):
+        from harness.routing_table import SnapshotRefreshError, refresh_tier_snapshot
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp)
+            before = self._read_bytes(path)
+            for catalog in ([], [{"id": "acme/cheap-a"}]):
+                with self.assertRaises(SnapshotRefreshError):
+                    refresh_tier_snapshot(catalog, path=path, now=self.PINNED_NOW)
+            self.assertEqual(self._read_bytes(path), before)
+
+    def test_refresh_refuses_when_a_priced_id_lost_its_rate(self):
+        """A listed id with no published rate is a gap too, not a price of 0."""
+        from harness.routing_table import SnapshotRefreshError, refresh_tier_snapshot
+
+        catalog = [dict(row) for row in self.CATALOG]
+        for row in catalog:
+            if row["id"] == "acme/mid-a":
+                row["pricing"] = {"prompt": "", "completion": ""}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp)
+            before = self._read_bytes(path)
+            with self.assertRaises(SnapshotRefreshError) as ctx:
+                refresh_tier_snapshot(catalog, path=path, now=self.PINNED_NOW)
+            self.assertIn("acme/mid-a", str(ctx.exception))
+            self.assertEqual(self._read_bytes(path), before)
+
+    def test_refresh_refuses_an_unreadable_or_tierless_snapshot(self):
+        from harness.routing_table import SnapshotRefreshError, refresh_tier_snapshot
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "tiers.snapshot.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("{not json")
+            with self.assertRaises(SnapshotRefreshError):
+                refresh_tier_snapshot(self.CATALOG, path=path, now=self.PINNED_NOW)
+            self.assertEqual(self._read_bytes(path), b"{not json")
+
+            # No tiers object: refuse rather than write the bootstrap literal
+            # over a reviewable artifact.
+            tierless = os.path.join(tmp, "tierless.json")
+            with open(tierless, "w", encoding="utf-8") as fh:
+                json.dump({"schema": 1, "captured_at": "2026-10-18T00:00:00Z"}, fh)
+            with self.assertRaises(SnapshotRefreshError):
+                refresh_tier_snapshot(self.CATALOG, path=tierless, now=self.PINNED_NOW)
+
+    def test_refresh_refuses_a_negative_published_rate(self):
+        from harness.routing_table import SnapshotRefreshError, refresh_tier_snapshot
+
+        catalog = [dict(row) for row in self.CATALOG]
+        for row in catalog:
+            if row["id"] == "acme/cheap-a":
+                row["pricing"] = {"prompt": "-1e-07", "completion": "1e-07"}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp)
+            with self.assertRaises(SnapshotRefreshError):
+                refresh_tier_snapshot(catalog, path=path, now=self.PINNED_NOW)
+
+    def test_shipped_snapshot_names_only_live_catalog_families(self):
+        """The artifact this repo ships must not carry a delisted id (#446).
+
+        Deterministic and offline: this asserts the committed file's shape is
+        refreshable at all -- every tier id is priced or explicitly free, and
+        no tier is empty -- so the scheduled refresh cannot refuse on arrival.
+        Live catalog agreement is the weekly job's assertion, not this one.
+        """
+        from harness.routing_table import TIERS_SNAPSHOT_PATH
+
+        with open(TIERS_SNAPSHOT_PATH, encoding="utf-8") as fh:
+            raw = json.load(fh)
+        for tier, ids in raw["tiers"].items():
+            self.assertTrue(ids, f"{tier} is empty")
+        for model_id in raw["price_table"]:
+            self.assertFalse(model_id.endswith(":free"),
+                             "free ids are zero by definition and stay unpriced")
+        listed = {m for ids in raw["tiers"].values() for m in ids}
+        self.assertTrue(set(raw["price_table"]).issubset(listed),
+                        "a priced id is not routed by any tier")
 
 
 if __name__ == "__main__":

@@ -216,6 +216,116 @@ class ProbeFaceTests(unittest.TestCase):
         self.assertFalse(governor.called)
 
 
+class SnapshotRefreshCliTests(unittest.TestCase):
+    """`harness economics --refresh-snapshot`: the writer the gate advertised.
+
+    #446 / DF-EV-5: the freshness warning said "refresh via `harness
+    economics --report`", and that path writes no snapshot, so the committed
+    artifact had no refresh route at all. These pins cover the CLI contract --
+    the flag exists against the real parser, a missing key refuses instead of
+    stamping anything, and a catalog disagreement exits 2 with the artifact
+    byte-identical.
+    """
+
+    SNAPSHOT = {
+        "schema": 1,
+        "captured_at": "2026-10-18T00:00:00Z",
+        "max_age_days": 14,
+        "tiers": {"T0": ["acme/free-a:free"], "T1": ["acme/cheap-a"],
+                  "T2": ["acme/mid-a"], "T3": ["acme/frontier-a"]},
+        "task_classes": {"fast": "T1"},
+        "price_table": {
+            "acme/cheap-a": {"prompt_per_token": 1e-07,
+                            "completion_per_token": 2e-07, "tier": "T1"},
+            "acme/mid-a": {"prompt_per_token": 5e-07,
+                          "completion_per_token": 1e-06, "tier": "T2"},
+            "acme/frontier-a": {"prompt_per_token": 2e-06,
+                               "completion_per_token": 8e-06, "tier": "T3"},
+        },
+    }
+
+    CATALOG = [
+        {"id": "acme/free-a:free", "pricing": {"prompt": "0", "completion": "0"}},
+        {"id": "acme/cheap-a", "pricing": {"prompt": "9.1e-08", "completion": "1.82e-07"}},
+        {"id": "acme/mid-a", "pricing": {"prompt": "1.6e-06", "completion": "3.2e-06"}},
+        {"id": "acme/frontier-a", "pricing": {"prompt": "4e-06", "completion": "2e-05"}},
+    ]
+
+    def _fixture(self, tmp):
+        path = os.path.join(tmp, "tiers.snapshot.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(self.SNAPSHOT, fh)
+        return path
+
+    def test_refresh_snapshot_flag_parses(self):
+        opts = build_parser().parse_args(["economics", "--refresh-snapshot", "--json"])
+        self.assertTrue(opts.refresh_snapshot)
+        self.assertFalse(getattr(opts, "check_fresh", False))
+
+    def test_refresh_snapshot_emits_the_report_against_a_catalog_double(self):
+        from harness.cli import _cmd_economics
+        opts = build_parser().parse_args(["economics", "--refresh-snapshot", "--json"])
+        gov = mock.Mock()
+        gov.fetch_models.return_value = self.CATALOG
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._fixture(tmp)
+            buf = io.StringIO()
+            with mock.patch("harness.cli._governor", return_value=("k", gov)), \
+                    mock.patch("harness.routing_table.TIERS_SNAPSHOT_PATH", path), \
+                    redirect_stdout(buf):
+                _cmd_economics(opts, mock.Mock())
+            payload = json.loads(buf.getvalue())
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["changed_fields"], ["captured_at", "price_table"])
+            with open(path, encoding="utf-8") as fh:
+                written = json.load(fh)
+            self.assertEqual(written["tiers"], self.SNAPSHOT["tiers"])
+            self.assertNotEqual(written["captured_at"], "2026-10-18T00:00:00Z")
+        gov.fetch_models.assert_called_once_with(refresh=True)
+
+    def test_refresh_snapshot_refuses_without_a_key(self):
+        """No key is a refusal, never a stamp: the artifact asserts currency
+        somebody actually checked against the catalog."""
+        from harness.cli import _cmd_economics
+        opts = build_parser().parse_args(["economics", "--refresh-snapshot", "--json"])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._fixture(tmp)
+            with open(path, "rb") as fh:
+                before = fh.read()
+            with mock.patch("harness.cli._governor",
+                            side_effect=HarnessError("no OpenRouter API key found")), \
+                    mock.patch("harness.routing_table.TIERS_SNAPSHOT_PATH", path):
+                with self.assertRaises(HarnessError):
+                    _cmd_economics(opts, mock.Mock())
+            with open(path, "rb") as fh:
+                self.assertEqual(fh.read(), before)
+
+    def test_refresh_snapshot_refusal_exits_2_and_leaves_the_artifact(self):
+        from harness.cli import _cmd_economics
+        opts = build_parser().parse_args(["economics", "--refresh-snapshot", "--json"])
+        gov = mock.Mock()
+        gov.fetch_models.return_value = [
+            row for row in self.CATALOG if row["id"] != "acme/mid-a"]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._fixture(tmp)
+            with open(path, "rb") as fh:
+                before = fh.read()
+            buf = io.StringIO()
+            err = io.StringIO()
+            with mock.patch("harness.cli._governor", return_value=("k", gov)), \
+                    mock.patch("harness.routing_table.TIERS_SNAPSHOT_PATH", path), \
+                    redirect_stdout(buf), redirect_stderr(err):
+                with self.assertRaises(SystemExit) as ctx:
+                    _cmd_economics(opts, mock.Mock())
+            self.assertEqual(ctx.exception.code, 2)
+            payload = json.loads(buf.getvalue())
+            self.assertFalse(payload["ok"])
+            self.assertIn("acme/mid-a", payload["error"])
+            self.assertIn("refused", err.getvalue())
+            with open(path, "rb") as fh:
+                self.assertEqual(fh.read(), before)
+
+
 class EconomicsReportAndExportTests(unittest.TestCase):
     """EV-5 CLI and site-export --economics surfaces."""
 

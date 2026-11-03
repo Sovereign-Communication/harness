@@ -17,7 +17,10 @@ EV-2 / #195 / #197:
 from datetime import datetime, timezone
 import json
 import os
+import tempfile
 from typing import Any, Dict, List, Optional, Sequence
+
+from .validation import optional_float
 
 # Canonical tier identifiers
 TIER_0 = "T0"  # Free models ($0)
@@ -36,7 +39,7 @@ _BOOTSTRAP_TIER_MODELS: Dict[str, List[str]] = {
     TIER_0: [
         "google/gemma-4-31b-it:free",
         "google/gemma-4-26b-a4b-it:free",
-        "nvidia/nemotron-3-super-120b-a12b:free",
+        "nvidia/nemotron-3-ultra-550b-a55b:free",
         "cohere/north-mini-code:free",
     ],
     TIER_1: [
@@ -192,6 +195,184 @@ def generate_tier_snapshot(
         "tiers": tiers_out,
         "task_classes": dict(base["task_classes"]),
         "price_table": dict(price_table if price_table is not None else base["price_table"]),
+    }
+
+
+class SnapshotRefreshError(ValueError):
+    """A catalog read that must not be written over the committed snapshot.
+
+    Every refusal path leaves the committed file untouched: a stale stamp is
+    a visible red gate, while a snapshot refreshed from a catalog that has
+    gaps (or from no catalog at all) would silently retire routing data the
+    fleet still depends on.
+    """
+
+
+def _catalog_prices(catalog: Sequence[Dict[str, Any]]) -> Dict[str, Dict[str, float]]:
+    """Map model id -> published per-token prices from a ``/models`` read."""
+    prices: Dict[str, Dict[str, float]] = {}
+    for entry in catalog or ():
+        if not isinstance(entry, dict):
+            continue
+        model_id = entry.get("id")
+        if not isinstance(model_id, str) or not model_id:
+            continue
+        pricing = entry.get("pricing") or {}
+        if not isinstance(pricing, dict):
+            continue
+        prompt = optional_float(pricing.get("prompt"))
+        completion = optional_float(pricing.get("completion"))
+        if prompt is None or completion is None:
+            continue
+        prices[model_id] = {"prompt_per_token": prompt,
+                           "completion_per_token": completion}
+    return prices
+
+
+def refresh_tier_snapshot(
+    catalog: Sequence[Dict[str, Any]],
+    *,
+    path: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Rewrite ``packs/tiers.snapshot.json`` from a live catalog read (EV-5).
+
+    The gate's advertised cure existed only in prose: nothing in the repo could
+    refresh this artifact, so once it aged out (2026-11-01) every head's
+    freshness check and the scheduled rankings job could only ever be red
+    (#446, DF-EV-5 drift). This is the missing writer.
+
+    Contract, in the order the checks run -- each refusal raises
+    :class:`SnapshotRefreshError` and writes nothing:
+
+    * the committed artifact must be readable, so a corrupt file is repaired by
+      review rather than silently replaced with the bootstrap literal;
+    * the catalog read must be non-empty;
+    * **every** id named by a tier must still be offered by the catalog -- a
+      catalog gap is a refusal, never a silent drop, matching
+      ``capabilities --check-shipped``;
+    * every id already priced in ``price_table`` must still be catalogued and
+      still publish both per-token rates, and no published rate may be
+      negative.
+
+    What it rewrites: ``captured_at`` (now), ``price_table`` values to the
+    catalog's published rates, and each price entry's ``tier`` to the tier that
+    actually lists it. Tier membership, ``task_classes``, ``schema`` and
+    ``max_age_days`` are carried over unchanged, so the diff is a single
+    reviewable JSON file and no routing decision moves. Free (``:free``) ids are
+    deliberately not added to ``price_table``: they are zero by definition and
+    adding keys would change the savings math in ``ledger_analytics`` -- that is
+    a rotation decision, not a currency refresh.
+    """
+    target = path or TIERS_SNAPSHOT_PATH
+    try:
+        with open(target, encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except (OSError, ValueError) as exc:
+        raise SnapshotRefreshError(
+            f"committed snapshot {target} is unreadable ({exc}); refusing to "
+            "replace it with a guess -- fix or restore it first") from exc
+    if not isinstance(raw, dict) or not isinstance(raw.get("tiers"), dict):
+        raise SnapshotRefreshError(
+            f"committed snapshot {target} has no tiers object; refusing to "
+            "write over it")
+
+    prices = _catalog_prices(catalog)
+    if not prices:
+        raise SnapshotRefreshError(
+            "the catalog read returned no usable prices; refusing to stamp a "
+            "currency claim on data that was never checked")
+
+    tiers_raw = raw["tiers"]
+    tiers_out: Dict[str, List[str]] = {}
+    listed_in: Dict[str, str] = {}
+    missing: List[str] = []
+    for tier in TIER_ORDER:
+        ids = list(tiers_raw.get(tier) or _BOOTSTRAP_TIER_MODELS[tier])
+        tiers_out[tier] = ids
+        for model_id in ids:
+            listed_in.setdefault(model_id, tier)
+            if model_id not in prices:
+                missing.append(model_id)
+    if missing:
+        raise SnapshotRefreshError(
+            "these tier ids are absent from the live catalog (no silent drop): "
+            + ", ".join(sorted(missing)))
+
+    current_pt = raw.get("price_table")
+    current_pt = current_pt if isinstance(current_pt, dict) else {}
+    price_table: Dict[str, Dict[str, Any]] = {}
+    unpriced: List[str] = []
+    negative: List[str] = []
+    for model_id in sorted(current_pt):
+        rates = prices.get(model_id)
+        if rates is None:
+            unpriced.append(model_id)
+            continue
+        if rates["prompt_per_token"] < 0 or rates["completion_per_token"] < 0:
+            negative.append(model_id)
+            continue
+        price_table[model_id] = {
+            "prompt_per_token": rates["prompt_per_token"],
+            "completion_per_token": rates["completion_per_token"],
+            "tier": listed_in.get(model_id)
+                    or str((current_pt.get(model_id) or {}).get("tier") or TIER_1),
+        }
+    if unpriced:
+        raise SnapshotRefreshError(
+            "these priced ids are absent from the live catalog or publish no "
+            "per-token rate: " + ", ".join(sorted(unpriced)))
+    if negative:
+        raise SnapshotRefreshError(
+            "the catalog publishes a negative rate for: " + ", ".join(sorted(negative)))
+
+    ref_now = now or datetime.now(timezone.utc)
+    if ref_now.tzinfo is None:
+        ref_now = ref_now.replace(tzinfo=timezone.utc)
+    captured_at = ref_now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    payload = {
+        "schema": int(raw.get("schema") or 1),
+        "captured_at": captured_at,
+        "max_age_days": int(raw.get("max_age_days") or DEFAULT_SNAPSHOT_MAX_AGE_DAYS),
+        "tiers": tiers_out,
+        "task_classes": dict(raw.get("task_classes") or _BOOTSTRAP_TASK_CLASSES),
+        "price_table": price_table,
+    }
+
+    previous = str(raw.get("captured_at") or "")
+    changed = sorted(
+        key for key in payload
+        if payload[key] != raw.get(key)
+    )
+
+    # Atomic replace: a reader (or an import of this module) never sees a
+    # half-written snapshot, and a refused or interrupted run leaves the
+    # committed artifact exactly as it was.
+    directory = os.path.dirname(os.path.abspath(target)) or "."
+    fd, tmp_path = tempfile.mkstemp(prefix=".tiers.snapshot.", suffix=".tmp",
+                                    dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            json.dump(payload, fh, indent=2, sort_keys=True)
+            fh.write("\n")
+        os.replace(tmp_path, target)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+    return {
+        "ok": True,
+        "path": target,
+        "captured_at": captured_at,
+        "previous_captured_at": previous,
+        "max_age_days": payload["max_age_days"],
+        "catalog_size": len(prices),
+        "tier_ids_validated": len(listed_in),
+        "price_table_entries": len(price_table),
+        "changed_fields": changed,
     }
 
 

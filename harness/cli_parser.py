@@ -619,6 +619,10 @@ def build_parser():
                      help="permit EV-4 rotation proposals that increase expected per-call cost")
     pec.add_argument("--check-fresh", action="store_true",
                      help="verify tiers.snapshot.json freshness (no API key required)")
+    pec.add_argument("--refresh-snapshot", action="store_true",
+                     help="rewrite packs/tiers.snapshot.json from the live catalog "
+                          "($0.00 /models read): catalog-validated, and a refusal "
+                          "writes nothing (needs an OpenRouter key)")
     pec.add_argument("--provider", choices=["openrouter", "fireworks"], default="openrouter",
                      help="pricing source for economics view (default: openrouter; "
                           "with --provider fireworks and --confirm-single-paid-call, "

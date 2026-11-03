@@ -57,7 +57,9 @@ from .fireworks_probe import run_fireworks_probe
 from .routing_table import (
     SNAPSHOT_PRICE_TABLE,
     TIER_MODELS,
+    SnapshotRefreshError,
     check_tier_snapshot_freshness,
+    refresh_tier_snapshot,
     unlisted_tier_fallbacks,
 )
 from .spend import discover_free_models
@@ -1136,6 +1138,22 @@ def _cmd_economics(opts, settings):
             "endpoints": len(endpoints),
             "comparisons": comparisons,
         }, opts.out, force_json=getattr(opts, "json", False))
+        return
+
+    if getattr(opts, "refresh_snapshot", False):
+        # The gate's advertised cure (#446 / DF-EV-5): the missing writer for
+        # packs/tiers.snapshot.json. One catalog GET, $0.00, no chat call.
+        # Every refusal leaves the committed artifact untouched.
+        _api_key, gov = _governor(settings, getattr(opts, "max_cost", None))
+        catalog = gov.fetch_models(refresh=True) or []
+        try:
+            report = refresh_tier_snapshot(catalog)
+        except SnapshotRefreshError as exc:
+            eprint(f"[refresh-snapshot] refused, snapshot untouched: {exc}")
+            _emit({"ok": False, "error": str(exc)}, opts.out,
+                  force_json=getattr(opts, "json", False))
+            sys.exit(2)
+        _emit(report, opts.out, force_json=getattr(opts, "json", False))
         return
 
     if getattr(opts, "check_fresh", False):
