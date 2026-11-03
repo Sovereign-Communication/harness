@@ -668,65 +668,85 @@ def fetch_url(url, allowed_hosts, timeout=12.0, max_chars=6000,
             "text": text}
 
 
-def gather_web_context(prompt: str, *, allowed_hosts=DEFAULT_FETCH_HOSTS, allow_any_public=False, named_hosts=None, fetch_url_fn=None, search_web_fn=None, find_urls_fn=None, extract_query_fn=None, max_sources=3):
-    """Single-owner web evidence gathering for one chat turn.
+def gather_web_context(*, approved_queries=(), approved_urls=(),
+                       allowed_hosts=DEFAULT_FETCH_HOSTS,
+                       allow_any_public=False, named_hosts=None,
+                       fetch_url_fn=None, search_web_fn=None,
+                       max_sources=3):
+    """Execute only explicit query and URL actions approved for this request.
 
-    Fetches allowlisted URLs in the prompt (one per URL, up to max_sources);
-    if none succeed, falls back to one search. If search results include
-    pages on allowed_hosts, automatically fetches the primary page so deep
-    text evidence is available to the model.
+    Prompt text and a failed direct fetch never create an implicit search.
+    A failed URL can be followed by search only when a separate approved
+    query is supplied.
     """
-    from typing import Dict, List, Any
+    from typing import Any, Dict, List
+
+    def clean_actions(values):
+        if not isinstance(values, (list, tuple)):
+            return []
+        actions = []
+        seen = set()
+        for value in values:
+            if not isinstance(value, str):
+                continue
+            value = value.strip()
+            if value and value not in seen:
+                seen.add(value)
+                actions.append(value)
+        return actions[:max(0, int(max_sources))]
+
+    queries = clean_actions(approved_queries)
+    urls = clean_actions(approved_urls)
+    if not queries and not urls:
+        return []
+
     fetch_fn = fetch_url_fn if fetch_url_fn is not None else fetch_url
     search_fn = search_web_fn if search_web_fn is not None else search_web
-    find_fn = find_urls_fn if find_urls_fn is not None else find_urls
-    extract_fn = extract_query_fn if extract_query_fn is not None else extract_query
     sources: List[Dict[str, Any]] = []
     named = {h.lower() for h in (named_hosts or [])}
-    urls = find_fn(prompt)[:max_sources]
-    if urls:
-        for u in urls:
-            try:
-                # Pass allow_any_public only when the URL is admitted by
-                # policy (operator disabled the list) or by the user naming
-                # that host, so the injectable seam keeps its original
-                # (url, allowed_hosts=...) shape on the default path.
-                host = (urllib.parse.urlsplit(u).hostname or "").lower()
-                if allow_any_public or host in named:
-                    page = fetch_fn(u, allowed_hosts=allowed_hosts,
-                                    allow_any_public=True)
-                else:
-                    page = fetch_fn(u, allowed_hosts=allowed_hosts)
-                sources.append({"kind": "fetch", "ok": True, "url": page["url"], "title": page["title"], "text": page["text"]})
-            except HarnessError as e:
-                sources.append({"kind": "fetch", "ok": False, "url": u, "note": str(e)})
-        if any(s["ok"] for s in sources):
-            return sources
-    try:
-        results = search_fn(extract_fn(prompt))
-        for r in results[:max_sources]:
-            r_url = r.get("url", "")
-            r_host = (urllib.parse.urlsplit(r_url).hostname or "").lower()
-            allowed = {h.lower() for h in (allowed_hosts or [])}
-            # If the discovered source is from an allowlisted (or
-            # user-named) host, enrich the snippet with the page's own text.
-            admitted = r_host in allowed or r_host in named or allow_any_public
-            if admitted and not any(s.get("kind") == "fetch" and s.get("ok") for s in sources):
-                try:
-                    if allow_any_public or r_host in named:
-                        page = fetch_fn(r_url, allowed_hosts=allowed_hosts,
-                                        allow_any_public=True)
-                    else:
-                        page = fetch_fn(r_url, allowed_hosts=allowed_hosts)
-                    sources.append({"kind": "fetch", "ok": True, "url": page["url"], "title": page["title"], "text": page["text"]})
-                    continue
-                except ToolCancelled:
-                    raise
-                except Exception:
-                    pass
-            sources.append({"kind": "search", "ok": True, "url": r["url"], "title": r["title"], "text": r["snippet"]})
-    except HarnessError as e:
-        sources.append({"kind": "search", "ok": False, "note": str(e)})
+    for url in urls:
+        try:
+            host = urllib.parse.urlsplit(url).hostname
+        except ValueError:
+            host = None
+        if host:
+            named.add(host.lower())
+
+    for url in urls:
+        if len(sources) >= max_sources:
+            break
+        try:
+            host = (urllib.parse.urlsplit(url).hostname or "").lower()
+            if allow_any_public or host in named:
+                page = fetch_fn(url, allowed_hosts=allowed_hosts,
+                                allow_any_public=True)
+            else:
+                page = fetch_fn(url, allowed_hosts=allowed_hosts)
+            sources.append({"kind": "fetch", "ok": True,
+                            "url": page["url"], "title": page["title"],
+                            "text": page["text"]})
+        except (HarnessError, ValueError) as exc:
+            sources.append({"kind": "fetch", "ok": False, "url": url,
+                            "note": str(exc)})
+
+    for query in queries:
+        remaining = max_sources - len(sources)
+        if remaining <= 0:
+            break
+        try:
+            results = search_fn(query)
+        except HarnessError as exc:
+            sources.append({"kind": "search", "ok": False,
+                            "query": query, "note": str(exc)})
+            continue
+        for result in (results or [])[:remaining]:
+            if not isinstance(result, dict):
+                continue
+            sources.append({"kind": "search", "ok": True,
+                            "query": query,
+                            "url": result.get("url", ""),
+                            "title": result.get("title", ""),
+                            "text": result.get("snippet", "")})
     return sources
 
 

@@ -30,7 +30,7 @@ from .prompts import CAPABILITY_MARKER
 from .results import _http_error
 from .session import governor_for, ledger_for
 from .token_budget import resolve_lane_max_tokens as _resolve_lane_max_tokens
-from .web import gather_web_context, named_target_hosts, resolve_fetch_allowlist
+from .web import gather_web_context, resolve_fetch_allowlist
 
 
 class ConversationLifecycleMixin:
@@ -58,6 +58,9 @@ class ConversationLifecycleMixin:
         persist: bool = True,
     ) -> Dict[str, Any]:
         # Handle informational or technical questions with conversational routing
+        # A caller's web preference is not approval. This fallback has no
+        # accepted ResearchPlan input, so it remains local.
+        web = False
         api_key, gov = governor_for(self.settings)
         target_tokens, lane_effort = effective_lane_policy(
             "chat", max_tokens=max_tokens, reasoning_effort=reasoning_effort
@@ -75,9 +78,8 @@ class ConversationLifecycleMixin:
         if web:
             if cancel_check and cancel_check():
                 raise ToolCancelled("Prompt execution was cancelled by user")
-            named_hosts = named_target_hosts(prompt)
             try:
-                web_sources = self._gather_web_context(prompt, named_hosts)
+                web_sources = self._gather_web_context()
             except ToolCancelled:
                 raise
             except Exception as e:  # web tools must never kill the chat lane
@@ -402,22 +404,20 @@ class ConversationLifecycleMixin:
             untrusted_evidence=evidence, propose_scripts=False,
             allow_escalation=False, persist=False)
 
-    def _gather_web_context(self, prompt: str,
-                            named_hosts=None) -> List[Dict[str, Any]]:
+    def _gather_web_context(self, approved_queries=(),
+                            approved_urls=()) -> List[Dict[str, Any]]:
         # Web owns the network seams; pass those module functions through so
         # policy and hermetic test patches remain at the single owner.
         import harness.web as _web
 
         allowed, any_public = resolve_fetch_allowlist(self.settings)
         return gather_web_context(
-            prompt,
+            approved_queries=approved_queries,
+            approved_urls=approved_urls,
             allowed_hosts=allowed,
             allow_any_public=any_public,
-            named_hosts=named_hosts or named_target_hosts(prompt),
             fetch_url_fn=_web.fetch_url,
             search_web_fn=_web.search_web,
-            find_urls_fn=_web.find_urls,
-            extract_query_fn=_web.extract_query,
             max_sources=_MAX_WEB_SOURCES,
         )
 

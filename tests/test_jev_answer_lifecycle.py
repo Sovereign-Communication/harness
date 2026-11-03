@@ -535,33 +535,41 @@ class HourglassRequestContextTests(unittest.TestCase):
         self.assertIn("bounded review sample", context)
         self.assertEqual(web_sources, [])
 
-    def test_web_true_attaches_ok_sources_to_context(self):
+    def test_web_preference_without_approved_plan_does_not_gather_or_render(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             agent = AutonomousAgent(settings=_ladder_settings(),
                                     root_dir=root, history_dir=root)
             with patch.object(agent, "_gather_web_context",
-                              return_value=[{"kind": "web", "ok": True,
-                                            "url": "https://example.com",
-                                            "text": "web evidence body"}]):
+                              side_effect=AssertionError("no accepted plan")) as gather, \
+                 patch("harness.hourglass_lifecycle.is_site_audit_request",
+                       return_value=True), \
+                 patch("harness.hourglass_lifecycle.render_site_evidence",
+                       side_effect=AssertionError("no accepted URL")) as render:
                 context, files, brief, web_sources = \
-                    agent._hourglass_request_context("what is new?", web=True)
-        self.assertEqual(len(web_sources), 1)
-        self.assertIn("WEB EVIDENCE", context)
-        self.assertIn("web evidence body", context)
+                    agent._hourglass_request_context(
+                        "audit this site https://example.test", web=True)
+        self.assertEqual(web_sources, [])
+        gather.assert_not_called()
+        render.assert_not_called()
+        self.assertNotIn("WEB EVIDENCE", context)
 
-    def test_web_true_gather_failure_is_disclosed_not_raised(self):
+    def test_approved_query_is_forwarded_exactly_to_gatherer(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             agent = AutonomousAgent(settings=_ladder_settings(),
                                     root_dir=root, history_dir=root)
             with patch.object(agent, "_gather_web_context",
-                              side_effect=RuntimeError("network down")):
+                              return_value=[{"kind": "search", "ok": True,
+                                            "url": "https://example.com",
+                                            "text": "reviewed evidence"}]) as gather:
                 context, files, brief, web_sources = \
-                    agent._hourglass_request_context("what is new?", web=True)
+                    agent._hourglass_request_context(
+                        "what is new?", web=True,
+                        approved_queries=("exact reviewed query",))
+        gather.assert_called_once_with(("exact reviewed query",), ())
         self.assertEqual(len(web_sources), 1)
-        self.assertFalse(web_sources[0]["ok"])
-        self.assertIn("RuntimeError", web_sources[0]["note"])
+        self.assertIn("reviewed evidence", context)
 
     def test_site_audit_attaches_rendered_browser_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -574,15 +582,16 @@ class HourglassRequestContextTests(unittest.TestCase):
             with patch.object(agent, "_gather_web_context", return_value=[]), \
                  patch("harness.hourglass_lifecycle.is_site_audit_request",
                        return_value=True), \
-                 patch("harness.hourglass_lifecycle.extract_site_target",
-                       return_value="https://example.test"), \
                  patch("harness.hourglass_lifecycle.render_site_evidence",
                        return_value=evidence) as render, \
                  patch("harness.hourglass_lifecycle.evidence_summary",
                        return_value="RENDERED EVIDENCE"):
                 context, _files, _brief, web_sources = \
-                    agent._hourglass_request_context("audit this site", web=True)
+                    agent._hourglass_request_context(
+                        "audit this site https://incidental.test", web=True,
+                        approved_urls=("https://example.test/review",))
         render.assert_called_once()
+        self.assertEqual(render.call_args.args[0], "https://example.test/review")
         browser = [s for s in web_sources if s.get("kind") == "browser"]
         self.assertEqual(len(browser), 1)
         self.assertTrue(browser[0]["ok"])
@@ -598,12 +607,12 @@ class HourglassRequestContextTests(unittest.TestCase):
             with patch.object(agent, "_gather_web_context", return_value=[]), \
                  patch("harness.hourglass_lifecycle.is_site_audit_request",
                        return_value=True), \
-                 patch("harness.hourglass_lifecycle.extract_site_target",
-                       return_value="https://example.test"), \
                  patch("harness.hourglass_lifecycle.render_site_evidence",
                        side_effect=RuntimeError("no browser")):
                 _context, _files, _brief, web_sources = \
-                    agent._hourglass_request_context("audit this site", web=True)
+                    agent._hourglass_request_context(
+                        "audit this site", web=True,
+                        approved_urls=("https://example.test/",))
         browser = [s for s in web_sources if s.get("kind") == "browser"]
         self.assertEqual(len(browser), 1)
         self.assertFalse(browser[0]["ok"])
@@ -818,33 +827,60 @@ class AgentAnswerLoopTests(unittest.TestCase):
         agent = AutonomousAgent(settings=load_settings(), root_dir=None)
         self.assertEqual(agent._hourglass_workspace_candidates("Audit this repo"), [])
 
-    def test_native_web_research_and_simple_strategy_routes_enable_web(self):
+    def test_native_answer_route_clears_web_preference(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent = AutonomousAgent(settings=_ladder_settings(),
                                     root_dir=Path(tmp), history_dir=Path(tmp))
-            cases = (
+            policy = _FakePolicy([(0.995, False, False)])
+            with patch("harness.hourglass_lifecycle.policy_for", return_value=policy), \
+                 patch("harness.hourglass_lifecycle.governor_for",
+                       return_value=(None, MagicMock())), \
+                 patch("harness.hourglass_lifecycle.ledger_for", return_value=MagicMock()), \
+                 patch.object(agent, "_hourglass_request_context", return_value=(
+                     "local context", {}, MagicMock(estimated_tokens=2), [])) as context, \
+                 patch.object(agent, "_hourglass_answer_once", return_value={
+                     "model": "m1", "answer": "answer", "cost": 0.0}), \
+                 patch("harness.hourglass_lifecycle.save_chat_turn"):
+                result = agent.run_hourglass_request(
+                    "What is the latest physics result?", web=True,
+                    request_preflight={
+                        "source": "jev_request_workflow", "choice": "answer",
+                        "native": True, "cost": 0.0,
+                    })
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["workflow_tier"], "answer")
+            self.assertFalse(context.call_args.kwargs["web"])
+
+    def test_web_research_route_defers_without_an_accepted_plan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = AutonomousAgent(settings=_ladder_settings(),
+                                    root_dir=Path(tmp), history_dir=Path(tmp))
+            for route in (
                 {"source": "jev_request_workflow", "choice": "web-research",
                  "native": True, "cost": 0.0},
                 {"source": "simple_strategy", "choice": "web_research",
                  "native": False, "cost": 0.0},
-            )
-            for index, route in enumerate(cases):
-                policy = _FakePolicy([(0.995, False, False)])
+            ):
                 with self.subTest(route=route), \
-                     patch("harness.hourglass_lifecycle.policy_for", return_value=policy), \
                      patch("harness.hourglass_lifecycle.governor_for",
                            return_value=(None, MagicMock())), \
-                     patch("harness.hourglass_lifecycle.ledger_for", return_value=MagicMock()), \
-                     patch.object(agent, "_hourglass_request_context", return_value=(
-                         "web context", {}, MagicMock(estimated_tokens=2), [])) as context, \
-                     patch.object(agent, "_hourglass_answer_once", return_value={
-                         "model": "m1", "answer": "grounded answer", "cost": 0.0}), \
-                     patch("harness.hourglass_lifecycle.save_chat_turn"):
+                     patch("harness.hourglass_lifecycle.policy_for",
+                           return_value=MagicMock()), \
+                     patch("harness.hourglass_lifecycle.ledger_for",
+                           return_value=MagicMock()), \
+                     patch.object(agent, "_hourglass_request_context",
+                                  side_effect=AssertionError("must defer before retrieval")), \
+                     patch("harness.hourglass_lifecycle.render_site_evidence",
+                           side_effect=AssertionError("must not render")), \
+                     patch("harness.hourglass_lifecycle.save_chat_turn"), \
+                     patch.object(agent, "_finish_chat_request"):
                     result = agent.run_hourglass_request(
-                        "Explain a current question", session_id=f"web-{index}",
+                        "Analyze current science findings", web=True,
                         request_preflight=route)
-                self.assertEqual(result["status"], "ok")
-                self.assertTrue(context.call_args.kwargs["web"])
+                self.assertEqual(result["status"], "deferred")
+                self.assertFalse(result["web_used"])
+                self.assertEqual(result["web_sources"], [])
+                self.assertIn("accepted exact-query", result["response"])
 
     def test_memory_resolves_a_native_clarify_into_an_answer(self):
         from harness.conversation_context import remember_turn

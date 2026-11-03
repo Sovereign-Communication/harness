@@ -75,7 +75,7 @@ from .simple_request import (
     is_workspace_inspection_request,
 )
 from .token_budget import resolve_lane_max_tokens as _resolve_lane_max_tokens
-from .web import extract_site_target, resolve_fetch_allowlist
+from .web import resolve_fetch_allowlist
 from .workspace import resolve_workspace_path
 
 
@@ -101,14 +101,25 @@ class HourglassLifecycleMixin:
     def _hourglass_request_context(self, prompt: str, web: bool = False,
                                   workspace: bool = True,
                                   web_prompt: Optional[str] = None,
-                                  session_id: Optional[str] = None):
+                                  session_id: Optional[str] = None,
+                                  approved_queries=(), approved_urls=()):
         """Gather a bounded, cheap intake brief for a non-edit request.
 
         Intake is local and deterministic: explicit paths win, then filename
-        overlap, then no context.  It never feeds an unbounded repository to a
-        model.  Web evidence is added only when the caller explicitly enables
-        the existing bounded web lane.
+        overlap, then no context. It never feeds an unbounded repository to a
+        model. A preference flag alone cannot authorize web calls.
         """
+        query_values = (approved_queries
+                        if isinstance(approved_queries, (list, tuple)) else ())
+        url_values = (approved_urls
+                      if isinstance(approved_urls, (list, tuple)) else ())
+        approved_queries = tuple(
+            query.strip() for query in query_values
+            if isinstance(query, str) and query.strip())
+        approved_urls = tuple(
+            url.strip() for url in url_values
+            if isinstance(url, str) and url.strip())
+        web = bool(web and (approved_queries or approved_urls))
         files = {}
         broad_review = bool(
             workspace
@@ -164,15 +175,17 @@ class HourglassLifecycleMixin:
         web_sources = []
         if web:
             try:
-                web_sources = self._gather_web_context(web_prompt or prompt)
+                web_sources = self._gather_web_context(
+                    approved_queries, approved_urls)
             except (ToolCancelled, ProviderSpendLimitError):
                 raise
             except Exception as exc:  # context failure must not kill the lane
                 web_sources = [{"kind": "web", "ok": False,
                                 "note": f"web tools error: {type(exc).__name__}"}]
-            if (is_site_audit_request(web_prompt or prompt)
-                    or referential(prompt)):
-                target = extract_site_target(web_prompt or prompt)
+            if (approved_urls
+                    and (is_site_audit_request(web_prompt or prompt)
+                         or referential(prompt))):
+                target = approved_urls[0]
                 if target:
                     try:
                         evidence = render_site_evidence(
@@ -502,10 +515,12 @@ class HourglassLifecycleMixin:
             })
             return result
 
-        # Current-data requests earn web retrieval; workspace references are
-        # handled from the selected local tree and never become web searches.
-        web = (bool(web) or is_research_question(prompt)
-               or is_current_information_request(prompt))
+        # The caller flag and request heuristics express preference only.
+        # Retrieval stays unavailable until an exact accepted ResearchPlan is
+        # wired to this lifecycle.
+        web_requested = (bool(web) or is_research_question(prompt)
+                         or is_current_information_request(prompt))
+        web = False
         wall_budget = (DEFAULT_RUN_WALL_SECONDS if max_wall_seconds is None
                        else float(max_wall_seconds))
         deadline = time.monotonic() + max(0.0, wall_budget)
@@ -517,7 +532,8 @@ class HourglassLifecycleMixin:
             checkpoint = {
                 "route": "hourglass", "status": "running", "stage": "route",
                 "prompt": prompt, "intent": intent,
-                "web_requested": web, "workspace_root": str(self.root_dir or ""),
+                "web_requested": web_requested,
+                "workspace_root": str(self.root_dir or ""),
                 "workspace_context_used": False,
                 "known_cost": round(initial_cost, 8),
                 "unknown_liability": 0.0,
@@ -675,21 +691,14 @@ class HourglassLifecycleMixin:
             is_workspace_inspection_request(prompt)
             or route_preflight.get("choice") in {
                 "workspace-inspection", "workspace_inspection"})
-        if selected_workspace:
-            # Explicit local-workspace intent is stronger evidence than an
-            # advisory Jev route: never send a repo audit to web search.
-            web = False
-        elif (bool(route_preflight.get("native"))
-              and route_preflight.get("choice") == "web-research"):
-            web = True
-        elif (route_preflight.get("source") == "simple_strategy"
-              and route_preflight.get("choice") == "web_research"):
-            web = True
+        # A route label only selects a candidate workflow. Search, fetch, and
+        # browser actions need an accepted exact-query ResearchPlan.
+        web = False
         if (route_preflight.get("choice") in {
                 "workspace-inspection", "workspace_inspection"}
                 and self.root_dir is None):
             return self._workspace_context_deferred(prompt, sid)
-        checkpoint["web_requested"] = web
+        checkpoint["web_requested"] = web_requested
         checkpoint["intent"] = intent
         resolved_site = sole_site(memory, session_id=sid)
         if (route_preflight.get("choice") == "clarify"
@@ -703,21 +712,44 @@ class HourglassLifecycleMixin:
             route_preflight["clarification_resolved_by"] = (
                 f"memory:site={resolved_site}")
             emit("memory_resolved_clarification", site=resolved_site)
+        route_choice = route_preflight.get("choice")
         effective_route = (
             "workspace-inspection" if (
                 is_workspace_inspection_request(prompt)
-                or route_preflight.get("choice") == "workspace-inspection"
-                or route_preflight.get("choice") == "workspace_inspection")
-            else "web-research" if web
+                or route_choice == "workspace-inspection"
+                or route_choice == "workspace_inspection")
+            else "web-research" if route_choice in {
+                "web-research", "web_research"}
             else "answer")
         workspace_needed = effective_route == "workspace-inspection"
         checkpoint["effective_route"] = effective_route
         checkpoint["workspace_context_used"] = workspace_needed
         emit("request_route_selected",
-             selected=route_preflight.get("choice"),
+             selected=route_choice,
              effective=effective_route,
              source=route_preflight.get("source"),
              native=bool(route_preflight.get("native")))
+        if effective_route == "web-research":
+            result = {
+                "status": "deferred", "intent": intent,
+                "workflow_tier": "web-research", "prompt": prompt,
+                "response": (
+                    "I can’t run live research in this request because no "
+                    "accepted exact-query research plan is available. No "
+                    "web requests were sent."),
+                "model": None, "cost": round(total_cost, 6),
+                "defer_reason": "accepted research plan unavailable",
+                "next_step": "retry when the research-plan review is available",
+                "web_used": False, "web_sources": [],
+                "request_workflow": {
+                    "selected": route_choice,
+                    "source": route_preflight.get("source"),
+                    "native": bool(route_preflight.get("native")),
+                },
+            }
+            save_chat_turn(sid, result, self.history_dir)
+            self._finish_chat_request(sid, result)
+            return result
         if (route_preflight.get("choice") == "clarify"
                 and bool(route_preflight.get("native"))):
             result = {
@@ -735,8 +767,10 @@ class HourglassLifecycleMixin:
             return result
 
         saved_context = checkpoint.get("context")
-        context_current = (resuming and isinstance(saved_context, str)
-                           and self._hourglass_context_matches(checkpoint))
+        context_current = (
+            resuming and isinstance(saved_context, str)
+            and self._hourglass_context_matches(checkpoint)
+            and not checkpoint.get("web_sources"))
         web_fresh = (
             not web or time.time() - float(
                 checkpoint.get("context_updated_at") or 0.0) <= 300.0)

@@ -280,7 +280,8 @@ class TestAgentCover(unittest.TestCase):
                                    side_effect=ToolCancelled("stop")):
                 with self.assertRaises(ToolCancelled):
                     agent._hourglass_request_context("What is 2+2?",
-                                                     web=True)
+                                                     web=True,
+                                                     approved_queries=("2+2",))
 
     def _hourglass_mocks(self, agent):
         gov = mock.MagicMock()

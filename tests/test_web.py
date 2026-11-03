@@ -332,21 +332,18 @@ class ExtractionHelpersTests(unittest.TestCase):
 
 
 class GatherWebContextTests(unittest.TestCase):
-    """The search fallback: results on an allowlisted host are upgraded to a
-    fetched page; everything else stays a snippet; failures stay honest."""
+    """Only explicitly approved queries and URLs may reach transports."""
 
     HOSTS = frozenset({"www.anthropic.com"})
 
     def _gather(self, results, fetch):
         return web.gather_web_context(
-            "any news on the riemann bound",
+            approved_queries=("riemann bound",),
             allowed_hosts=self.HOSTS,
             fetch_url_fn=fetch,
-            search_web_fn=lambda q: results,
-            find_urls_fn=lambda p: [],
-            extract_query_fn=lambda p: "riemann bound")
+            search_web_fn=lambda q: results)
 
-    def test_allowlisted_result_is_enriched_with_the_fetched_page(self):
+    def test_search_results_do_not_trigger_unreviewed_page_fetches(self):
         results = [
             {"title": "Plain", "url": "https://www.example.com/p", "snippet": "s1"},
             {"title": "Primary", "url": "https://www.anthropic.com/r",
@@ -358,28 +355,53 @@ class GatherWebContextTests(unittest.TestCase):
             fetched.append(url)
             return {"url": url, "title": "Primary page", "text": "full text"}
         sources = self._gather(results, fetch)
-        self.assertEqual(fetched, ["https://www.anthropic.com/r"])
-        self.assertEqual([s["kind"] for s in sources], ["search", "fetch"])
-        self.assertEqual(sources[1]["text"], "full text")
-        self.assertEqual(sources[0]["text"], "s1")
+        self.assertEqual(fetched, [])
+        self.assertEqual([s["kind"] for s in sources], ["search", "search"])
+        self.assertEqual([s["text"] for s in sources], ["s1", "s2"])
 
-    def test_failed_enrichment_keeps_the_snippet(self):
-        results = [{"title": "Primary", "url": "https://www.anthropic.com/r",
-                    "snippet": "s2"}]
+    def test_prompt_urls_and_gate_text_do_nothing_without_an_approved_plan(self):
+        calls = []
 
-        def fetch(url, allowed_hosts=None):
-            raise RuntimeError("network down")
-        sources = self._gather(results, fetch)
+        sources = web.gather_web_context(
+            allowed_hosts=self.HOSTS,
+            fetch_url_fn=lambda url, **kwargs: calls.append(("fetch", url)),
+            search_web_fn=lambda query: calls.append(("search", query)),
+        )
+        self.assertEqual(sources, [])
+        self.assertEqual(calls, [])
+
+    def test_failed_approved_url_does_not_create_an_implicit_query(self):
+        calls = []
+
+        def fail_fetch(url, **kwargs):
+            calls.append(("fetch", url))
+            raise HarnessError("no readable text")
+
+        sources = web.gather_web_context(
+            approved_urls=("https://www.anthropic.com/paper",),
+            allowed_hosts=self.HOSTS,
+            fetch_url_fn=fail_fetch,
+            search_web_fn=lambda query: calls.append(("search", query)),
+        )
+        self.assertEqual(calls, [("fetch", "https://www.anthropic.com/paper")])
         self.assertEqual(len(sources), 1)
-        self.assertEqual(sources[0]["kind"], "search")
-        self.assertEqual(sources[0]["text"], "s2")
+        self.assertFalse(sources[0]["ok"])
+
+    def test_search_receives_the_exact_approved_query_once(self):
+        queries = []
+        sources = web.gather_web_context(
+            approved_queries=("  riemann bound  ", "riemann bound", " "),
+            search_web_fn=lambda query: queries.append(query) or [],
+        )
+        self.assertEqual(queries, ["riemann bound"])
+        self.assertEqual(sources, [])
 
     def test_search_failure_is_reported_not_swallowed(self):
         def boom(q):
             raise HarnessError("web search failed: offline")
         sources = web.gather_web_context(
-            "q", allowed_hosts=self.HOSTS, search_web_fn=boom,
-            find_urls_fn=lambda p: [], extract_query_fn=lambda p: "q")
+            approved_queries=("q",), allowed_hosts=self.HOSTS,
+            search_web_fn=boom)
         self.assertEqual(len(sources), 1)
         self.assertFalse(sources[0]["ok"])
         self.assertIn("offline", sources[0]["note"])
@@ -611,7 +633,7 @@ class NamedTargetAdmissionTests(unittest.TestCase):
         self.assertTrue(admitted, emit.call_args_list)
         self.assertEqual(admitted[0].kwargs.get("admitted_by"), "named-target")
 
-    def test_gather_web_context_admits_the_named_prompt_url(self):
+    def test_gather_web_context_fetches_only_the_approved_url(self):
         calls = []
 
         def fake_fetch(url, allowed_hosts=None, allow_any_public=False):
@@ -619,10 +641,9 @@ class NamedTargetAdmissionTests(unittest.TestCase):
             return {"url": url, "title": "t", "text": "body"}
 
         sources = web.gather_web_context(
-            "audit https://www.freeoffgridcalculator.com/ please",
+            approved_urls=("https://www.freeoffgridcalculator.com/",),
             allowed_hosts=["en.wikipedia.org"],
-            named_hosts=web.named_target_hosts(
-                "audit https://www.freeoffgridcalculator.com/ please"),
+            named_hosts=["www.freeoffgridcalculator.com"],
             fetch_url_fn=fake_fetch,
             search_web_fn=lambda q: [])
         self.assertEqual(sources[0]["kind"], "fetch")

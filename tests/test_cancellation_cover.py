@@ -278,12 +278,8 @@ class TestWebCover(unittest.TestCase):
 
         with self.assertRaises(ToolCancelled):
             web.gather_web_context(
-                "some prompt",
+                approved_urls=("https://example.com/x",),
                 allowed_hosts={"example.com"},
-                find_urls_fn=lambda prompt: [],
-                search_web_fn=lambda query: [{
-                    "url": "https://example.com/x",
-                    "title": "t", "snippet": "s"}],
                 fetch_url_fn=fetch_boom)
 
 
