@@ -396,3 +396,99 @@ class VerifyTaskIdTests(_IsolatedHome):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _RepeatingTransport:
+    """Answers every POST with a fresh 200 body; records URL and key.
+
+    The lane tests below drive real lane entries, so one canned response is
+    not enough and a shared mutable body is not safe: each POST builds its own.
+    """
+
+    def __init__(self, content="ok"):
+        self.content = content
+        self.calls = []
+
+    def post(self, url, api_key, payload, timeout=45):
+        self.calls.append((url, api_key, payload))
+        return 200, {"choices": [{"message": {"content": self.content},
+                                  "finish_reason": "stop"}],
+                     "usage": {"prompt_tokens": 10, "completion_tokens": 5}}
+
+    def get(self, url, api_key, timeout=15):
+        if url.endswith("/models"):
+            return {"data": [{"id": SPARK,
+                              "pricing": {"prompt": "0.00000125",
+                                          "completion": "0.00000425"}},
+                             {"id": WONDER,
+                              "pricing": {"prompt": "0.000004",
+                                          "completion": "0.00002"}}]}
+        raise AssertionError(f"direct-provider lanes must not GET {url}")
+
+
+class DirectChatLaneTests(_IsolatedHome):
+    """#447: panel, apply and verify call chat() directly.
+
+    Under the Muse preset those lanes hold Muse ids, and chat() used to post a
+    Muse id to OpenRouter -- so a Muse-only run was not Muse-transport-only on
+    any of the three. Each test drives the real lane entry and reads the
+    transport, so a passing config assertion cannot stand in for the dispatch.
+    """
+
+    def _assert_meta_only(self, transport, lane):
+        self.assertTrue(transport.calls, f"{lane} lane made no call at all")
+        self.assertTrue(all(url == META_CHAT_URL for url, _, _ in transport.calls),
+                        f"{lane} lane left Meta: {transport.calls}")
+        self.assertTrue(all(url != OPENROUTER_CHAT_URL
+                            for url, _, _ in transport.calls))
+        self.assertTrue(all(key == "meta-key" for _, key, _ in transport.calls),
+                        transport.calls)
+        self.assertTrue(all(payload["model"] == SPARK
+                            for _, _, payload in transport.calls))
+
+    def test_panel_lane_routes_muse_ids_to_meta(self):
+        from harness.panel import panel_judge
+        transport = _RepeatingTransport("panel take")
+        gov = SpendGovernor(transport, "meta-key", None, 1.0,
+                            meta_budget_usd=1.0)
+        panel_judge(transport=transport, api_key="meta-key", governor=gov,
+                    prompt="Q?", panel=[SPARK], judge=SPARK,
+                    max_panelists=1, free_tier=False)
+        self._assert_meta_only(transport, "panel")
+
+    def test_apply_lane_routes_muse_ids_to_meta(self):
+        from harness.apply import ApplyEngine
+        from harness.router import Router
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "math.py")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("def add(a, b):\n    return a + b\n")
+            transport = _RepeatingTransport(
+                "def add(a, b):\n    return a + b + 0\n")
+            ledger = AutonomyLedger(os.path.join(tmp, "ledger.jsonl"))
+            ledger.ensure_offered_task_id("t1", source="test_setup")
+            gov = SpendGovernor(transport, "meta-key", None, 1.0,
+                                meta_budget_usd=1.0)
+            engine = ApplyEngine(transport, "meta-key", gov, ledger,
+                                 Router([SPARK], SPARK, SPARK),
+                                 default_require_consent=False)
+            try:
+                engine.apply_edit(task_id="t1", file_path=path,
+                                  instruction="add +0", require_consent=False)
+            except HarnessError:
+                pass  # the provider dispatch is what this pin is about
+            self._assert_meta_only(transport, "apply")
+
+    def test_verify_lane_routes_muse_ids_to_meta(self):
+        transport = _RepeatingTransport('{"verdict": "agree"}')
+        with redirect_stderr(io.StringIO()):
+            settings = load_settings()
+        ledger = AutonomyLedger(str(self.home / "ledger.jsonl"))
+        gov = SpendGovernor(transport, "meta-key", None, 1.0,
+                            meta_budget_usd=1.0)
+        service.run_verify(settings, prompt="hi", governor=gov, ledger=ledger,
+                           transport=transport, api_key="meta-key",
+                           panel=[SPARK], judge=SPARK, attach_meta=False,
+                           generate_task_id=True, max_panelists=1,
+                           free_tier=False)
+        self._assert_meta_only(transport, "verify")

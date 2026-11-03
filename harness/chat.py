@@ -23,6 +23,7 @@ from .config import (
     OPENROUTER_CHAT_URL,
     is_fireworks_model_path,
     is_meta_model_id,
+    resolve_meta_key,
 )
 from .errors import HarnessError, ProviderUsageUnknown, ToolCancelled
 from .events import emit, provider_request_context
@@ -392,7 +393,7 @@ def _ensure_accounted(governor, model, resp, usage):
 
 def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto",
          reasoning_token_budget=0.4, governor=None, enable_floor=True,
-         max_price=None, provider_sort="price"):
+         max_price=None, provider_sort="price", meta_key=None):
     """One chat completion with the spend governor's payload guards.
 
     Reasoning is included whenever the effort mode resolves to a value --
@@ -404,6 +405,22 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
     accounting: a missing usage.cost is resolved here, once, so no lane can
     bill a paid call as $0.
     """
+    if is_meta_model_id(model):
+        # #447: the panel, apply and verify lanes call chat() directly, and
+        # under the Muse preset every id they hold is a Muse id. This path
+        # used to floor the id and post it to OpenRouter, so a Muse-only run
+        # was not Muse-transport-only on any of the three lanes. The preset
+        # threads the Meta key as api_key (session.governor_for), so that is
+        # the key to send; an explicit meta_key wins, and a run that has
+        # neither refuses instead of falling back to another provider.
+        key = meta_key or api_key or resolve_meta_key()
+        if not key:
+            raise HarnessError(
+                "Meta key missing: set ~/.config/scmorc/meta.env, "
+                "$HARNESS_CONFIG_DIR/meta.env (default: "
+                "~/.config/harness/meta.env), META_API_KEY, or MUSE_API_KEY")
+        return _chat_meta(transport, key, model, messages, max_tokens,
+                          governor=governor)
     if is_fireworks_model_path(model):
         return _chat_fireworks(transport, api_key, model, messages, max_tokens,
                                governor=governor)
