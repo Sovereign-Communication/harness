@@ -208,8 +208,14 @@ class SnapshotRefreshError(ValueError):
     """
 
 
-def _catalog_prices(catalog: Sequence[Dict[str, Any]]) -> Dict[str, Dict[str, float]]:
-    """Map model id -> published per-token prices from a ``/models`` read."""
+def _catalog_prices(catalog: Sequence[Any]) -> Dict[str, Dict[str, float]]:
+    """Map model id -> published per-token prices from a ``/models`` read.
+
+    The rows are free-form JSON, so the annotation is deliberately wide: a
+    string, a list, or an object with no usable ``pricing`` is skipped here
+    rather than refused (a refusal would mean one junk row could block the
+    refresh). What the refresh does refuse is a *tier* id it cannot price.
+    """
     prices: Dict[str, Dict[str, float]] = {}
     for entry in catalog or ():
         if not isinstance(entry, dict):
@@ -230,7 +236,7 @@ def _catalog_prices(catalog: Sequence[Dict[str, Any]]) -> Dict[str, Dict[str, fl
 
 
 def refresh_tier_snapshot(
-    catalog: Sequence[Dict[str, Any]],
+    catalog: Sequence[Any],
     *,
     path: Optional[str] = None,
     now: Optional[datetime] = None,
