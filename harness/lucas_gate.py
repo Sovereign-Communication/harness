@@ -35,6 +35,16 @@ BIAS_MINIMUMS = {
     "B11": Decimal("9"),
 }
 
+LUCAS_GATE_V2_INPUT_FIELDS = frozenset({
+    "track", "artifact_text", "category_scores", "bias_checks",
+    "overall_average", "actual_risk", "investigated_reason",
+})
+
+CATEGORY_FIELDS = frozenset({
+    "id", "score", "category_average", "evidence", "precedent",
+})
+BIAS_FIELDS = frozenset({"id", "score", "rationale"})
+
 
 def _text(value, field, max_length):
     if not isinstance(value, str) or not value.strip():
@@ -57,13 +67,15 @@ def _score(value, field):
     return result
 
 
-def _rows_by_id(rows, field, expected_ids):
+def _rows_by_id(rows, field, expected_ids, allowed_fields):
     if not isinstance(rows, list):
         raise ValueError("{} must be a list".format(field))
     values = {}
     for row in rows:
         if not isinstance(row, dict):
             raise ValueError("each {} entry must be an object".format(field))
+        if not set(row).issubset(allowed_fields):
+            raise ValueError("{} contains unsupported fields".format(field))
         item_id = row.get("id")
         if not isinstance(item_id, str) or item_id not in expected_ids:
             raise ValueError("{} contains an unknown id".format(field))
@@ -98,7 +110,7 @@ def run_typed_track(*, track, artifact_text, category_scores, bias_checks,
     """
     if track != "typed":
         raise ValueError("Lucas Gate v2 runner supports only the typed track")
-    artifact = _text(artifact_text, "artifact_text", MAX_ARTIFACT_CHARS)
+    _text(artifact_text, "artifact_text", MAX_ARTIFACT_CHARS)
     if not isinstance(actual_risk, bool):
         raise ValueError("actual_risk must be a boolean")
     if investigated_reason is not None:
@@ -107,8 +119,7 @@ def run_typed_track(*, track, artifact_text, category_scores, bias_checks,
     overall = _score(overall_average, "overall_average")
 
     category_rows = _rows_by_id(
-        category_scores, "category_scores", CATEGORY_LABELS)
-    normalized_categories = {}
+        category_scores, "category_scores", CATEGORY_LABELS, CATEGORY_FIELDS)
     below_bar = []
     rounded = []
     for category_id in CATEGORY_LABELS:
@@ -120,20 +131,20 @@ def run_typed_track(*, track, artifact_text, category_scores, bias_checks,
         _text(row.get("evidence"), "category {} evidence".format(category_id), 4_000)
         _text(row.get("precedent"), "category {} precedent".format(category_id), 4_000)
         clears, used_rounding = _category_clears_bar(score, average, overall)
-        normalized_categories[category_id] = score
         if not clears:
             below_bar.append((category_id, score))
         elif used_rounding:
             rounded.append(category_id)
 
-    bias_rows = _rows_by_id(bias_checks, "bias_checks", BIAS_MINIMUMS)
+    bias_rows = _rows_by_id(
+        bias_checks, "bias_checks", BIAS_MINIMUMS, BIAS_FIELDS)
     bias_failures = []
     for bias_id, minimum in BIAS_MINIMUMS.items():
         row = bias_rows[bias_id]
         score = _score(row.get("score"), "{} score".format(bias_id))
         _text(row.get("rationale"), "{} rationale".format(bias_id), 4_000)
         if score < minimum:
-            bias_failures.append(bias_id)
+            bias_failures.append((bias_id, score, minimum))
 
     low_note = False
     note_categories = [
@@ -168,13 +179,23 @@ def run_typed_track(*, track, artifact_text, category_scores, bias_checks,
         "judgment_owner": "calling agent",
         "validation": "deterministic_scorecard_contract",
         "artifact_sha256": hashlib.sha256(
-            artifact.encode("utf-8")).hexdigest(),
+            artifact_text.encode("utf-8")).hexdigest(),
         "category_ids": list(CATEGORY_LABELS),
         "bias_ids": list(BIAS_MINIMUMS),
         "bias_minimums": {key: float(value)
                           for key, value in BIAS_MINIMUMS.items()},
+        "failing_categories": [
+            {"id": category_id, "score": float(score)}
+            for category_id, score in below_bar
+        ],
+        "failing_bias_checks": [
+            {"id": bias_id, "score": float(score),
+             "minimum": float(minimum)}
+            for bias_id, score, minimum in bias_failures
+        ],
         "rounded_categories": rounded,
         "investigated_exception": low_note,
+        "investigated_category": note_categories[0] if low_note else None,
         "actual_risk": actual_risk,
         "product_jev_run": False,
         "model_called": False,

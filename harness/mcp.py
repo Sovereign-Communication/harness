@@ -42,7 +42,8 @@ from .log_analysis import analyze_log
 from .perception_client import PerceptionAdapter, PerceptionUnavailable
 from .service import run_verify as _service_run_verify
 from .jev import jev_credit_status
-from .lucas_gate import run_typed_track as _run_lucas_gate_v2
+from .lucas_gate import (LUCAS_GATE_V2_INPUT_FIELDS,
+                         run_typed_track as _run_lucas_gate_v2)
 from .service import run_dogfood as _service_run_dogfood
 from .brief import build_brief, freshness_report, render_brief
 from .session import apply_session
@@ -1002,6 +1003,8 @@ class McpServer:
                 "pack_id": combo.get("pack_id"),
             }
         if name == "lucas_gate_v2":
+            if not set(args).issubset(LUCAS_GATE_V2_INPUT_FIELDS):
+                raise ValueError("lucas_gate_v2 contains unsupported fields")
             return _run_lucas_gate_v2(
                 track=args.get("track"),
                 artifact_text=args.get("artifact_text"),

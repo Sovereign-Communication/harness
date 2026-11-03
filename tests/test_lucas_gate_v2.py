@@ -1,4 +1,6 @@
 import hashlib
+import io
+import json
 import unittest
 
 from harness.lucas_gate import BIAS_MINIMUMS, CATEGORY_LABELS, run_typed_track
@@ -51,13 +53,57 @@ class LucasGateV2Tests(unittest.TestCase):
         packet["overall_average"] = 9.9
         self.assertEqual(run_typed_track(**packet)["status"], "revise")
 
+        packet["category_scores"][0].update(score=8.9, category_average=9.49)
+        self.assertEqual(run_typed_track(**packet)["status"], "revise")
+
         packet["category_scores"][0].update(score=8.9, category_average=9.5)
         packet["overall_average"] = 9.4
         self.assertEqual(run_typed_track(**packet)["status"], "pass")
 
         packet["category_scores"][0].update(score=8.8, category_average=8.8)
+        packet["overall_average"] = 9.89
+        self.assertEqual(run_typed_track(**packet)["status"], "revise")
+
         packet["overall_average"] = 9.9
         self.assertEqual(run_typed_track(**packet)["status"], "pass")
+
+    def test_rounding_transition_boundaries_do_not_round_up(self):
+        packet = scorecard()
+        packet["category_scores"][0].update(
+            score=8.949, category_average=9.25)
+        packet["overall_average"] = 9.49
+        self.assertEqual(run_typed_track(**packet)["status"], "revise")
+        packet["category_scores"][0]["category_average"] = 9.5
+        self.assertEqual(run_typed_track(**packet)["status"], "pass")
+
+        packet["category_scores"][0].update(
+            score=8.899, category_average=9.5)
+        packet["overall_average"] = 9.89
+        self.assertEqual(run_typed_track(**packet)["status"], "revise")
+        packet["overall_average"] = 9.9
+        self.assertEqual(run_typed_track(**packet)["status"], "pass")
+
+    def test_investigated_exception_includes_only_one_category_at_endpoints(self):
+        for score in (8.5, 8.9):
+            with self.subTest(score=score):
+                packet = scorecard()
+                packet["category_scores"][0]["score"] = score
+                packet["investigated_reason"] = "Reviewed the mismatch."
+                self.assertEqual(
+                    run_typed_track(**packet)["status"], "pass_with_note")
+
+        for score in (8.49, 8.91):
+            with self.subTest(score=score):
+                packet = scorecard()
+                packet["category_scores"][0]["score"] = score
+                packet["investigated_reason"] = "Reviewed the mismatch."
+                self.assertEqual(run_typed_track(**packet)["status"], "revise")
+
+        packet = scorecard()
+        packet["category_scores"][0]["score"] = 8.7
+        packet["category_scores"][1]["score"] = 8.7
+        packet["investigated_reason"] = "Reviewed the mismatch."
+        self.assertEqual(run_typed_track(**packet)["status"], "revise")
 
     def test_single_investigated_near_miss_passes_with_note(self):
         packet = scorecard()
@@ -66,6 +112,23 @@ class LucasGateV2Tests(unittest.TestCase):
         result = run_typed_track(**packet)
         self.assertEqual(result["status"], "pass_with_note")
         self.assertTrue(result["investigated_exception"])
+        self.assertEqual(result["investigated_category"], "1")
+        self.assertNotIn("investigated_reason", result)
+        self.assertEqual(result["reasons"], [
+            "one category passed the investigated 8.5\u20138.9 exception"])
+
+    def test_revise_result_identifies_failed_category_and_bias_floor(self):
+        packet = scorecard()
+        packet["category_scores"][0]["score"] = 8.49
+        packet["bias_checks"][0]["score"] = 9.99
+
+        result = run_typed_track(**packet)
+
+        self.assertEqual(result["status"], "revise")
+        self.assertEqual(result["failing_categories"], [
+            {"id": "1", "score": 8.49}])
+        self.assertEqual(result["failing_bias_checks"], [
+            {"id": "B1", "score": 9.99, "minimum": 10.0}])
 
     def test_low_score_bias_failure_and_actual_risk_do_not_pass(self):
         packet = scorecard()
@@ -73,9 +136,13 @@ class LucasGateV2Tests(unittest.TestCase):
         packet["investigated_reason"] = "A reason does not waive the lower bar."
         self.assertEqual(run_typed_track(**packet)["status"], "revise")
 
-        packet = scorecard()
-        packet["bias_checks"][0]["score"] = 9.99
-        self.assertEqual(run_typed_track(**packet)["status"], "revise")
+        for bias_id, minimum in BIAS_MINIMUMS.items():
+            with self.subTest(bias_id=bias_id):
+                packet = scorecard()
+                row = next(item for item in packet["bias_checks"]
+                           if item["id"] == bias_id)
+                row["score"] = float(minimum) - 0.01
+                self.assertEqual(run_typed_track(**packet)["status"], "revise")
 
         packet = scorecard()
         packet["actual_risk"] = True
@@ -106,6 +173,110 @@ class LucasGateV2Tests(unittest.TestCase):
         })
         self.assertFalse(reply["result"]["isError"])
         self.assertEqual(reply["result"]["structuredContent"]["status"], "pass")
+
+    def test_stdio_initialize_list_and_reordered_call(self):
+        packet = scorecard()
+        packet["category_scores"].reverse()
+        packet["bias_checks"].reverse()
+        packet["artifact_text"] = "  {}\n".format(packet["artifact_text"])
+        expected_artifact_hash = hashlib.sha256(
+            packet["artifact_text"].encode("utf-8")).hexdigest()
+
+        note_packet = scorecard()
+        note_packet["category_scores"][0]["score"] = 8.7
+        note_packet["investigated_reason"] = "SYNTHETIC_KEY_LIKE_SENTINEL_7f1a"
+
+        revise_packet = scorecard()
+        revise_packet["category_scores"][0]["score"] = 8.49
+        revise_packet["bias_checks"][0]["score"] = 9.99
+
+        empty_packet = scorecard()
+        empty_packet["category_scores"] = []
+        requests = [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+             "params": {"protocolVersion": "2025-06-18",
+                        "clientInfo": {"name": "gate-test", "version": "1"}}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+             "params": {"name": "lucas_gate_v2", "arguments": packet}},
+            {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+             "params": {"name": "lucas_gate_v2", "arguments": note_packet}},
+            {"jsonrpc": "2.0", "id": 5, "method": "tools/call",
+             "params": {"name": "lucas_gate_v2", "arguments": revise_packet}},
+            {"jsonrpc": "2.0", "id": 6, "method": "tools/call",
+             "params": {"name": "lucas_gate_v2", "arguments": empty_packet}},
+        ]
+        stdin = io.StringIO("\n".join(json.dumps(item) for item in requests) + "\n")
+        stdout = io.StringIO()
+        server = McpServer(transport=None, api_key=None, governor=None,
+                           ledger=None, router=None, engine=None,
+                           stdin=stdin, stdout=stdout)
+
+        server.serve_forever()
+
+        responses = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        self.assertEqual([item["id"] for item in responses], [1, 2, 3, 4, 5, 6])
+        listed_tools = responses[1]["result"]["tools"]
+        self.assertIn("lucas_gate_v2", [item["name"] for item in listed_tools])
+        pass_result = responses[2]["result"]["structuredContent"]
+        self.assertEqual(pass_result["status"], "pass")
+        self.assertEqual(pass_result["artifact_sha256"], expected_artifact_hash)
+
+        note_result = responses[3]["result"]["structuredContent"]
+        self.assertEqual(note_result["status"], "pass_with_note")
+        self.assertNotIn("investigated_reason", note_result)
+        self.assertNotIn(note_packet["investigated_reason"],
+                         json.dumps(responses[3]))
+
+        revise_result = responses[4]["result"]["structuredContent"]
+        self.assertEqual(revise_result["status"], "revise")
+        self.assertEqual(revise_result["failing_categories"],
+                         [{"id": "1", "score": 8.49}])
+        self.assertEqual(revise_result["failing_bias_checks"],
+                         [{"id": "B1", "score": 9.99, "minimum": 10.0}])
+        self.assertTrue(responses[5]["result"]["isError"])
+
+        self.assertFalse(server._inflight)
+        self.assertFalse(server._cancelled)
+        self.assertFalse(server._starts)
+        self.assertFalse(server._progress)
+
+    def test_mcp_rejects_unrecognized_top_level_and_row_fields(self):
+        server = McpServer(transport=None, api_key=None, governor=None,
+                           ledger=None, router=None, engine=None)
+        packets = []
+        top_level = scorecard()
+        top_level["unexpected"] = "extra"
+        packets.append(("top-level", top_level))
+        category_field = scorecard()
+        category_field["category_scores"][0]["unexpected"] = "extra"
+        packets.append(("category", category_field))
+        bias_field = scorecard()
+        bias_field["bias_checks"][0]["unexpected"] = "extra"
+        packets.append(("bias", bias_field))
+
+        for label, packet in packets:
+            with self.subTest(case=label):
+                reply = server._call_tool_impl({
+                    "jsonrpc": "2.0", "id": "strict-input",
+                    "params": {"name": "lucas_gate_v2", "arguments": packet},
+                })
+                self.assertTrue(reply["result"]["isError"])
+
+    def test_empty_artifact_and_score_arrays_fail_through_mcp_call(self):
+        server = McpServer(transport=None, api_key=None, governor=None,
+                           ledger=None, router=None, engine=None)
+        packets = [scorecard(), scorecard()]
+        packets[0]["artifact_text"] = "   "
+        packets[1]["category_scores"] = []
+
+        for index, packet in enumerate(packets):
+            with self.subTest(case=index):
+                reply = server._call_tool_impl({
+                    "jsonrpc": "2.0", "id": "invalid-input",
+                    "params": {"name": "lucas_gate_v2", "arguments": packet},
+                })
+                self.assertTrue(reply["result"]["isError"])
 
 
 if __name__ == "__main__":
