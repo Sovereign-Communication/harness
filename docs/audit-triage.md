@@ -62,13 +62,6 @@ hermetic test matrix is a defect until reproduced and explained. A local-only
 failure may depend on the machine, but a green CI result or an environment
 label alone does not explain it.
 
-## Triage order
-
-1. Identify the failing gate and whether its process actually started.
-2. Run the matching probe below and compare its evidence with both outcomes.
-3. Correct the named environment problem and repeat the same probe. If the
-   failure remains in a hermetic run, fix the code or test that owns it.
-
 ## Bare `python` command does not start
 
 **Signature:** the shell reports `python: command not found` (or on Windows,
@@ -124,15 +117,11 @@ symptom; it is not itself a lint finding.
 ## R13 — hermetic test suite and environment leaks
 
 **Probe:** `python audits/self/audit.py --dim R`. R13 runs the unit suite with
-`ResourceWarning` treated as an error, removes routing and provider-key
-variables from the child environment, and gives it a fresh empty home.
-The removed names are `HARNESS_USE_FREE`, `HARNESS_ALLOW_ESCALATION`,
-`HARNESS_MAX_COST`, `HARNESS_TASK_MAX_COST`, `HARNESS_MIN_CONFIDENCE`,
-`HARNESS_JEV_KEY`, `TYPESAFE_API_KEY`, `JEV_API_KEY`, `OPENROUTER_API_KEY`,
-and `OPENROUTER_API_KEY_FILE`. It sets `HOME`, `USERPROFILE`, `APPDATA`, and
-`XDG_CONFIG_HOME` to the same fresh directory; any inherited
-`HARNESS_CONFIG_DIR` is preserved, so set it to the fresh config directory as
-in the shell setup above.
+`ResourceWarning` treated as an error. Its environment helper removes the
+routing and provider-key variables listed in the shell setup above and sets
+`HOME`, `USERPROFILE`, `APPDATA`, and `XDG_CONFIG_HOME` to a fresh home. It
+preserves inherited `HARNESS_CONFIG_DIR`, so set that to the fresh config
+directory as shown above.
 
 - **Environment-broken local reproduction:** a normal local test run is red,
   but R13 reports `unittest: Ran … tests … OK (env clean; empty home)`. The
@@ -149,7 +138,23 @@ in the shell setup above.
   and inherited (uncaptured) output:
 
   ```powershell
-  python -c "import atexit,importlib.util,shutil,subprocess,sys; p='audits/self/audit.py'; s=importlib.util.spec_from_file_location('audit_probe',p); a=importlib.util.module_from_spec(s); s.loader.exec_module(a); env,_=a.hermetic_suite_env(); atexit.register(shutil.rmtree,env['HOME'],ignore_errors=True); sys.exit(subprocess.run([sys.executable,'-W','error::ResourceWarning','-m','unittest','discover','-s','tests','-v'],cwd=str(a.ROOT),env=env,timeout=900).returncode)"
+  python -c @'
+  import atexit
+  import runpy
+  import shutil
+  import subprocess
+  import sys
+
+  audit = runpy.run_path("audits/self/audit.py")
+  env, _ = audit["hermetic_suite_env"]()
+  atexit.register(shutil.rmtree, env["HOME"], ignore_errors=True)
+  result = subprocess.run(
+      [sys.executable, "-W", "error::ResourceWarning", "-m",
+       "unittest", "discover", "-s", "tests", "-v"],
+      cwd=str(audit["ROOT"]), env=env, timeout=900,
+  )
+  sys.exit(result.returncode)
+  '@
   ```
 
   To reproduce the exact quiet/captured R13 path without running the outer
@@ -157,7 +162,7 @@ in the shell setup above.
   the repository root:
 
   ```powershell
-  python -c "import importlib.util; p='audits/self/audit.py'; s=importlib.util.spec_from_file_location('audit_probe',p); a=importlib.util.module_from_spec(s); s.loader.exec_module(a); print(a.r_suite_green())"
+  python -c "import runpy; print(runpy.run_path('audits/self/audit.py')['r_suite_green']())"
   ```
 
   The check function invokes the configured `-q` child with
@@ -174,12 +179,9 @@ in the shell setup above.
   until a completed controlled comparison or CI result supports that
   conclusion.
 
-The R13 child intentionally scrubs known routing/key variables and overrides
-`HOME`, `USERPROFILE`, `APPDATA`, and `XDG_CONFIG_HOME` with an empty temporary
-home. If a provider key or routing override still reaches that child, inspect
-the hermetic environment builder in [`audits/self/audit.py`](../audits/self/audit.py):
-that is an isolation defect, not a reason to dismiss the red run as ordinary
-machine state.
+If a provider key or routing override survives this scrub, inspect the
+hermetic environment builder in [`audits/self/audit.py`](../audits/self/audit.py):
+that is an isolation defect, not ordinary machine state.
 
 ## D12 — stale coverage baseline and changed-line measurement
 
@@ -257,11 +259,3 @@ python -m unittest tests.test_dogfood tests.test_hourglass_end_to_end -v
 If the failure disappears under that setup and R13 is green, the local run was
 environment-sensitive. If the failure follows the clean setup or appears in
 CI, fix the owning test or code.
-
-## Real-defect signs
-
-- The same assertion fails in the hermetic CI matrix.
-- S5 fails while Ruff resolves and reports lint findings.
-- D12 measures current-tree changed-line coverage below 95%.
-- R13 fails in its scrubbed environment or sees a resource warning.
-- A focused local failure survives the empty-home, no-key reproduction.
