@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
 
 from .config import (DISCOUNT_IS_MULTIPLIER, FIREWORKS_PROVIDER,
                      MAX_ENDPOINT_FETCHES_PER_RUN, OPENROUTER_ENDPOINTS_URL)
@@ -51,6 +52,54 @@ PACKS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 FIREWORKS_ENDPOINTS_PACK = os.path.join(PACKS_DIR, "fireworks.endpoints.json")
 FIREWORKS_PACK = Path(__file__).resolve().parent.parent / "packs" / "fireworks.endpoints.json"
 _PER_MILLION = 1_000_000.0
+
+
+def _optional_rate(value, label):
+    """An optional per-token price: absent stays absent, present must be valid.
+
+    A feed that publishes a negative or NaN rate is not offering a cheaper
+    price, it is offering an invalid one -- and the economics index would rank
+    it first precisely because the number is smaller (#428).
+    """
+    if value is None:
+        return None
+    return finite_number(value, label, 0.0)
+
+
+def _normalize_overrides(raw):
+    """Validate the published long-context price steps, or refuse them.
+
+    An override is a price *step* keyed on prompt volume. A malformed or
+    missing threshold, a non-object row, or a negative rate must fail loudly
+    here: downstream every number would otherwise look plausible while the
+    offer is nonsense (#428). Returns a tuple of dicts with floats or None.
+    """
+    if raw is None:
+        return ()
+    if isinstance(raw, (str, bytes)) or not isinstance(raw, (list, tuple)):
+        raise HarnessError(
+            "endpoint pricing.overrides must be a list of price-step objects")
+    steps = []
+    for index, override in enumerate(raw):
+        label = f"endpoint pricing.overrides[{index}]"
+        if not isinstance(override, dict):
+            raise HarnessError(
+                f"{label} is {type(override).__name__}, not a price-step object")
+        raw_threshold = override.get("min_prompt_tokens")
+        # bool is an int subclass; `true` is not a token count.
+        threshold = (None if isinstance(raw_threshold, bool)
+                     else optional_float(raw_threshold))
+        if threshold is None or threshold < 0 or threshold != int(threshold):
+            raise HarnessError(
+                f"{label}.min_prompt_tokens must be a non-negative integer")
+        steps.append({
+            "min_prompt_tokens": int(threshold),
+            "prompt": _optional_rate(override.get("prompt"),
+                                     f"{label}.prompt"),
+            "completion": _optional_rate(override.get("completion"),
+                                         f"{label}.completion"),
+        })
+    return tuple(steps)
 
 #: Representative (input_tokens, output_tokens) workload shapes per lane (EV-1).
 LANE_WORKLOAD_SHAPES = {
@@ -77,15 +126,15 @@ class EndpointPrice:
     completion: float = 0.0
     tag: object = None
     discount: float = 0.0
-    overrides: tuple = ()
+    overrides: Tuple[Dict[str, Any], ...] = ()
     # Published and parsed; used by EV-1 only when cache_eligible=True is
     # explicitly asserted by the caller.
-    input_cache_read: object = None
+    input_cache_read: Optional[float] = None
     context_length: int = 0
     max_completion_tokens: int = 0
-    uptime_1d: object = None
-    uptime_30m: object = None
-    latency_30m: object = None
+    uptime_1d: Optional[float] = None
+    uptime_30m: Optional[float] = None
+    latency_30m: Optional[float] = None
     mandatory_reasoning: bool = False
 
     def __post_init__(self):
@@ -100,8 +149,9 @@ class EndpointPrice:
              finite_number(self.completion, "endpoint pricing.completion"))
         set_(self, "discount",
              finite_number(self.discount, "endpoint pricing.discount", 0.0, 1.0))
-        set_(self, "overrides", tuple(self.overrides or ()))
-        set_(self, "input_cache_read", optional_float(self.input_cache_read))
+        set_(self, "overrides", _normalize_overrides(self.overrides))
+        set_(self, "input_cache_read", _optional_rate(
+            self.input_cache_read, "endpoint pricing.input_cache_read"))
         set_(self, "context_length", int(self.context_length or 0))
         set_(self, "max_completion_tokens", int(self.max_completion_tokens or 0))
         set_(self, "uptime_1d", optional_float(self.uptime_1d))
@@ -120,12 +170,16 @@ class EndpointPrice:
         semantics verdict, never guessed here.  ``cache_eligible`` uses
         ``input_cache_read`` when published and explicitly requested.
         """
-        rate_in, rate_out = self.prompt, self.completion
+        rate_in: Optional[float] = self.prompt
+        rate_out: Optional[float] = self.completion
         for override in sorted(self.overrides,
-                               key=lambda o: int(o.get("min_prompt_tokens", 0))):
-            if input_tokens >= int(override.get("min_prompt_tokens", 0)):
-                rate_in = optional_float(override.get("prompt"))
-                rate_out = optional_float(override.get("completion"))
+                               key=lambda o: int(o["min_prompt_tokens"])):
+            threshold = int(override["min_prompt_tokens"])
+            if input_tokens >= threshold:
+                # Validated at construction; optional_float keeps the read
+                # honest when a step publishes only one side.
+                rate_in = optional_float(override["prompt"])
+                rate_out = optional_float(override["completion"])
         if rate_in is None:
             rate_in = self.prompt
         if rate_out is None:
@@ -225,24 +279,21 @@ def _parse_endpoints(model_id, payload):
             continue
         pricing = raw.get("pricing")
         pricing = pricing if isinstance(pricing, dict) else {}
-        overrides = []
-        for override in pricing.get("overrides") or []:
-            if isinstance(override, dict):
-                overrides.append({
-                    "min_prompt_tokens": int(
-                        optional_float(override.get("min_prompt_tokens")) or 0),
-                    "prompt": override.get("prompt"),
-                    "completion": override.get("completion"),
-                })
+        overrides = pricing.get("overrides") or []
+        if not isinstance(overrides, (list, tuple)):
+            raise HarnessError(
+                f"endpoints feed for {model_id} has a non-list overrides field")
+        # EndpointPrice validates and normalizes the steps; non-object rows
+        # are refused there rather than silently skipped here (#428).
         parsed.append(EndpointPrice(
             raw.get("provider_name") or raw.get("name") or "unknown",
             pricing.get("prompt", 0), pricing.get("completion", 0),
             tag=raw.get("tag"),
             discount=pricing.get("discount", 0) or 0,
-            overrides=overrides,
+            overrides=tuple(overrides),
             input_cache_read=pricing.get("input_cache_read"),
-            context_length=raw.get("context_length"),
-            max_completion_tokens=raw.get("max_completion_tokens"),
+            context_length=int(raw.get("context_length") or 0),
+            max_completion_tokens=int(raw.get("max_completion_tokens") or 0),
             uptime_1d=raw.get("uptime_last_1d"),
             uptime_30m=raw.get("uptime_last_30m"),
             latency_30m=raw.get("latency_last_30m"),
