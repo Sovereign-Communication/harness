@@ -10,6 +10,7 @@ the data.
 import json
 import os
 import tempfile
+import time
 import unittest
 
 from harness.capability import (
@@ -21,7 +22,7 @@ from harness.capability import (
 )
 from harness.config import FREE_PANEL_POOL, FREE_APPLY_POOL
 from harness.continuation import gate_id, validate_continuation
-from harness.errors import HarnessError
+from harness.errors import HarnessError, ToolCancelled
 from harness.ledger import AutonomyLedger
 
 
@@ -249,6 +250,85 @@ class RegistryTest(unittest.TestCase):
             p3, _, refreshed3 = ensure_profiles(path, fetch, ttl=100000, force=False)
             self.assertFalse(refreshed3)
             self.assertEqual(calls["n"], 2)
+
+    def test_stale_snapshot_survives_empty_catalog_refresh(self):
+        from unittest import mock
+        cached = fixture_profiles()
+        old_timestamp = time.time() - 90000
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "caps.json")
+            save_profiles(path, cached, fetched_at=old_timestamp)
+            with mock.patch("harness.capability.eprint") as warning:
+                profiles, fetched_at, refreshed = ensure_profiles(
+                    path, lambda: [], ttl=86400)
+            on_disk, disk_timestamp = load_profiles(path)
+
+        self.assertFalse(refreshed)
+        self.assertEqual(set(profiles), set(cached))
+        self.assertEqual(fetched_at, old_timestamp)
+        self.assertEqual(set(on_disk), set(cached))
+        self.assertEqual(disk_timestamp, old_timestamp)
+        warning.assert_called_once()
+
+    def test_stale_snapshot_survives_refresh_exception(self):
+        from unittest import mock
+        cached = fixture_profiles()
+        old_timestamp = time.time() - 90000
+
+        def fail_fetch():
+            raise HarnessError("catalog unavailable")
+
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "caps.json")
+            save_profiles(path, cached, fetched_at=old_timestamp)
+            with mock.patch("harness.capability.eprint") as warning:
+                profiles, fetched_at, refreshed = ensure_profiles(
+                    path, fail_fetch, ttl=86400)
+
+        self.assertFalse(refreshed)
+        self.assertEqual(set(profiles), set(cached))
+        self.assertEqual(fetched_at, old_timestamp)
+        warning.assert_called_once()
+
+    def test_snapshot_at_ttl_boundary_is_stale(self):
+        from unittest import mock
+        model_id = "acme/refreshed:free"
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "caps.json")
+            save_profiles(path, fixture_profiles(), fetched_at=190.0)
+            with mock.patch("harness.capability.time.time", return_value=200.0):
+                profiles, _, refreshed = ensure_profiles(
+                    path, lambda: [sample_model({"id": model_id})], ttl=10)
+
+        self.assertTrue(refreshed)
+        self.assertEqual(set(profiles), {model_id})
+
+    def test_timestamped_empty_registry_is_refetched(self):
+        model_id = "acme/recovered:free"
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "caps.json")
+            save_profiles(path, {}, fetched_at=time.time())
+            profiles, _, refreshed = ensure_profiles(
+                path, lambda: [sample_model({"id": model_id})], ttl=86400)
+
+        self.assertTrue(refreshed)
+        self.assertEqual(set(profiles), {model_id})
+
+    def test_empty_catalog_without_snapshot_is_not_cached(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "caps.json")
+            with self.assertRaisesRegex(HarnessError, "no usable models"):
+                ensure_profiles(path, lambda: [], ttl=86400)
+            self.assertFalse(os.path.exists(path))
+
+    def test_cancellation_is_not_swallowed_by_stale_fallback(self):
+        cached = fixture_profiles()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "caps.json")
+            save_profiles(path, cached, fetched_at=time.time() - 90000)
+            with self.assertRaises(ToolCancelled):
+                ensure_profiles(path, lambda: (_ for _ in ()).throw(ToolCancelled()),
+                                ttl=86400)
 
 
 class RoutingOrderTest(unittest.TestCase):

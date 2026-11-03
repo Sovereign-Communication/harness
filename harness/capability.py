@@ -25,7 +25,9 @@ import time
 from dataclasses import dataclass, replace
 
 from .config import CAPABILITIES_PATH, CAPABILITIES_TTL
+from .errors import HarnessError, ToolCancelled
 from .output import eprint
+from .provider_errors import ProviderSpendLimitError
 
 # ---- score weights (task-aware) ----------------------------------------------
 # Capability is blended from three declared signals. Structured JSON is the
@@ -442,12 +444,28 @@ def build_profiles_from_models(models):
 
 def ensure_profiles(path, fetch_models_fn, ttl=DEFAULT_TTL, force=False):
     """Return (profiles, fetched_at, refreshed). Uses the registry unless stale
-    (or force), in which case it fetches fresh /models and persists."""
+    (or force), in which case it fetches fresh /models and persists. A failed
+    or empty refresh keeps a usable stale snapshot rather than erasing it."""
     profiles, fetched_at = load_profiles(path)
-    fresh_enough = fetched_at is not None and (time.time() - fetched_at) < ttl
+    fresh_enough = (bool(profiles) and fetched_at is not None
+                    and (time.time() - fetched_at) < ttl)
     if force or not fresh_enough:
-        models = fetch_models_fn()
-        profiles = build_profiles_from_models(models)
+        try:
+            models = fetch_models_fn()
+            refreshed_profiles = build_profiles_from_models(models or [])
+            if not refreshed_profiles:
+                raise HarnessError("live model catalog returned no usable models")
+        except (ToolCancelled, ProviderSpendLimitError):
+            raise
+        except HarnessError as exc:
+            if not profiles:
+                raise
+            age = max(0.0, time.time() - fetched_at) if fetched_at is not None else 0.0
+            eprint("[warn] capability refresh failed; keeping the last non-empty "
+                   f"snapshot ({len(profiles)} models, {age:.0f}s old; "
+                   f"cause: {type(exc).__name__}).")
+            return profiles, fetched_at, False
+        profiles = refreshed_profiles
         fetched_at = time.time()
         save_profiles(path, profiles, fetched_at)
         return profiles, fetched_at, True

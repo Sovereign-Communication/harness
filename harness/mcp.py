@@ -42,6 +42,7 @@ from .log_analysis import analyze_log
 from .perception_client import PerceptionAdapter, PerceptionUnavailable
 from .service import run_verify as _service_run_verify
 from .jev import jev_credit_status
+from .lucas_gate import run_typed_track
 from .service import run_dogfood as _service_run_dogfood
 from .brief import build_brief, freshness_report, render_brief
 from .session import apply_session
@@ -1016,6 +1017,16 @@ class McpServer:
                 "cost_class": combo.get("cost_class"),
                 "pack_id": combo.get("pack_id"),
             }
+        if name == "lucas_gate_v2":
+            return run_typed_track(
+                track=args.get("track"),
+                artifact_text=args.get("artifact_text"),
+                category_scores=args.get("category_scores"),
+                bias_checks=args.get("bias_checks"),
+                overall_average=args.get("overall_average"),
+                actual_risk=args.get("actual_risk"),
+                investigated_reason=args.get("investigated_reason"),
+            )
         if name == "log_judgment":
             # Thin face over the ONE policy owner (jev_policy.evaluate_log_item)
             # + code-owned aggregation (log_analysis). Never invents buckets,
