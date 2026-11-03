@@ -343,6 +343,94 @@ class TierSnapshotRefreshTests(unittest.TestCase):
             with self.assertRaises(SnapshotRefreshError):
                 refresh_tier_snapshot(self.CATALOG, path=tierless, now=self.PINNED_NOW)
 
+    def test_refresh_skips_catalog_rows_it_cannot_price(self):
+        """A malformed catalog row is skipped, not guessed at and not fatal.
+
+        ``/models`` rows arrive as free-form JSON: a non-dict entry, a row with
+        no id, a row whose ``pricing`` is not an object, and a row missing a
+        rate all occur in practice. None of them may become a price, and none
+        may stop a refresh whose real ids are all present.
+        """
+        from harness.routing_table import refresh_tier_snapshot
+
+        catalog = list(self.CATALOG) + [
+            "acme/not-a-dict",
+            {"pricing": {"prompt": "1e-07", "completion": "1e-07"}},
+            {"id": "", "pricing": {"prompt": "1e-07", "completion": "1e-07"}},
+            {"id": "acme/mid-b", "pricing": ["1e-06", "3e-06"]},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp)
+            report = refresh_tier_snapshot(catalog, path=path, now=self.PINNED_NOW)
+            self.assertTrue(report["ok"])
+            with open(path, encoding="utf-8") as fh:
+                written = json.load(fh)
+            # Malformed rows contribute nothing: no phantom price appears.
+            self.assertNotIn("acme/mid-b", written["price_table"])
+            self.assertEqual(sorted(written["price_table"]),
+                             sorted(self.SNAPSHOT["price_table"]))
+            self.assertAlmostEqual(written["price_table"]["acme/mid-a"]["prompt_per_token"],
+                                   1.6e-06)
+
+    def test_refresh_refuses_a_priced_id_no_tier_lists(self):
+        """A price_table entry outside every tier is still catalogued or refused.
+
+        This is the shape a half-finished hand edit leaves behind: priced but
+        unrouted. The refresh must not quietly drop the price, because
+        ``ledger_analytics`` prices historical spend from this table.
+        """
+        from harness.routing_table import SnapshotRefreshError, refresh_tier_snapshot
+
+        snapshot = json.loads(json.dumps(self.SNAPSHOT))
+        snapshot["price_table"]["acme/retired-b"] = {
+            "prompt_per_token": 1e-07, "completion_per_token": 1e-07, "tier": "T1"}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, snapshot)
+            before = self._read_bytes(path)
+            with self.assertRaises(SnapshotRefreshError) as ctx:
+                refresh_tier_snapshot(self.CATALOG, path=path, now=self.PINNED_NOW)
+            self.assertIn("acme/retired-b", str(ctx.exception))
+            self.assertEqual(self._read_bytes(path), before)
+
+    def test_refresh_accepts_a_naive_reference_time(self):
+        """A naive ``now`` is read as UTC rather than rejected or shifted."""
+        from harness.routing_table import refresh_tier_snapshot
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp)
+            report = refresh_tier_snapshot(
+                self.CATALOG, path=path,
+                now=datetime(2026, 11, 3, 12, 0, 0))
+            self.assertEqual(report["captured_at"], "2026-11-03T12:00:00Z")
+
+    def test_refresh_leaves_the_artifact_when_the_write_itself_fails(self):
+        """A failed replace neither half-writes nor leaves a temp file behind."""
+        from unittest import mock
+
+        from harness.routing_table import refresh_tier_snapshot
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp)
+            before = self._read_bytes(path)
+            with mock.patch("harness.routing_table.os.replace",
+                            side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    refresh_tier_snapshot(self.CATALOG, path=path, now=self.PINNED_NOW)
+            self.assertEqual(self._read_bytes(path), before)
+            leftovers = [n for n in os.listdir(tmp) if n.startswith(".tiers.snapshot.")]
+            self.assertEqual(leftovers, [])
+
+            # Even when the temp-file cleanup itself fails, the original is
+            # still intact and the original error is what surfaces.
+            with mock.patch("harness.routing_table.os.replace",
+                            side_effect=OSError("disk full")), \
+                    mock.patch("harness.routing_table.os.unlink",
+                               side_effect=OSError("locked")):
+                with self.assertRaises(OSError) as ctx:
+                    refresh_tier_snapshot(self.CATALOG, path=path, now=self.PINNED_NOW)
+            self.assertIn("disk full", str(ctx.exception))
+            self.assertEqual(self._read_bytes(path), before)
+
     def test_refresh_refuses_a_negative_published_rate(self):
         from harness.routing_table import SnapshotRefreshError, refresh_tier_snapshot
 
