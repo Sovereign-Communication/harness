@@ -14,6 +14,7 @@ from .jev_packs import (
     validate_restart_request,
 )
 from .jev_policy import policy_for
+from .restart_policy import RestartStateStore
 from .session import ledger_for
 from .waist import (
     STAGE_CONTEXT,
@@ -204,6 +205,21 @@ class ExecutionStageMixin:
             consent_fresh=consent_fresh,
         )
         decision["recommendation_source"] = source
+        store = getattr(self, "_restart_state_store", None)
+        if store is None:
+            store = RestartStateStore()
+            self._restart_state_store = store
+        decision["terminal_state"] = store.decide_restart(
+            request_id=None,
+            assignment={"goal": goal,
+                        "completed_stages": list(completed_stages)},
+            current_stage=STAGE_EXECUTION,
+            requested_target=recommendation,
+            completed_stages=completed_stages,
+            consent_fresh=consent_fresh,
+            checkpoint=judgment.get("checkpoint"),
+            prior_results=judgment.get("signals") or {},
+        )
         return decision
 
     @staticmethod
