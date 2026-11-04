@@ -243,3 +243,72 @@ lane. Cure: a supersession note in `docs/jev-calibration.md` and
 `tests/test_jev_doc_fidelity.py`, which fails if the note is dropped, the
 policy sentence is removed, or an operative prompt states a confidence gate.
 
+
+## 2026-11-04 - main-to-green drive (lane head 43134f0)
+
+Replayed base main's failing legs at the lane head instead of trusting the
+annotation. Full hermetic suite at 43134f0: 5509 tests OK (skipped=73) in
+383.170s (`python -W error::ResourceWarning -m unittest discover -s tests -v`),
+exit 0.
+
+- Main's hermetic red was #446's wall-clock freshness test. The lane cure is
+  already present (6a4988d, with the refresh path a8c6be5): the test no longer
+  reads the clock and `harness/routing_table.py:165` names the command that
+  actually refreshes the artifact. The current test is
+  `tests/test_economics_cli.py:332`; it passes in the 5509-test run.
+- The bench proof inherited the operator's `mcp_allowed_roots`; the hermetic
+  seam now clears it at `tests/test_cli.py:696`.
+- D7 was real and lane-exposed: the resolver only knew Harness modules, so it
+  called the actual `docs/driver.md` driver_core migration note stale.
+  `audits/self/audit.py:1179` now resolves the sibling package and its
+  extractors; `tests/test_audit_doc_modules.py:20,27` is the drop-fails pin
+  (invented names still fail closed).
+- D10 named three public modules with no module-map row. Added
+  `CONTRIBUTING.md:290` (`restart_policy`), `:318` (`mcp_log`) and `:349`
+  (`workspace_audit`).
+- D12 is NOT green locally and is recorded as a limitation, not a pass. On
+  Python 3.14 the stdlib trace records zero harness lines
+  (`harness/__init__.py:11`; `changed-line coverage was not measured --
+  failing closed`), and on 3.11 the traced battery runs roughly one test per
+  second and cannot finish 5,509 tests inside its 1200s cap on this Windows
+  host. The audit leg in CI is Ubuntu 3.11; it was skipped by the billing
+  lock. Mechanical A/R/SM are 10.0; SD is 7.5 with D7/D10 now cured and D12
+  still unmeasured locally.
+- Gate set at 43134f0: driver_core 425 OK (1 skipped), conformance 26,
+  router 26 (`tests.test_router_meta_backend`), packaging 5, architecture 9,
+  ruff clean in the CI scope and for `driver_core` and `audits`, repo_cards
+  clean, secret scan 0 hits.
+- CI at 43134f0: run 41815506012, 15 jobs, zero steps, every runnable job
+  failed and audit/package were skipped. The annotation on the new repo home
+  is still "The job was not started because your account is locked due to a
+  billing issue." No code signal; not a regression.
+
+## 2026-11-04 - #422 citation identity and claim provenance (slice)
+
+`harness/citation_verify.py` is the deterministic, hermetic verifier for
+bibliography identity and claim-to-source provenance. DOI metadata comes from
+an injected resolver (a callable or `resolve(doi)` object), so tests never
+touch the network. Supplied title, authors, year, venue and version are
+compared field by field: a DOI or core-identity mismatch is `contradicted`,
+a venue/version difference is `partially_supported`, and a missing resolved
+field, resolver error, rate limit, paywall or conflicting registry answer is
+`not_verifiable`. A DOI-less source keeps its stable URL and stays unknown.
+
+Claim evidence must be a lifecycle-admitted `SourceRecord` with an exact
+passage (full-text SHA-256, 2,000-character bounded excerpt) plus a locator
+and retrieval timestamp. Jev may advise semantic support but cannot supply
+provenance; without it the claim stays `not_verifiable`. The citation-verified
+label is code-gated by `audit_citations`: every citation and every claim must
+be strictly `supported`, and unresolved or partial items are listed rather
+than dropped. `tests/test_citation_verify.py` has 23 hermetic cases covering
+exact match, wrong DOI, title/author/year mismatch, preprint versus published,
+partial and contradicted support, missing passage, paywall, resolver timeout,
+rate limit, metadata conflict, DOI-less sources, hash pinning and the label
+gate. Module row: `CONTRIBUTING.md:333`.
+
+Split, recorded: the issue's live DOI/publisher registry adapter and the
+#342/#344 research-lifecycle wiring are not on the lane yet, so #422 remains
+open. This slice proves the verifier contract and the label gate; it does not
+claim an end-to-end report.
+
+Gates: citation slice 23 OK, ruff clean, D7 doc-module pin 2 OK.
