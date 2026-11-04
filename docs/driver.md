@@ -76,6 +76,7 @@ Callers may branch on these and on nothing else about a refusal:
 | `no_action_recommended` | The decision tier recommended doing nothing. |
 | `undeclared_action` | The decision named an action outside the declared vocabulary. |
 | `execution_refused` | The executor refused: missing, stale or mismatched consent, side effects switched off, or no input backend (see below). The `detail` says which. |
+| `verification_failed` | The action executed, but the opted-in post-action vision check did not confirm its visible result (application not visible/focused, typed text not visible, capture timeout, or Jev timeout). `stopped_at` is `verification`. |
 
 `action_unsupported` is **not** a driver reason and is never emitted.
 
@@ -127,6 +128,43 @@ unregistered):
   `HARNESS_NL_CONTROL` onto `DRIVER_LAUNCH_APP` (driver-core reads only its
   own namespace); write authority alone does not confer launching, and an
   unlisted application is refused with the declared set named.
+
+### Post-action vision verification (#272)
+
+The executor's `ok` says an action was performed; it does not say the
+application painted or the typed string appeared. Two actions have an
+opt-in post-action check in
+[`driver_core/vision_verify.py`](../driver_core/vision_verify.py):
+
+- `launch_app`: after the launcher returns, poll at **2s and 5s** from
+action completion. Each poll takes a screenshot through `ScreenSource` and
+asks Jev the exact question `Is the application '<app_name>' visible and
+focused?`. A probability at or above **0.85** passes; two failures stop with
+`verification_failed` and `stopped_at: "verification"`.
+- `type_text`: one screenshot immediately after the action, with the exact
+question `Is the text '<text>' visible in the screenshot?`, the same 0.85
+bar, and the same failure path.
+
+A screenshot may spend at most **2 seconds** in capture and a Jev verdict at
+most **5 seconds**; exceeding either marks the attempt as a timeout and the
+driver escalates. The verifier uses the existing transport, endpoint, key,
+budget and price list -- there is no second Jev client. Image bytes are sent
+as a PNG asset and never written to the audit chain.
+
+**Flag-off is unchanged.** The check is built only when both `DRIVER_SCREEN`
+and `DRIVER_VISION_VERIFY` are enabled. With either off, no screenshot, Jev
+call, audit record or `verification` value is produced, and the action
+completes exactly as before. A dry run is not verified because it performed
+no effect.
+
+The same module carries the versioned **launch-verify** pack (`launch-verify`
+`1.0.0`): eight fields (`app_identity`, `backend`, `model`, `thinking`,
+`repo`, `build_mode`, `mission_queued`, `start_state`), a Choice plus a 0-3
+Score per field over one screenshot, and a **95** floor (`score / 3 * 100`).
+A field passes only when the Choice agrees with the caller-owned manifest and
+the Score reaches the floor. The live calibration corpus and freeze are not
+claimed by this lane pass: they require screenshots from the installed
+FreeBuff and a live key, and are recorded as the named follow-up on #272.
 
 ### Read-only probes
 

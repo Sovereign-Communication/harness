@@ -200,6 +200,10 @@ class Settings:
     #: The Harness host maps ``HARNESS_NL_CONTROL`` onto ``DRIVER_LAUNCH_APP``
     #: so this package still reads only its own namespace.
     launch_app_enabled: bool = False
+    #: Post-action visibility verification is a third independent opt-in.
+    #: It needs ``screen_enabled`` as well: the gate is pixels, and an
+    #: operator who has not admitted pixels has not admitted this.
+    vision_verify_enabled: bool = False
 
     @property
     def jev_images(self):
@@ -288,6 +292,7 @@ class Settings:
             "allow_write": self.allow_write,
             "native_input_enabled": self.native_input_enabled,
             "launch_app_enabled": self.launch_app_enabled,
+            "vision_verify_enabled": self.vision_verify_enabled,
         }
         return data
 
@@ -349,6 +354,7 @@ def load_settings(env=None, **overrides):
         screen_enabled=_env_bool(env, "SCREEN", False),
         native_input_enabled=_env_bool(env, "NATIVE_INPUT", False),
         launch_app_enabled=_env_bool(env, "LAUNCH_APP", False),
+        vision_verify_enabled=_env_bool(env, "VISION_VERIFY", False),
     )
     return settings.with_overrides(**overrides) if overrides else settings
 

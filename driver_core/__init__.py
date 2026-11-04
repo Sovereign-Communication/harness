@@ -28,10 +28,12 @@ documented where those mechanisms live.
 * ``2.0.0``: a consent is a capability for one exact ``(action, params)``
   pair; the wildcard grant is gone from this package's vocabulary.
 
-The wire contract -- ``STOP_REASONS``, the eleven keys of
+The wire contract -- ``STOP_REASONS``, the keys of
 :meth:`~driver_core.driver.StepResult.to_dict`, refusal-is-``HTTP 200
-ok:false``, and the request body's field set -- has been unchanged since
-2.x, so a host written against an earlier release is unaffected.
+ok:false``, and the request body's field set -- remains the same additive
+shape it has had since 2.x. Post-action verification adds the
+``verification`` result and the ``verification_failed`` reason; both are
+absent work for a driver with the feature off.
 """
 
 __version__ = "3.5.0"

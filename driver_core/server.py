@@ -54,6 +54,7 @@ STOP_REASONS = (
     "no_capture", "insufficient_agreement", "extraction_disagreement",
     "confidence_below_threshold", "state_not_stable", "decision_not_usable",
     "no_action_recommended", "undeclared_action", "execution_refused",
+    "verification_failed",
 )
 
 #: Actions a caller may never reach through this API without first

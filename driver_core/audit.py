@@ -57,6 +57,7 @@ KIND_CAPTURE = "capture"
 KIND_EXTRACTION = "extraction"
 KIND_DECISION = "decision"
 KIND_ACTION = "action"
+KIND_VERIFICATION = "verification"
 KIND_ESCALATION = "escalation"
 KIND_REFUSAL = "refusal"
 

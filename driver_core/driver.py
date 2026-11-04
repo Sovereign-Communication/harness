@@ -60,6 +60,7 @@ from .extractors import ExtractorPool
 from .jev_client import JevClient
 from .perception import GUI, select_capture
 from .states import SCREEN_SCHEMA
+from .vision_verify import VisionVerifier
 from .wiring import configured_pools, configured_sources
 
 
@@ -73,11 +74,12 @@ class StepResult:
     """
 
     __slots__ = ("step_id", "ok", "stopped_at", "reason", "detail", "capture",
-                 "agreement", "decision", "execution", "receipt", "cost", "needs")
+                 "agreement", "decision", "execution", "receipt", "cost", "needs",
+                 "verification")
 
     def __init__(self, step_id, *, ok, stopped_at, reason=None, detail="",
                  capture=None, agreement=None, decision=None, execution=None,
-                 receipt=None, cost=0.0, needs=()):
+                 receipt=None, cost=0.0, needs=(), verification=None):
         self.step_id = step_id
         self.ok = ok
         self.stopped_at = stopped_at
@@ -90,6 +92,7 @@ class StepResult:
         self.receipt = receipt
         self.cost = float(cost or 0.0)
         self.needs = list(needs)
+        self.verification = verification
 
     def to_dict(self):
         """The wire form -- the contract a host adapter serialises."""
@@ -106,6 +109,9 @@ class StepResult:
             "receipt": self.receipt,
             "cost_usd": round(self.cost, 9),
             "needs": list(self.needs),
+            "verification": (self.verification.to_dict()
+                             if getattr(self.verification, "to_dict", None)
+                             else self.verification),
         }
 
     def __repr__(self):
@@ -124,7 +130,7 @@ class Driver:
     def __init__(self, *, audit, settings=None, budget=None,
                  vocabulary=DEFAULT_VOCABULARY, pool=None, jev=None,
                  executor=None, sources=None, screen=None, pools=None,
-                 input_backend=None):
+                 input_backend=None, vision=None):
         self.settings = settings or load_settings()
         self.budget = budget or Budget(self.settings.run_ceiling_usd,
                                        step_ceiling_usd=self.settings.step_ceiling_usd)
@@ -173,6 +179,22 @@ class Driver:
 
         self.jev = jev or JevClient(self.settings, budget=self.budget,
                                     audit=self.audit)
+        #: Post-action vision verification, when the operator opted in. An
+        #: injected verifier is the caller's explicit choice; otherwise the
+        #: flag pair decides. The gate is pixels, so it is never built from
+        #: ``DRIVER_VISION_VERIFY`` alone: a driver that has not admitted
+        #: screen pixels has not admitted a screenshot either. The vision
+        #: pool itself declares ``pixels=False`` (its slots read the window
+        #: description), so the verifier gets its own pixel source rather
+        #: than silently reusing a words-only one.
+        self.vision = vision
+        if (self.vision is None and self.settings.vision_verify_enabled
+                and self.settings.screen_enabled):
+            self.vision = VisionVerifier(
+                self.settings, budget=self.budget, audit=self.audit,
+                source=(self.screen
+                        if self.screen is not None
+                        and getattr(self.screen, "pixels", False) else None))
         # Executors with a side effect are registered only when the operator
         # has declared this machine may be written to. A caller that builds
         # a Driver and passes no settings gets an observer.
@@ -382,11 +404,45 @@ class Driver:
                               needs=executability(
                                   action, self.executor.registry)[1])
 
+        # 8. verify the visible result, when the operator opted in. The
+        #    executor's ``ok`` says the action was performed; it does not say
+        #    the application painted or the typed string appeared. A failed
+        #    verification is therefore a refusal with its own stop tier, not
+        #    a note appended to a successful action. A dry run performed no
+        #    effect, so there is nothing visible to verify.
+        verification = None
+        verification_cost = 0.0
+        if (execution.ok and not execution.dry_run and self.vision is not None
+                and action.name in ("launch_app", "type_text")):
+            if action.name == "launch_app":
+                verification = self.vision.verify_application(
+                    str(execution.params.get("app_name", "")),
+                    step_id=step_id)
+            else:
+                verification = self.vision.verify_text(
+                    str(execution.params.get("text", "")), step_id=step_id)
+            verification_cost = float(getattr(verification, "cost", 0.0))
+            if not verification.passed:
+                detail = (f"post-action {action.name} verification failed: "
+                          f"{verification.reason}")
+                self.audit.append(
+                    KIND_ESCALATION, step_id=step_id,
+                    reason="verification_failed", action=action.name,
+                    detail=detail)
+                return self._stop(
+                    step_id, "verification", "verification_failed", detail,
+                    capture=capture, agreement=agreement, decision=decision,
+                    execution=execution, receipt=receipt,
+                    cost=(agreement.cost + decision.cost + guard_cost
+                          + verification_cost),
+                    verification=verification)
+
         return StepResult(step_id, ok=True, stopped_at="executed",
                           capture=capture, agreement=agreement,
                           decision=decision, execution=execution,
-                          receipt=receipt,
-                          cost=agreement.cost + decision.cost + guard_cost)
+                          receipt=receipt, verification=verification,
+                          cost=(agreement.cost + decision.cost + guard_cost
+                                + verification_cost))
 
     @property
     def screen(self):

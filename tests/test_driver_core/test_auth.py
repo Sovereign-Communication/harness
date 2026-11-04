@@ -431,7 +431,7 @@ class TokenProvisioningTests(unittest.TestCase):
         self.assertEqual(sorted(health),
                          ["key_provisioning", "keyed", "ok", "settings",
                           "sources", "status", "version", "vocabulary"])
-        self.assertEqual(len(STOP_REASONS), 9)
+        self.assertEqual(len(STOP_REASONS), 10)
 
 
 class ServeBindingTests(unittest.TestCase):
