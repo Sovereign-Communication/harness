@@ -26,7 +26,7 @@ from .chat_policy import (
 )
 from .chat import (
     assess_output,
-    chat,
+    chat_routed,
     extract_content_and_cost,
     looks_truncated,
 )
@@ -306,7 +306,7 @@ class HourglassLifecycleMixin:
                 continue
             try:
                 gov.preflight(prompt_text, [("answer", model, allocated_tokens, 0)])
-                status, response = chat(
+                status, response = chat_routed(
                     transport=self.transport, api_key=api_key, model=model,
                     messages=messages, max_tokens=allocated_tokens,
                     reasoning_effort=lane_effort, governor=gov)

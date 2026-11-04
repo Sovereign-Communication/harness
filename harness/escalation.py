@@ -11,7 +11,7 @@ context is prepended for rungs after the first. This module does not invent
 plans from apply output (apply returns file content, not judge JSON).
 """
 from . import events as _events
-from .chat import (_chat_reservation_slots, chat, extract_content_and_cost,
+from .chat import (_chat_reservation_slots, chat_routed, extract_content_and_cost,
                    assess_output)
 from .config import effective_lane_policy
 from .errors import HarnessError
@@ -325,7 +325,7 @@ class EscalationDriver:
                 eprint(f"[escalation] rung {rung} refused by spend governor: {exc}")
                 break
 
-            status, resp = chat(self.transport, self.api_key, model,
+            status, resp = chat_routed(self.transport, self.api_key, model,
                                 [{"role": "user", "content": prompt}],
                                 self.max_tokens, self.reasoning_effort,
                                 self.reasoning_token_budget, self.governor)

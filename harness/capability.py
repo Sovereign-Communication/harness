@@ -500,7 +500,7 @@ def probe_json_reliability(transport, api_key, governor, models, max_tokens=256,
     Reasoning models are probed WITH a reasoning effort (`low`) so the probe is
     fair to them; non-reasoning models run with reasoning off.
     """
-    from .chat import (chat, extract_content_and_cost, _extract_json,
+    from .chat import (chat_routed, extract_content_and_cost, _extract_json,
                        _reported_cost, _chat_reservation_slots)
     results = {}
     generated_task_id = task_id is None
@@ -541,7 +541,7 @@ def probe_json_reliability(transport, api_key, governor, models, max_tokens=256,
                 governor.preflight(
                     q, [(f"probe {m} #{i + 1}/{slots}", m, max_tokens, 0)
                         for i in range(slots)])
-                status, resp = chat(transport, api_key, m,
+                status, resp = chat_routed(transport, api_key, m,
                                     [{"role": "user", "content": q}], max_tokens,
                                     eff, 0.4, governor)
             except Exception as exc:

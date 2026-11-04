@@ -20,7 +20,7 @@ here mutates configuration or pools; the report is advisory input for the
 operator and the weekly CI job.
 """
 from . import events as _events
-from .chat import _extract_json, chat, extract_content_and_cost, _reported_cost
+from .chat import _extract_json, chat_routed, extract_content_and_cost, _reported_cost
 from .config import OPENROUTER_RANKINGS_URL, shipped_model_ids
 from .errors import HarnessError
 from .output import eprint
@@ -178,7 +178,7 @@ def _probe_vote(transport, api_key, governor, model, max_tokens=PROBE_MAX_TOKENS
         "Respond with ONLY a JSON object and nothing else:\n"
         "{\"claim_1\": {\"real\": true, \"confidence\": 0.9}}\n"
         "This is a connectivity and JSON-emission probe. Do not add prose.")
-    status, resp = chat(transport, api_key, model,
+    status, resp = chat_routed(transport, api_key, model,
                         [{"role": "user", "content": prompt}],
                         max_tokens, "off", 0.4, governor)
     cost = _reported_cost(resp)

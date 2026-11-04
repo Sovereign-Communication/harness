@@ -885,10 +885,20 @@ def chat_routed(transport, api_key, model, messages, max_tokens,
     """
     from .routing_table import route_for_model
     route = route_for_model(model, settings=settings)
+    # The key surface follows the backend the route names: an explicit
+    # argument wins, then the setting that feeds that backend, then the key
+    # this lane already threads (under the Muse preset the threaded key IS
+    # the Meta key, which is how every migrated lane passes it). A backend
+    # left unset still refuses in chat_for_route rather than borrowing
+    # another provider's credential.
+    if route.provider == META_PROVIDER:
+        meta_key = meta_key or getattr(settings, "meta_key", None) or api_key
+    elif route.provider == FIREWORKS_PROVIDER:
+        fireworks_key = (fireworks_key
+                         or getattr(settings, "fireworks_key", None))
     return chat_for_route(
         route, transport, api_key, fireworks_key, messages, max_tokens,
-        governor=governor, meta_key=meta_key or (api_key if route.provider
-                                                 == META_PROVIDER else None),
+        governor=governor, meta_key=meta_key,
         reasoning_effort=reasoning_effort,
         reasoning_token_budget=reasoning_token_budget)
 

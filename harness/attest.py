@@ -200,7 +200,7 @@ def authorize_diff(transport, api_key, governor, ledger, *, task_id, model,
     to be written. Returns the attestation record (also ledgered). Raises
     HarnessError on deny, unparseable output, transport error -- every
     failure path refuses the write (fail-closed, no fallback to intent)."""
-    from .chat import chat, extract_content_and_cost, _extract_json, \
+    from .chat import chat_routed, extract_content_and_cost, _extract_json, \
         _reported_cost, REASONING_FALLBACK_PREFIX
 
     try:
@@ -224,7 +224,7 @@ def authorize_diff(transport, api_key, governor, ledger, *, task_id, model,
         preflight(DIFF_AUTH_SYSTEM_PROMPT + "\n" + user,
                   [(f"attest:{model}", model, budget, 0)])
     governor.check_byok(model)
-    status, resp = chat(transport, api_key, model,
+    status, resp = chat_routed(transport, api_key, model,
                         [{"role": "system", "content": DIFF_AUTH_SYSTEM_PROMPT},
                          {"role": "user", "content": user}],
                         budget, reasoning_effort="none", governor=governor)

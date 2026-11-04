@@ -3,7 +3,7 @@
 import re
 from typing import Any, Callable, Dict, List, Optional
 
-from .chat import assess_output, chat, extract_content_and_cost, looks_truncated
+from .chat import assess_output, chat_routed, extract_content_and_cost, looks_truncated
 from .chat_policy import (
     DEFAULT_CHAT_SYSTEM_PROMPT,
     _MAX_WEB_CONTEXT_CHARS,
@@ -178,7 +178,7 @@ class ConversationLifecycleMixin:
                 continue
             try:
                 gov.preflight(prompt, [("chat", model, allocated_tokens, 0)])
-                status, resp = chat(
+                status, resp = chat_routed(
                     transport=self.transport,
                     api_key=api_key,
                     model=model,
