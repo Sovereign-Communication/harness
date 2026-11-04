@@ -222,6 +222,24 @@ class VocabularyTests(unittest.TestCase):
             check_batch(["delete_file", "submit_irreversible"],
                         DEFAULT_VOCABULARY)
 
+    def test_an_irreversible_may_not_share_a_batch_with_a_read_only_action(self):
+        with self.assertRaises(VocabularyError):
+            check_batch(["delete_file", "read_value"], DEFAULT_VOCABULARY)
+
+    def test_an_irreversible_may_not_share_a_batch_with_a_mutating_action(self):
+        with self.assertRaises(VocabularyError):
+            check_batch(["delete_file", "click"], DEFAULT_VOCABULARY)
+
+    def test_a_batch_of_only_reversible_actions_is_accepted(self):
+        self.assertEqual(
+            check_batch(["read_value", "click"], DEFAULT_VOCABULARY),
+            ["read_value", "click"])
+
+    def test_a_lone_irreversible_action_is_accepted(self):
+        self.assertEqual(
+            check_batch(["delete_file"], DEFAULT_VOCABULARY),
+            ["delete_file"])
+
     def test_a_duplicate_action_name_is_refused(self):
         from driver_core.actions import Action
         dup = Action("x", READ_ONLY, "e", (), "", "any")

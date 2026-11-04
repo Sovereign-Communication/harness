@@ -261,16 +261,16 @@ def check_batch(proposed, vocabulary):
 
     Refuses a batch that mixes an irreversible action with anything else,
     which is how a single "yes" would otherwise launder several consequences
-    past a human who was only asked about one.
+    past a human who was only asked about one. A lone irreversible action is
+    allowed; the executor still requires a per-step Consent grant for it.
     """
     if not isinstance(proposed, (list, tuple)):
         raise VocabularyError("a proposed batch must be a sequence of actions")
-    if len(proposed) > MAX_IRREVERSIBLE_PER_STEP:
-        irreversible = [n for n in proposed
-                        if vocabulary.resolve(n).requires_human_confirmation]
-        if len(irreversible) > 1:
-            raise VocabularyError(
-                f"a single step may propose at most "
-                f"{MAX_IRREVERSIBLE_PER_STEP} irreversible action, got "
-                f"{sorted(irreversible)}")
+    irreversible = [n for n in proposed
+                    if vocabulary.resolve(n).requires_human_confirmation]
+    if irreversible and len(proposed) > MAX_IRREVERSIBLE_PER_STEP:
+        raise VocabularyError(
+            f"an irreversible action ({sorted(irreversible)}) may not be "
+            f"proposed in a batch with other actions, got a batch of "
+            f"{len(proposed)}")
     return list(proposed)
