@@ -51,6 +51,14 @@ def discover_target_files(prompt: str, root_dir: Optional[Path] = None) -> List[
     if candidates:
         return candidates
 
+    # A whole-workspace review is not narrowed by module-name coincidences:
+    # "audit the workspace with jev" must not collapse to harness/jev.py and
+    # harness/workspace.py (issue #448). Explicit paths above still win.
+    from .simple_request import is_comprehensive_workspace_inspection_request
+
+    if is_comprehensive_workspace_inspection_request(prompt):
+        return candidates
+
     # 2. Heuristic search: check if prompt mentions existing python module names
     words = set(re.findall(r"\b[a-zA-Z_0-9-]+\b", prompt.lower()))
     harness_dir = root / "harness"

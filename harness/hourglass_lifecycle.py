@@ -48,6 +48,7 @@ from .history import (
 from .jev_policy import jev_cost_ceiling, policy_for
 from .orchestrator import keyword_fallback
 from .prompts import CAPABILITY_MARKER
+from .request_intent import no_tools_requested
 from .provider_errors import ProviderSpendLimitError
 from .repo_scope import (
     discover_target_files,
@@ -504,8 +505,11 @@ class HourglassLifecycleMixin:
 
         # Current-data requests earn web retrieval; workspace references are
         # handled from the selected local tree and never become web searches.
-        web = (bool(web) or is_research_question(prompt)
-               or is_current_information_request(prompt))
+        # An explicit "do not call tools" instruction outranks every heuristic
+        # that would add retrieval (issue #448).
+        web = False if no_tools_requested(prompt) else (
+            bool(web) or is_research_question(prompt)
+            or is_current_information_request(prompt))
         wall_budget = (DEFAULT_RUN_WALL_SECONDS if max_wall_seconds is None
                        else float(max_wall_seconds))
         deadline = time.monotonic() + max(0.0, wall_budget)
@@ -678,6 +682,10 @@ class HourglassLifecycleMixin:
         if selected_workspace:
             # Explicit local-workspace intent is stronger evidence than an
             # advisory Jev route: never send a repo audit to web search.
+            web = False
+        elif no_tools_requested(prompt):
+            # The operator forbade tools; an advisory Jev web-research route
+            # cannot override that (issue #448).
             web = False
         elif (bool(route_preflight.get("native"))
               and route_preflight.get("choice") == "web-research"):
