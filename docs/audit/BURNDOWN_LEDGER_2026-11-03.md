@@ -67,3 +67,19 @@ Gates: #284 focused 7 OK, MCP 110 OK (6 skipped), driver_core 403 OK
 architecture 9 OK, ruff clean on harness tests, secret scan clean.
 Evidence posted on #284; status mirrored to #442 and #295.
 
+## 2026-11-04 - #286 MCP structured logging + additive-only policy
+
+Each tools/call appends one JSON line (tool, scrubbed args, outcome,
+duration, optional error) to HARNESS_MCP_LOG or an explicit
+mcp_log_path; no path means no file. Credential-shaped values and
+secret-named fields are redacted before disk, and the logging path
+writes only to the file, never stdio. Additive-only tool versioning is
+documented in the module docstring and docs/mcp.md. Landing commit
+07cb153.
+
+Gates: #286 focused 6 OK, MCP 110 OK (6 skipped), MCP driver 12 OK,
+driver_core 403 OK (1 skipped), conformance 26 OK, router 26 OK,
+packaging 5 OK, architecture 9 OK, ruff clean on harness tests,
+secret scan clean. Evidence posted on #286; status mirrored to #442
+and #295.
+
