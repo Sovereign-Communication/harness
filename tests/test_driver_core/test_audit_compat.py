@@ -404,9 +404,12 @@ class ChainCompatibilityTests(unittest.TestCase):
         self.assertTrue(
             verdict.ok, f"an existing log stopped verifying: {verdict}")
 
-    def test_the_recorded_chain_covers_every_declared_kind(self):
+    def test_the_recorded_chain_covers_every_unconditional_kind(self):
+        # ``verification`` is opt-in: the recorded scenario has the feature
+        # off, and ``test_vision_verify`` proves the feature-on path writes
+        # the kind and its escalation. Every other kind is unconditional.
         kinds = {record["kind"] for record in golden_records()}
-        self.assertEqual(kinds, self._declared_kinds())
+        self.assertEqual(kinds, self._declared_kinds() - {"verification"})
 
     def test_the_same_run_writes_the_same_bytes(self):
         """Stronger than verification: identical records, not a valid chain.

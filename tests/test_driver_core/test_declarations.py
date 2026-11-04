@@ -370,12 +370,15 @@ class AuditIsRequiredTests(unittest.TestCase):
             f"a default of {defaulted} puts an unrecorded action back within "
             f"reach; the argument has to be required")
 
-    def test_the_four_that_take_one_all_do(self):
+    def test_the_five_that_take_one_all_do(self):
         """Pins that the scan found the real collaborators and not an empty
-        set, which would pass the test above for the wrong reason."""
+        set, which would pass the test above for the wrong reason. The
+        post-action verifier writes ``verification`` records, so it owns a
+        required chain exactly like the vision extractor."""
         self.assertEqual(
             sorted(cls.__name__ for cls in self._constructors_taking_an_audit()),
-            ["Driver", "Executor", "JevClient", "VisionExtractor"])
+            ["Driver", "Executor", "JevClient", "VisionExtractor",
+             "VisionVerifier"])
 
     def test_an_executor_cannot_be_built_without_a_chain(self):
         # Deliberately omit the required ``audit`` argument; the cast keeps

@@ -171,6 +171,21 @@ class LaunchVisibilityTests(unittest.TestCase):
         self.assertEqual(clock.sleeps, [2.0, 3.0])
         self.assertEqual(len(service.requests), 2)
 
+    def test_a_passing_check_writes_the_declared_verification_kind(self):
+        audit = MemoryAuditLog()
+        source = Source()
+        clock = Clock()
+        source.clock = clock
+        verifier = VisionVerifier(
+            _keyed(), budget=Budget(1.0, step_ceiling_usd=1.0), audit=audit,
+            source=source, transport_module=Service(_visible(0.99)),
+            clock=clock, sleep=clock.sleep, image_preparer=_preparer)
+        result = verifier.verify_application("FreeBuff")
+
+        self.assertTrue(result.passed)
+        kinds = [record["kind"] for record in audit.read_all()]
+        self.assertIn("verification", kinds)
+
     def test_two_false_answers_escalate_and_record_the_reason(self):
         audit = MemoryAuditLog()
         service = Service(_visible(0.1), _visible(0.2))
