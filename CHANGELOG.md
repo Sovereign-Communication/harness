@@ -9,30 +9,7 @@ break APIs between minor versions).
 
 ## [Unreleased]
 
-### Fixed
-
-- **Read-only workspace audits no longer enter paid edit planning (#448).** An
-  explicit no-write instruction plus an audit request now classifies as
-  `audit` instead of `edit`, so "read-only ... just audit and create a report"
-  stops paying for edit planning just because `create` is in
-  `MUTATION_KEYWORDS`. A genuine write request that merely uses the adjective
-  ("add a read-only audit mode") still classifies as an edit. A whole-workspace
-  audit also stops collapsing to module-name collisions (`jev`/`workspace` to
-  `harness/jev.py` + `harness/workspace.py`): explicit paths still win, and the
-  stem heuristic is skipped for comprehensive inspection requests.
-  `request_intent.is_read_only_audit_request`, `request_intent.no_tools_requested`
-  and the workspace-scope guard carry the rule;
-  `tests/test_read_only_audit_448.py` pins both specimen prompts from the issue.
-- **An explicit "do not call tools" instruction suppresses retrieval.** The
-  router's `web` flag and both web-enabling sites in the answer lifecycle now
-  consult `no_tools_requested`, so an advisory Jev web-research route cannot
-  override the operator's constraint (the LIVE_OK probe on #448).
-- **HTTP 402 keeps its cause.** `ProviderSpendLimitError` gains `cause`
-  (`account_funding` / `route_or_model_restriction` / `unknown`) and a
-  `next_step` that exists only when it is valid; the kind stays
-  `provider_spend_limit` so every terminal handler still stops the run. A 402
-  that names a model or route restriction no longer tells the operator to add
-  credits (#448).
+Nothing yet.
 
 ## [0.5.1] — 2026-10-25
 
