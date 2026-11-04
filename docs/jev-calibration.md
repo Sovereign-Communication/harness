@@ -4,6 +4,18 @@ Tracks [harness #168](https://github.com/Sovereign-Communication/harness/issues/
 the 0.95 fail-closed threshold exceeds Jev's observed calibration band, so
 every judgment escalates and the gate adds cost without signal.
 
+> **Superseded for the decision gate (2026-10-21).** This document records
+> pre-v1 calibration evidence for issue #168 and the audit tool's
+> `min_confidence` setting. The 0.95 discussed here is not a Choice-confidence
+> bar and is not the gate the lane runs today. Ratified v1
+> ([JEV_GATE_POLICY_V1.md](JEV_GATE_POLICY_V1.md)) gates on `advances_goal`
+> (a Noul) and on the disposition lead, and reports Choice confidence as
+> telemetry only. In code, the 0.95 is `DECISION_CONFIDENCE_THRESHOLD`
+> (`harness/jev_packs.py`), which `compose_decision_verdict` applies to
+> `advances_goal`, never to `confidence`. The threshold discussion below
+> remains accurate for the audit tool's own `min_confidence`; it must not be
+> read as the decision gate's rule.
+
 **This change alters no active threshold.** It adds measurement tooling
 (`harness/jev_calibration.py`), this evidence document, and hermetic tests.
 Changing any live threshold remains the operator's explicit decision via

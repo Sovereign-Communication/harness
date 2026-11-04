@@ -228,3 +228,18 @@ main-green drive, then the remaining plan items. The report is not on the lane
 -- no file in `reports/`, no commit, no issue comment -- so it is recorded as
 the immediate next item, not as delivered.
 
+## 2026-11-04 - STEP 0 Jev inclusivity audit
+
+Report: `reports/jev-inclusivity-audit-2026-11-04.md`, audited at 89cd74c.
+Eight surfaces carry file:line anchors: decision-gate v1 fidelity (the
+composer applies all eight rules and gates on `advances_goal`, never Choice
+confidence), the operative prompts (clean), the direct TypeSafe wire path (one
+evaluator, one policy factory, no `chat` or provider routing), the three
+distinct bars, receipts, the Lucas Gate v2 rate, and the #325 flexibility
+rule. Two findings are not passes: Lucas Gate v2 has 0/10 machine receipts
+over the last ten lane-driving commits (the prose score lines carry no
+`artifact_sha256`), and the steering's "Rule 8" has no definition on the
+lane. Cure: a supersession note in `docs/jev-calibration.md` and
+`tests/test_jev_doc_fidelity.py`, which fails if the note is dropped, the
+policy sentence is removed, or an operative prompt states a confidence gate.
+
