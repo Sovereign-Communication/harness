@@ -240,7 +240,7 @@ class EscalationReserveParityTests(unittest.TestCase):
                                   max_tokens=4096)
         req = mock.Mock()
         req.allow_escalation = True
-        with mock.patch("harness.escalation.chat", side_effect=fake_chat):
+        with mock.patch("harness.escalation.chat_routed", side_effect=fake_chat):
             result = driver.run_with_escalation(
                 req, state, lambda st, ctx: "prompt", finish_fn)
         self.assertEqual(result["status"], "ok")

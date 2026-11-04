@@ -171,7 +171,7 @@ class DriverDirectiveTests(unittest.TestCase):
                 "usage": {"cost": 0.0},
             }
 
-        with mock.patch("harness.escalation.chat", side_effect=fake_chat):
+        with mock.patch("harness.escalation.chat_routed", side_effect=fake_chat):
             result = driver.run_with_escalation(
                 req, state, lambda st, ctx: "prompt",
                 finish_result or (lambda model, content, cost: (

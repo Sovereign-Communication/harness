@@ -505,7 +505,7 @@ class TestAutonomousAgent(unittest.TestCase):
             tmp_path = Path(tmp)
             save_chat_turn("ui_sess", {"prompt": "what is 2+2?", "response": "4"}, history_dir=tmp_path)
             agent = AutonomousAgent(history_dir=tmp_path)
-            with patch("harness.conversation_lifecycle.chat") as mock_chat, \
+            with patch("harness.conversation_lifecycle.chat_routed") as mock_chat, \
                  patch("harness.conversation_lifecycle.governor_for", return_value=(None, MagicMock())):
                 mock_chat.return_value = (200, {
                     "choices": [{"message": {"content": "Verified: still 4"}}],
@@ -540,7 +540,7 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
     def test_no_web_flag_discloses_no_web_access(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(Path(tmp))
-            with patch("harness.conversation_lifecycle.chat", return_value=(200, self._mock_resp())) as m, \
+            with patch("harness.conversation_lifecycle.chat_routed", return_value=(200, self._mock_resp())) as m, \
                  patch("harness.conversation_lifecycle.governor_for", return_value=(None, MagicMock())):
                 agent.run_prompt("can you search to verify?", session_id="w1")
                 sysmsg = m.call_args[1]["messages"][0]["content"]
@@ -559,7 +559,7 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
                        return_value=[{"url": "https://www.anthropic.com/rz",
                                       "title": "Riemann",
                                       "snippet": "bound moved to 67.2%"}]), \
-                 patch("harness.conversation_lifecycle.chat",
+                 patch("harness.conversation_lifecycle.chat_routed",
                        return_value=(200, self._mock_resp())) as m, \
                  patch("harness.conversation_lifecycle.governor_for",
                        return_value=(None, MagicMock())):
@@ -590,7 +590,7 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
                        return_value={"url": "https://google.com/",
                                      "title": "Google",
                                      "text": "search engine"}), \
-                 patch("harness.conversation_lifecycle.chat",
+                 patch("harness.conversation_lifecycle.chat_routed",
                        side_effect=HarnessError("stop at the system prompt")) as mc, \
                  patch("harness.conversation_lifecycle.governor_for",
                        return_value=(None, MagicMock())):
@@ -620,7 +620,7 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
             fake_results = [{"title": "Bound moved", "url": "https://e.example/a",
                              "snippet": "zero-free region extended"}]
             with patch("harness.web.search_web", return_value=fake_results) as ms, \
-                 patch("harness.conversation_lifecycle.chat", return_value=(200, self._mock_resp())) as mc, \
+                 patch("harness.conversation_lifecycle.chat_routed", return_value=(200, self._mock_resp())) as mc, \
                  patch("harness.conversation_lifecycle.governor_for", return_value=(None, MagicMock())):
                 res = agent.run_prompt("search for the riemann bound", session_id="w2", web=True)
                 ms.assert_called_once()
@@ -635,7 +635,7 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
             agent = self._agent(Path(tmp))
             page = {"url": "https://www.anthropic.com/r", "title": "T", "text": "page body"}
             with patch("harness.web.fetch_url", return_value=page) as mf, \
-                 patch("harness.conversation_lifecycle.chat", return_value=(200, self._mock_resp())) as mc, \
+                 patch("harness.conversation_lifecycle.chat_routed", return_value=(200, self._mock_resp())) as mc, \
                  patch("harness.conversation_lifecycle.governor_for", return_value=(None, MagicMock())):
                 agent.run_prompt("https://www.anthropic.com/r", session_id="w3", web=True)
                 mf.assert_called_once()
@@ -647,7 +647,7 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(Path(tmp))
             with patch("harness.web.search_web", side_effect=_HE("web search failed: down")), \
-                 patch("harness.conversation_lifecycle.chat", return_value=(200, self._mock_resp())) as mc, \
+                 patch("harness.conversation_lifecycle.chat_routed", return_value=(200, self._mock_resp())) as mc, \
                  patch("harness.conversation_lifecycle.governor_for", return_value=(None, MagicMock())):
                 res = agent.run_prompt("search the web", session_id="w4", web=True)
                 sysmsg = mc.call_args[1]["messages"][0]["content"]
@@ -659,7 +659,7 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(Path(tmp))
             with patch("harness.web.search_web", side_effect=RuntimeError("boom")), \
-                 patch("harness.conversation_lifecycle.chat", return_value=(200, self._mock_resp())) as mc, \
+                 patch("harness.conversation_lifecycle.chat_routed", return_value=(200, self._mock_resp())) as mc, \
                  patch("harness.conversation_lifecycle.governor_for", return_value=(None, MagicMock())):
                 res = agent.run_prompt("search the web", session_id="w5", web=True)
         self.assertEqual(res["status"], "ok")
@@ -679,7 +679,7 @@ class TestWebCapabilityDisclosure(unittest.TestCase):
                  patch("harness.web.search_web",
                        return_value=[{"url": "https://www.anthropic.com/x",
                                       "title": "X", "snippet": "s"}]), \
-                 patch("harness.conversation_lifecycle.chat", return_value=(200, self._mock_resp())) as mc, \
+                 patch("harness.conversation_lifecycle.chat_routed", return_value=(200, self._mock_resp())) as mc, \
                  patch("harness.conversation_lifecycle.governor_for", return_value=(None, MagicMock())):
                 res = agent.run_prompt("https://www.anthropic.com/x",
                                        session_id="w6", web=True)
@@ -728,7 +728,7 @@ class TestChatLadderRotation(unittest.TestCase):
             agent = self._agent(Path(tmp), judge="m1:free",
                                 panel_pool="m2:free,m3:free",
                                 allow_escalation=False)
-            with patch("harness.conversation_lifecycle.chat",
+            with patch("harness.conversation_lifecycle.chat_routed",
                        side_effect=[(429, self._429), (200, self._OK)]) as mc, \
                  patch("harness.conversation_lifecycle.governor_for",
                        return_value=(None, MagicMock())):
@@ -746,7 +746,7 @@ class TestChatLadderRotation(unittest.TestCase):
                                 escalation_pool="paid-1,paid-2")
             paid = {"choices": [{"message": {"content": "paid answer"}}],
                     "usage": {"cost": 0.01}}
-            with patch("harness.conversation_lifecycle.chat",
+            with patch("harness.conversation_lifecycle.chat_routed",
                        side_effect=[(429, self._429), (429, self._429),
                                     (200, paid)]), \
                  patch("harness.conversation_lifecycle.governor_for",
@@ -763,7 +763,7 @@ class TestChatLadderRotation(unittest.TestCase):
             agent = self._agent(Path(tmp), judge="m1:free",
                                 panel_pool="m2:free", allow_escalation=True,
                                 escalation_pool="paid-1")
-            with patch("harness.conversation_lifecycle.chat",
+            with patch("harness.conversation_lifecycle.chat_routed",
                        return_value=(429, self._429)), \
                  patch("harness.conversation_lifecycle.governor_for",
                        return_value=(None, MagicMock())):
@@ -780,7 +780,7 @@ class TestChatLadderRotation(unittest.TestCase):
                                 panel_pool="m2:free", allow_escalation=False)
             empty = {"choices": [{"message": {"content": "   "}}],
                      "usage": {"cost": 0.0}}
-            with patch("harness.conversation_lifecycle.chat",
+            with patch("harness.conversation_lifecycle.chat_routed",
                        side_effect=[(200, empty), (200, self._OK)]) as mc, \
                  patch("harness.conversation_lifecycle.governor_for",
                        return_value=(None, MagicMock())):
@@ -798,7 +798,7 @@ class TestChatLadderRotation(unittest.TestCase):
             gov = MagicMock()
             gov.preflight.side_effect = [HarnessError("ceiling refused"),
                                          (0.0, [])]
-            with patch("harness.conversation_lifecycle.chat",
+            with patch("harness.conversation_lifecycle.chat_routed",
                        return_value=(200, self._OK)) as mc, \
                  patch("harness.conversation_lifecycle.governor_for",
                        return_value=(None, gov)):
@@ -815,7 +815,7 @@ class TestChatLadderRotation(unittest.TestCase):
                                 panel_pool="m2:free", allow_escalation=False)
             byok = {"choices": [{"message": {"content": "off-the-books"}}],
                     "usage": {"cost": 0.0, "is_byok": True}}
-            with patch("harness.conversation_lifecycle.chat",
+            with patch("harness.conversation_lifecycle.chat_routed",
                        side_effect=[(200, byok), (200, self._OK)]), \
                  patch("harness.conversation_lifecycle.governor_for",
                        return_value=(None, MagicMock())) as mg:
@@ -837,7 +837,7 @@ class TestChatLadderRotation(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._agent(Path(tmp), judge="m1:free",
                                 panel_pool="m2:free", allow_escalation=False)
-            with patch("harness.conversation_lifecycle.chat",
+            with patch("harness.conversation_lifecycle.chat_routed",
                        side_effect=[(429, self._429), (200, self._OK)]), \
                  patch("harness.conversation_lifecycle.governor_for",
                        return_value=(None, MagicMock())):
@@ -862,7 +862,7 @@ class TestChatDeferral(unittest.TestCase):
             agent = AutonomousAgent(settings=_lane_settings(),
                                     history_dir=Path(tmp))
             fake_ledger = MagicMock()
-            with patch("harness.conversation_lifecycle.chat", return_value=(200, self._DEFER)), \
+            with patch("harness.conversation_lifecycle.chat_routed", return_value=(200, self._DEFER)), \
                  patch("harness.conversation_lifecycle.governor_for",
                        return_value=(None, MagicMock())), \
                  patch("harness.conversation_lifecycle.ledger_for", return_value=fake_ledger), \
@@ -895,7 +895,7 @@ class TestChatDeferral(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             agent = AutonomousAgent(settings=_lane_settings(),
                                     history_dir=Path(tmp))
-            with patch("harness.conversation_lifecycle.chat", return_value=(200, bare)), \
+            with patch("harness.conversation_lifecycle.chat_routed", return_value=(200, bare)), \
                  patch("harness.conversation_lifecycle.governor_for",
                        return_value=(None, MagicMock())), \
                  patch("harness.conversation_lifecycle.ledger_for", return_value=MagicMock()), \
@@ -915,7 +915,7 @@ class TestChatDeferral(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             agent = AutonomousAgent(settings=_lane_settings(),
                                     history_dir=Path(tmp))
-            with patch("harness.conversation_lifecycle.chat",
+            with patch("harness.conversation_lifecycle.chat_routed",
                        side_effect=HarnessError("stop at the prompt")) as mc, \
                  patch("harness.conversation_lifecycle.governor_for",
                        return_value=(None, MagicMock())):
@@ -937,7 +937,7 @@ class TestChatDeferral(unittest.TestCase):
             agent = AutonomousAgent(settings=_lane_settings(),
                                     history_dir=Path(tmp))
             fake_ledger = MagicMock()
-            with patch("harness.conversation_lifecycle.chat", return_value=(200, refuse)), \
+            with patch("harness.conversation_lifecycle.chat_routed", return_value=(200, refuse)), \
                  patch("harness.conversation_lifecycle.governor_for",
                        return_value=(None, MagicMock())), \
                  patch("harness.conversation_lifecycle.ledger_for", return_value=fake_ledger), \
@@ -961,7 +961,7 @@ class TestChatDeferral(unittest.TestCase):
             agent = AutonomousAgent(settings=_lane_settings(),
                                     history_dir=Path(tmp))
             fake_ledger = MagicMock()
-            with patch("harness.conversation_lifecycle.chat", return_value=(200, caveat)), \
+            with patch("harness.conversation_lifecycle.chat_routed", return_value=(200, caveat)), \
                  patch("harness.conversation_lifecycle.governor_for",
                        return_value=(None, MagicMock())), \
                  patch("harness.conversation_lifecycle.ledger_for", return_value=fake_ledger), \
@@ -1000,7 +1000,7 @@ class TestChatTruncation(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             agent = AutonomousAgent(settings=_lane_settings(),
                                     history_dir=Path(tmp))
-            with patch("harness.conversation_lifecycle.chat",
+            with patch("harness.conversation_lifecycle.chat_routed",
                        side_effect=[(200, self._truncated(cut)),
                                     (200, self._COMPLETE)]) as mc, \
                  patch("harness.conversation_lifecycle.governor_for",
@@ -1022,7 +1022,7 @@ class TestChatTruncation(unittest.TestCase):
             agent = AutonomousAgent(settings=_lane_settings(),
                                     history_dir=Path(tmp))
             fake_ledger = MagicMock()
-            with patch("harness.conversation_lifecycle.chat",
+            with patch("harness.conversation_lifecycle.chat_routed",
                        side_effect=[(200, self._truncated(cut1))]
                                    + [(200, self._truncated(cut2))] * 20), \
                  patch("harness.conversation_lifecycle.governor_for",
@@ -1045,7 +1045,7 @@ class TestChatTruncation(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             agent = AutonomousAgent(settings=_lane_settings(),
                                     history_dir=Path(tmp))
-            with patch("harness.conversation_lifecycle.chat",
+            with patch("harness.conversation_lifecycle.chat_routed",
                        return_value=(200, self._truncated(cut))), \
                  patch("harness.conversation_lifecycle.governor_for",
                        return_value=(None, MagicMock())), \
@@ -1062,7 +1062,7 @@ class TestChatTruncation(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             agent = AutonomousAgent(settings=_lane_settings(),
                                     history_dir=Path(tmp))
-            with patch("harness.conversation_lifecycle.chat",
+            with patch("harness.conversation_lifecycle.chat_routed",
                        side_effect=HarnessError("stop at the prompt")) as mc, \
                  patch("harness.conversation_lifecycle.governor_for",
                        return_value=(None, MagicMock())):
@@ -1091,7 +1091,7 @@ class TestChatAutoEscalation(unittest.TestCase):
             agent = self._defer_agent(tmp)
             plan_result = {"status": "ok", "intent": "edit",
                            "response": "done", "cost": 0.01}
-            with patch("harness.conversation_lifecycle.chat", return_value=(200, self._DEFER)), \
+            with patch("harness.conversation_lifecycle.chat_routed", return_value=(200, self._DEFER)), \
                  patch("harness.conversation_lifecycle.governor_for",
                        return_value=(None, MagicMock())), \
                  patch("harness.conversation_lifecycle.ledger_for", return_value=MagicMock()), \
@@ -1123,7 +1123,7 @@ class TestChatAutoEscalation(unittest.TestCase):
                     state, "deferred", result=plan_result, resumable=True)
                 return plan_result
 
-            with patch("harness.conversation_lifecycle.chat",
+            with patch("harness.conversation_lifecycle.chat_routed",
                        return_value=(200, self._DEFER)), \
                  patch("harness.conversation_lifecycle.governor_for",
                        return_value=(None, MagicMock())), \
@@ -1310,7 +1310,7 @@ class TestChatAutoEscalation(unittest.TestCase):
     def test_escalation_failure_falls_back_to_honest_defer(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._defer_agent(tmp)
-            with patch("harness.conversation_lifecycle.chat", return_value=(200, self._DEFER)), \
+            with patch("harness.conversation_lifecycle.chat_routed", return_value=(200, self._DEFER)), \
                  patch("harness.conversation_lifecycle.governor_for",
                        return_value=(None, MagicMock())), \
                  patch("harness.conversation_lifecycle.ledger_for", return_value=MagicMock()), \
@@ -1332,7 +1332,7 @@ class TestChatAutoEscalation(unittest.TestCase):
                      "usage": {"cost": 0.0}}
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._defer_agent(tmp)
-            with patch("harness.conversation_lifecycle.chat",
+            with patch("harness.conversation_lifecycle.chat_routed",
                        return_value=(200, truncated)), \
                  patch("harness.conversation_lifecycle.governor_for",
                        return_value=(None, MagicMock())), \
@@ -1348,7 +1348,7 @@ class TestChatAutoEscalation(unittest.TestCase):
     def test_disarmed_defer_stays_deferred(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent = self._defer_agent(tmp)
-            with patch("harness.conversation_lifecycle.chat", return_value=(200, self._DEFER)), \
+            with patch("harness.conversation_lifecycle.chat_routed", return_value=(200, self._DEFER)), \
                  patch("harness.conversation_lifecycle.governor_for",
                        return_value=(None, MagicMock())), \
                  patch("harness.conversation_lifecycle.ledger_for", return_value=MagicMock()), \
@@ -2374,7 +2374,7 @@ class TestDynamicTokenAllocation(unittest.TestCase):
             fake_gov = MagicMock()
             fake_gov.remaining.return_value = 1.0
             fake_gov.fetch_pricing.return_value = {"m": (0.0, 0.0)}
-            with patch("harness.hourglass_lifecycle.chat", return_value=(200, truncated_resp)) as mock_chat:
+            with patch("harness.hourglass_lifecycle.chat_routed", return_value=(200, truncated_resp)) as mock_chat:
                 res = agent._hourglass_answer_once(
                     "push the zero bound", "context", governor=fake_gov, api_key="test-key"
                 )
@@ -2392,7 +2392,7 @@ class TestDynamicTokenAllocation(unittest.TestCase):
                 "choices": [{"message": {"content": "exact answer"}, "finish_reason": "stop"}],
                 "usage": {"cost": 0.0},
             }
-            with patch("harness.hourglass_lifecycle.chat", return_value=(200, complete_resp)) as mock_chat, \
+            with patch("harness.hourglass_lifecycle.chat_routed", return_value=(200, complete_resp)) as mock_chat, \
                  patch("harness.hourglass_lifecycle.governor_for", return_value=(None, MagicMock())):
                 res = agent._hourglass_answer_once(
                     "hello", "context", max_tokens=8192
@@ -2430,7 +2430,7 @@ class TestDynamicTokenAllocation(unittest.TestCase):
             }
             zero_tb = MagicMock()
             zero_tb.remaining_output.side_effect = [0, 5000]
-            with patch("harness.hourglass_lifecycle.chat", return_value=(200, complete_resp)) as mock_chat, \
+            with patch("harness.hourglass_lifecycle.chat_routed", return_value=(200, complete_resp)) as mock_chat, \
                  patch("harness.hourglass_lifecycle.governor_for", return_value=(None, MagicMock())):
                 res = agent._hourglass_answer_once(
                     "hello", "context", token_budget=zero_tb
@@ -2463,7 +2463,7 @@ class TestDynamicTokenAllocation(unittest.TestCase):
             resp = {"choices": [{"message": {
                 "content": "The site is easy to use."},
                 "finish_reason": "stop"}], "usage": {"cost": 0.0}}
-            with patch("harness.conversation_lifecycle.chat",
+            with patch("harness.conversation_lifecycle.chat_routed",
                        return_value=(200, resp)) as mc, \
                  patch("harness.conversation_lifecycle.governor_for",
                        return_value=(None, MagicMock())):
@@ -2493,7 +2493,7 @@ class TestDynamicTokenAllocation(unittest.TestCase):
                              "finish_reason": "stop"}],
                 "usage": {"cost": 0.0},
             }
-            with patch("harness.conversation_lifecycle.chat",
+            with patch("harness.conversation_lifecycle.chat_routed",
                        return_value=(200, resp)), \
                  patch("harness.conversation_lifecycle.governor_for",
                        return_value=(None, MagicMock())):
@@ -2522,7 +2522,7 @@ class TestDynamicTokenAllocation(unittest.TestCase):
             }
             envelope = ("<untrusted-script-output>stdout: 42\n"
                         "</untrusted-script-output>")
-            with patch("harness.conversation_lifecycle.chat",
+            with patch("harness.conversation_lifecycle.chat_routed",
                        return_value=(200, resp)) as call, \
                  patch("harness.conversation_lifecycle.governor_for",
                        return_value=(None, MagicMock())):
@@ -2553,7 +2553,7 @@ class TestDynamicTokenAllocation(unittest.TestCase):
             }
             budget = MagicMock()
             budget.remaining_output.return_value = 5000
-            with patch("harness.hourglass_lifecycle.chat",
+            with patch("harness.hourglass_lifecycle.chat_routed",
                        return_value=(200, resp)) as call, \
                  patch("harness.hourglass_lifecycle.governor_for",
                        return_value=(None, MagicMock())):
@@ -2577,7 +2577,7 @@ class TestDynamicTokenAllocation(unittest.TestCase):
             gov.remaining.return_value = 1.0
             gov.fetch_pricing.return_value = {"m": (0.0, 0.0)}
             gov.preflight.return_value = (0.0, [])
-            with patch("harness.hourglass_lifecycle.chat",
+            with patch("harness.hourglass_lifecycle.chat_routed",
                        return_value=(200, resp)) as call, \
                  patch("harness.hourglass_lifecycle.jev_identity_block",
                        return_value="JEV IDENTITY BLOCK"):
@@ -2600,7 +2600,7 @@ class TestDynamicTokenAllocation(unittest.TestCase):
                              "finish_reason": "stop"}],
                 "usage": {"cost": 0.0},
             }
-            with patch("harness.hourglass_lifecycle.chat",
+            with patch("harness.hourglass_lifecycle.chat_routed",
                        return_value=(200, resp)), \
                  patch("harness.hourglass_lifecycle.governor_for",
                        return_value=(None, MagicMock())), \
@@ -2628,7 +2628,7 @@ class TestDynamicTokenAllocation(unittest.TestCase):
             }
             zero_tb = MagicMock()
             zero_tb.remaining_output.side_effect = [0, 5000]
-            with patch("harness.conversation_lifecycle.chat", return_value=(200, complete_resp)) as mock_chat, \
+            with patch("harness.conversation_lifecycle.chat_routed", return_value=(200, complete_resp)) as mock_chat, \
                  patch("harness.conversation_lifecycle.governor_for", return_value=(None, MagicMock())):
                 res = agent._handle_conversation(
                     "hello", "t_zero", token_budget=zero_tb
@@ -2677,7 +2677,7 @@ class TestDynamicTokenAllocation(unittest.TestCase):
                 jev_res,
                 {"pack_version": 1, "cost": 0.0, "input_tokens": 0, "output_tokens": 0}
             )
-            with patch("harness.hourglass_lifecycle.chat", return_value=(200, resp)), \
+            with patch("harness.hourglass_lifecycle.chat_routed", return_value=(200, resp)), \
                  patch("harness.hourglass_lifecycle.governor_for", return_value=(None, MagicMock())), \
                  patch("harness.hourglass_lifecycle.policy_for", return_value=mock_policy), \
                  patch.object(agent, "_auto_escalation_armed", return_value=True), \
@@ -2693,7 +2693,7 @@ class TestDynamicTokenAllocation(unittest.TestCase):
                 "choices": [{"message": {"content": "Here is the answer"}, "finish_reason": "stop"}],
                 "usage": {"cost": 0.0},
             }
-            with patch("harness.conversation_lifecycle.chat", return_value=(200, resp)), \
+            with patch("harness.conversation_lifecycle.chat_routed", return_value=(200, resp)), \
                  patch("harness.conversation_lifecycle.governor_for", return_value=(None, MagicMock())):
                 res = agent._handle_conversation("explain code", "test_sess")
                 self.assertEqual(res["status"], "ok")
@@ -2701,7 +2701,7 @@ class TestDynamicTokenAllocation(unittest.TestCase):
     def test_provider_spend_limit_propagates_out_of_agent_run(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent = AutonomousAgent(settings=_lane_settings(), history_dir=Path(tmp))
-            with patch("harness.hourglass_lifecycle.chat", side_effect=ProviderSpendLimitError("cap", http_status=429)), \
+            with patch("harness.hourglass_lifecycle.chat_routed", side_effect=ProviderSpendLimitError("cap", http_status=429)), \
                  patch("harness.hourglass_lifecycle.governor_for", return_value=(None, MagicMock())):
                 with self.assertRaises(ProviderSpendLimitError):
                     agent._hourglass_answer_once("explain", "")

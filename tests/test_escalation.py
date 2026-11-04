@@ -117,7 +117,7 @@ class EscalationDriverTests(unittest.TestCase):
                 "usage": {"cost": 0.0},
             }
 
-        with mock.patch("harness.escalation.chat", side_effect=fake_chat):
+        with mock.patch("harness.escalation.chat_routed", side_effect=fake_chat):
             return driver.run_with_escalation(
                 req, state, lambda st, ctx: "prompt", finish_result)
 
@@ -200,7 +200,7 @@ class EscalationDriverTests(unittest.TestCase):
         driver = EscalationDriver(router, transport=None, api_key="k",
                                   governor=gov, ledger=None, task_id="t1")
         req = SimpleNamespace(allow_escalation=True)
-        with mock.patch("harness.escalation.chat", side_effect=fake_chat):
+        with mock.patch("harness.escalation.chat_routed", side_effect=fake_chat):
             result = driver.run_with_escalation(req, state, base_prompt_fn,
                                                 finish_fn)
         self.assertEqual(result["status"], "ok")
@@ -296,7 +296,7 @@ class EscalationDriverTests(unittest.TestCase):
         driver = EscalationDriver(router, transport=None, api_key="k",
                                   governor=gov, ledger=None, task_id="t")
         req = SimpleNamespace(allow_escalation=True)
-        with mock.patch("harness.escalation.chat", side_effect=fake_chat):
+        with mock.patch("harness.escalation.chat_routed", side_effect=fake_chat):
             result = driver.run_with_escalation(
                 req, state, lambda s, c: "p",
                 lambda m, c, cost: {"status": "ok", "model": m})
@@ -322,7 +322,7 @@ class EscalationDriverTests(unittest.TestCase):
         driver = EscalationDriver(router, transport=None, api_key="k",
                                   governor=FakeGov(), ledger=None, task_id="t")
         req = SimpleNamespace(allow_escalation=True)
-        with mock.patch("harness.escalation.chat", side_effect=fake_chat):
+        with mock.patch("harness.escalation.chat_routed", side_effect=fake_chat):
             result = driver.run_with_escalation(
                 req, RunState(rounds=[], history=[], current_content="x"),
                 lambda s, c: "p", lambda m, c, cost: {"status": "ok"})
@@ -476,7 +476,7 @@ class ApplyLadderE2ETests(unittest.TestCase):
                 }
 
             from harness.escalation import EscalationDriver
-            with mock.patch("harness.escalation.chat", side_effect=fake_chat):
+            with mock.patch("harness.escalation.chat_routed", side_effect=fake_chat):
                 driver = EscalationDriver(
                     router, None, "k", engine.governor, None, "t",
                     max_tokens=256, task_start_spent=0.0, task_max_cost=0.05,
@@ -583,9 +583,9 @@ class ApplyLadderE2ETests(unittest.TestCase):
             # Armed ladder: saturation rotates into the paid rung, which
             # answers, and the gate finishes it ok.
             engine = build_engine(["paid/strong"], True)
-            with mock.patch("harness.apply_policy.chat",
+            with mock.patch("harness.apply_policy.chat_routed",
                             side_effect=saturated_chat), \
-                 mock.patch("harness.escalation.chat",
+                 mock.patch("harness.escalation.chat_routed",
                             side_effect=saturated_chat), \
                  mock.patch("harness.apply_policy.consent_renew",
                             return_value={"decision": "accept"}):
@@ -613,9 +613,9 @@ class ApplyLadderE2ETests(unittest.TestCase):
             # Disarmed: the same saturation lands in an honest structured
             # terminal failure -- never an escaped exception.
             engine2 = build_engine([], False)
-            with mock.patch("harness.apply_policy.chat",
+            with mock.patch("harness.apply_policy.chat_routed",
                             side_effect=saturated_chat), \
-                 mock.patch("harness.escalation.chat",
+                 mock.patch("harness.escalation.chat_routed",
                             side_effect=saturated_chat), \
                  mock.patch("harness.apply_policy.consent_renew",
                             return_value={"decision": "accept"}):
@@ -698,9 +698,9 @@ class ApplyLadderE2ETests(unittest.TestCase):
                                  default_require_consent=False)
             with mock.patch("harness.trust.check_apply",
                             side_effect=HarnessError("denied")), \
-                 mock.patch("harness.apply_policy.chat",
+                 mock.patch("harness.apply_policy.chat_routed",
                             side_effect=paid_only_chat), \
-                 mock.patch("harness.escalation.chat",
+                 mock.patch("harness.escalation.chat_routed",
                             side_effect=paid_only_chat), \
                  mock.patch("harness.apply_policy.consent_renew",
                             return_value={"decision": "accept"}):

@@ -6,11 +6,17 @@ a model id resolves to and which endpoint dispatch reaches, not about a live
 call. The judge seat is driven end to end; the convergence and panel-vote call
 sites are driven through the router entry point they now import.
 """
+import ast
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import harness.chat as chat_module
+from harness.capability import probe_json_reliability
 from harness.chat import chat_routed
+from harness.consent import probe_consent
+from harness.rankings import _probe_vote
 from harness.config import META_CHAT_URL, META_PROVIDER, OPENROUTER_CHAT_URL
 from harness.convergence import run_convergence_specialist
 from harness.errors import HarnessError
@@ -181,6 +187,129 @@ class PresetAwareLadderTests(unittest.TestCase):
     def test_no_settings_keeps_the_historical_ladder(self):
         self.assertIsNone(preset_model_ladder(TIER_0_SCOUT))
         self.assertIn("openrouter/free", tier_model_ladder(TIER_0_SCOUT))
+
+
+ROOT = Path(__file__).resolve().parent.parent
+
+# Every lane that used to post a model id straight to chat(). The audit is by
+# module, so a new direct chat() call in any of them fails this suite rather
+# than silently reintroducing the OpenRouter fallthrough #447 removed.
+MIGRATED_MODULES = [
+    "apply_policy", "attest", "capability", "consent", "conversation_lifecycle",
+    "escalation", "hourglass_lifecycle", "rankings",
+]
+
+
+def _tree(module_name):
+    return ast.parse((ROOT / "harness" / f"{module_name}.py").read_text(
+        encoding="utf-8"))
+
+
+def _bare_chat_calls(tree):
+    return [node.lineno for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name) and node.func.id == "chat"]
+
+
+def _functions_dispatching_via(tree, entry):
+    names = []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for node in ast.walk(fn):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == entry):
+                names.append(fn.name)
+                break
+    return names
+
+
+class NoDirectChatBypassTests(unittest.TestCase):
+    """AST audit: no migrated lane can reach chat() with a model id."""
+
+    def test_no_migrated_module_calls_chat_directly(self):
+        for module_name in MIGRATED_MODULES:
+            with self.subTest(module=module_name):
+                self.assertEqual(_bare_chat_calls(_tree(module_name)), [])
+
+    def test_each_migrated_module_dispatches_through_the_router(self):
+        for module_name in MIGRATED_MODULES:
+            with self.subTest(module=module_name):
+                sites = _functions_dispatching_via(_tree(module_name),
+                                                   "chat_routed")
+                self.assertTrue(sites, f"{module_name} has no routed site")
+
+    def test_both_apply_policy_sites_dispatch_through_the_router(self):
+        sites = _functions_dispatching_via(_tree("apply_policy"),
+                                           "chat_routed")
+        self.assertGreaterEqual(len(sites), 2)
+
+    def test_the_entry_point_each_module_calls_is_the_real_router(self):
+        for module_name in MIGRATED_MODULES:
+            module = __import__(f"harness.{module_name}", fromlist=["x"])
+            with self.subTest(module=module_name):
+                if hasattr(module, "chat_routed"):
+                    self.assertIs(module.chat_routed, chat_module.chat_routed)
+                    continue
+                # attest and capability import the entry point inside the
+                # function; assert that import names the real router module.
+                local = [node for node in ast.walk(_tree(module_name))
+                         if isinstance(node, ast.ImportFrom)
+                         and node.module == "chat" and node.level == 1
+                         and any(alias.name == "chat_routed"
+                                 for alias in node.names)]
+                self.assertTrue(local, f"{module_name} never imports the router")
+
+
+class RuntimeDispatchPerLaneTests(unittest.TestCase):
+    """One live dispatch per lightweight lane, on its own function."""
+
+    def _json_resp(self, body):
+        return {"choices": [{"message": {"content": body},
+                             "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 40, "completion_tokens": 20}}
+
+    def test_rankings_probe_vote_posts_to_meta_for_a_muse_id(self):
+        transport = RecordingTransport(self._json_resp(
+            '{"claim_1": {"real": true, "confidence": 0.9}}'))
+        _probe_vote(transport, "meta-key", _governor(transport), SPARK, 64)
+        self.assertEqual(transport.calls[0][0], META_CHAT_URL)
+        self.assertEqual(transport.calls[0][1], "meta-key")
+        self.assertTrue(all(c[0] != OPENROUTER_CHAT_URL for c in transport.calls))
+
+    def test_capability_probe_posts_to_meta_for_a_muse_id(self):
+        transport = RecordingTransport(self._json_resp(
+            '{"claim_1": {"real": true, "confidence": 0.9}}'))
+        probe_json_reliability(transport, "meta-key", _governor(transport),
+                               [SPARK], max_tokens=64)
+        self.assertEqual(transport.calls[0][0], META_CHAT_URL)
+        self.assertTrue(all(c[0] != OPENROUTER_CHAT_URL for c in transport.calls))
+
+    def test_consent_probe_posts_to_meta_for_a_muse_id(self):
+        transport = RecordingTransport(self._json_resp(
+            '{"decision": "accept", "confidence": 0.95, "reason": "clear"}'))
+        probe_consent(transport=transport, api_key="meta-key",
+                      governor=_governor(transport), task_id="t-1",
+                      task="summarize the diff", model=SPARK, max_tokens=64,
+                      required=False)
+        self.assertEqual(transport.calls[0][0], META_CHAT_URL)
+        self.assertTrue(all(c[0] != OPENROUTER_CHAT_URL for c in transport.calls))
+
+
+class KeySurfaceTests(unittest.TestCase):
+    def test_settings_supply_the_meta_key_when_the_lane_has_none(self):
+        transport = RecordingTransport(_resp())
+        settings = SimpleNamespace(meta_enabled=True, meta_key="from-settings")
+        chat_routed(transport, None, SPARK, MESSAGES, 64, settings=settings)
+        self.assertEqual(transport.calls[0][1], "from-settings")
+
+    def test_no_key_anywhere_refuses_before_dispatch(self):
+        transport = RecordingTransport(_resp())
+        with mock.patch("harness.chat.resolve_meta_key", return_value=""):
+            with self.assertRaisesRegex(HarnessError, "Meta key missing"):
+                chat_routed(transport, None, SPARK, MESSAGES, 64)
+        self.assertEqual(transport.calls, [])
 
 
 if __name__ == "__main__":

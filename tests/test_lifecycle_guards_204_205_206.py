@@ -709,7 +709,7 @@ class AgentRateCircuitIntegrationTests(unittest.TestCase):
         agent.settings.judge = None
         agent.settings.convergence_model = None
         agent.settings.escalation_pool = []
-        with patch("harness.hourglass_lifecycle.chat", side_effect=fake_chat), \
+        with patch("harness.hourglass_lifecycle.chat_routed", side_effect=fake_chat), \
              patch("harness.hourglass_lifecycle.governor_for", return_value=("k", gov)):
             attempt = agent._hourglass_answer_once("test question", "ctx", governor=gov)
         self.assertEqual(calls, ["m2"])
@@ -739,7 +739,7 @@ class AgentRateCircuitIntegrationTests(unittest.TestCase):
         agent.settings.judge = None
         agent.settings.convergence_model = None
         agent.settings.escalation_pool = []
-        with patch("harness.hourglass_lifecycle.chat", side_effect=fake_chat), \
+        with patch("harness.hourglass_lifecycle.chat_routed", side_effect=fake_chat), \
              patch("harness.hourglass_lifecycle.governor_for", return_value=("k", gov)):
             attempt = agent._hourglass_answer_once("test question", "ctx", governor=gov)
         self.assertEqual(calls, ["m1", "m2"])
@@ -771,7 +771,7 @@ class AgentRateCircuitIntegrationTests(unittest.TestCase):
         agent.settings.judge = None
         agent.settings.convergence_model = None
         agent.settings.escalation_pool = []
-        with patch("harness.hourglass_lifecycle.chat", side_effect=fake_chat), \
+        with patch("harness.hourglass_lifecycle.chat_routed", side_effect=fake_chat), \
              patch("harness.hourglass_lifecycle.governor_for", return_value=("k", gov)):
             attempt = agent._hourglass_answer_once("test question", "ctx", governor=gov)
         self.assertEqual(calls, ["m1"])
