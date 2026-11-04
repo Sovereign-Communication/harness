@@ -113,6 +113,24 @@ def is_read_only_audit_request(prompt: str) -> bool:
     return not _WRITE_DIRECTIVE_RE.search(remainder)
 
 
+def is_workspace_audit_request(prompt: str) -> bool:
+    """True when a read-only audit names the repository itself (issue #448).
+
+    The audit lane has two different questions: "audit ledger" asks about the
+    cryptographic chain, while "audit all aspects of the workspace" asks about
+    the source tree. Only the second one can be answered by enumerating and
+    preflighting a repository scope; answering it with a chain verdict is the
+    misroute this predicate exists to prevent.
+    """
+    text = " ".join((prompt or "").split()).lower()
+    if not is_read_only_audit_request(prompt):
+        return False
+    return any(marker in text for marker in (
+        "workspace", "repository", "repo", "codebase", "source tree",
+        "all aspects", "whole tree", "project",
+    ))
+
+
 def no_tools_requested(prompt: str) -> bool:
     """True when the prompt explicitly forbids tool use (issue #448).
 

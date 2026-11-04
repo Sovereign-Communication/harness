@@ -9,6 +9,7 @@ from .events import emit
 from .history import save_chat_turn
 from .lifecycle import adapter_for
 from .jev_policy import policy_for
+from .request_intent import is_workspace_audit_request
 from .session import jev_face_governor, ledger_for
 from .workspace import require_workspace
 
@@ -23,6 +24,12 @@ class TaskLaneLifecycleMixin:
         cancel_check: Optional[Callable[[], bool]] = None,
         lifecycle_state=None,
     ) -> Dict[str, Any]:
+        # A read-only workspace audit asks about the source tree, not the
+        # cryptographic chain; answering it with a chain verdict would be a
+        # silent misroute (issue #448).
+        if is_workspace_audit_request(prompt):
+            return self._handle_workspace_audit(prompt, session_id,
+                                                cancel_check, lifecycle_state)
         adapter = adapter_for(self.lifecycle, "audit")
         state = lifecycle_state or adapter.begin(session_id, prompt)
         saved = state["data"].get("result")
@@ -100,6 +107,48 @@ class TaskLaneLifecycleMixin:
         self.lifecycle.finish(state, "complete", candidate=msg, result=result)
         save_chat_turn(session_id, result, self.history_dir)
         emit("chat_response", intent="audit", verified=ok)
+        return result
+
+    def _handle_workspace_audit(
+        self,
+        prompt: str,
+        session_id: str,
+        cancel_check: Optional[Callable[[], bool]] = None,
+        lifecycle_state=None,
+    ) -> Dict[str, Any]:
+        """Scope and price a read-only workspace audit, then hand off (#448).
+
+        Nothing paid is dispatched here: the engine is the shipped source
+        audit (#423), which needs operator-supplied packs and an explicit cap.
+        Under-funded runs come back as ``approval_required`` with the exact
+        raise; the lane never raises the cap itself.
+        """
+        from .workspace_audit import audit_workspace
+        adapter = adapter_for(self.lifecycle, "audit")
+        state = lifecycle_state or adapter.begin(session_id, prompt)
+        saved = state["data"].get("result")
+        if isinstance(saved, dict) and state["status"] == "complete":
+            return saved
+        if cancel_check and cancel_check():
+            exc = ToolCancelled("Prompt execution was cancelled by user")
+            self.lifecycle.interrupt(state, exc)
+            raise exc
+        adapter.advance(state, "inspect")
+        report = audit_workspace(require_workspace(self.root_dir),
+                                 self.settings)
+        result = {
+            "status": report["status"], "intent": "audit",
+            "lane": "workspace_audit", "prompt": prompt,
+            "response": report["summary"], "scope": report["scope"],
+            "preflight": report["preflight"], "estimate": report["estimate"],
+            "next_step": report["next_step"],
+            "cost": state["usage"]["known_cost"],
+        }
+        self.lifecycle.finish(state, "complete", candidate=result["response"],
+                              result=result)
+        save_chat_turn(session_id, result, self.history_dir)
+        emit("chat_response", intent="audit", lane="workspace_audit",
+             status=result["status"])
         return result
 
     def _handle_provision(
