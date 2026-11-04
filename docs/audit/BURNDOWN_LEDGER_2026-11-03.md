@@ -17,6 +17,8 @@ Closure rule: an issue closes only with a per-issue evidence disposition citing 
 - #448 WORKSPACE-AUDIT CHAIN (lane head, 2026-11-04): read-only workspace audits no longer land in the ledger-chain lane. `request_intent.is_workspace_audit_request` splits the two questions, `task_lifecycle._handle_workspace_audit` scopes the tree (`repo_scope.audit_scope`: names and sizes only, exclusion reasons, truncation flagged), prices the complete run with a stated 25% buffer (`workspace_audit.estimate_audit_run`), and returns `ready` / `approval_required` (the exact raise, never an automatic cap change) / `blocked` with the #423 handoff command. Nothing paid is dispatched from the lane. Evidence: `tests/test_workspace_audit_routing_448.py` (13 cases). Remaining split: the GUI lane preflights and hands off; executing the engine still needs the operator's pack files, which no setting supplies.
 - #447 ROUTER SLICE (lane head, 2026-11-04): the Meta API is a backend in the routing table (`routing_table.backend_for_model` / `backend_registry` / `route_for_model`), dispatch rides the existing route path through the new `chat.chat_routed` (resolve_route -> chat_for_route), the judge, panel-vote and convergence-specialist call sites now use it, and `sliding_scale.preset_model_ladder` makes the ladders preset-aware (committed Muse ids or the ordinary ladder, never a cross-provider fallback by accident). Evidence: `tests/test_router_meta_backend.py` (26 cases) plus 52 affected suites green. Drive complete: apply_policy (attempt and escalation), attest, capability, consent, both lifecycles, escalation and rankings now dispatch through `chat_routed`, audited by AST so a new direct `chat()` call in any of those modules fails the suite; the router reads the resolved backend's key surface (`settings.meta_key` / `settings.fireworks_key`) before the lane's threaded key. Only `chat.py`'s internal reasoning retry and the OpenRouter branch inside `chat_for_route` still call `chat()`. Close #447 on the router shape only with a merge SHA.
 
+- #272 VISION VERIFICATION (cure fd653f4, 2026-11-04): implemented the issue's acceptance contract rather than marking the planned code as done. `driver_core/vision_verify.py:337` `VisionVerifier` captures via `ScreenSource` and the existing Jev transport; launch prompt/threshold/polls, text prompt, 2s capture/5s verdict budgets, and the fail-closed timeout path are at `:56-57`, `:383-391`; `driver_core/driver.py:413-445` gates successful non-dry-run `launch_app`/`type_text` with `stopped_at="verification"` and `verification_failed`; `driver_core/config.py:203-206,357` makes it a default-off `DRIVER_VISION_VERIFY` opt-in requiring `DRIVER_SCREEN`; audit/stop surfaces are at `driver_core/audit.py:60`, `driver_core/server.py:57`, and `harness/perception_client.py:92,98`. The versioned `launch-verify@1.0.0` pack (`driver_core/vision_verify.py:200`) scores 8 fields as Choice+Score/16 questions at a 95 floor, fail-closed. Evidence: 25 hermetic tests in `tests/test_driver_core/test_vision_verify.py`. The S3 live calibration corpus/freeze is not claimed: it needs screenshots from the installed FreeBuff and a live key, both absent here; named follow-up on #272. Also repaired three stale audit anchors shifted by this change (`reports/agent-desktop-audit-2026-11-01.md`, `tests/test_agent_desktop_audit_report.py`, fd653f4). Close on merge SHA only.
+
 ## REPORT-JOB DISPOSITION (from the #446 cure)
 The `report` job in `.github/workflows/rankings.yml` was red because `harness economics --check-fresh` exits 2 on an expired artifact and the job fails on that exit code. The cure owns both surfaces: the job now runs `harness economics --refresh-snapshot` before the freshness check, and the delivery step opens a reviewable PR (never a direct commit) when the artifact moved. Local evidence on the lane: `packs/tiers.snapshot.json` carries `captured_at 2026-11-03T11:00:23Z`, `max_age_days 14`, and `python -m harness.cli economics --check-fresh --json` exits 0 with `warning: null`. The job's red is therefore cured on the lane and needs the merge, not new work.
 
@@ -355,3 +357,54 @@ CI at `39695db`: run 41819905848, 15 jobs, zero steps, every runnable job
 failed and audit/installed-package were skipped; the annotation is still the
 owner billing lock ("The job was not started because your account is locked
 due to a billing issue"). No code signal; protection was not relaxed.
+
+## 2026-11-04 - #272 vision verification (lane/burndown)
+
+Implemented the acceptance contract against the tip, not the issue text.
+`VisionVerifier` (`driver_core/vision_verify.py:337`) captures through
+`ScreenSource` and asks the existing Jev transport the exact issue questions:
+`Is the application '<app_name>' visible and focused?` at 0.85 with polls at
+2s and 5s, and `Is the text '<text>' visible in the screenshot?` at the same
+bar immediately after typing. Capture is capped at 2s and a verdict at 5s
+(`:56-57`); either overrun is a timed-out attempt, never a pass. The gate in
+`driver_core/driver.py:413-445` runs only for a successful non-dry-run
+`launch_app` or `type_text`, and a failed check returns
+`stopped_at="verification"` / `verification_failed` rather than hiding behind
+executor success. `DRIVER_VISION_VERIFY` is a third default-off opt-in
+requiring `DRIVER_SCREEN` (`driver_core/config.py:203-206,357`); with either
+off there is no capture, Jev call, audit record or `verification` value, and
+the pre-existing action path is unchanged. The audit kind is
+`driver_core/audit.py:60`; the wire reason and stop tier are
+`driver_core/server.py:57` and `harness/perception_client.py:92,98`.
+
+The versioned `launch-verify@1.0.0` pack
+(`driver_core/vision_verify.py:200`) scores the eight launch fields as a Choice
+plus 0-3 Score each (16 questions), passes only on manifest agreement with a
+score at the 95 floor, and fails closed on missing, undeclared, invalid or
+`not_visible` answers. Screenshot bytes are never written to the audit chain.
+
+Evidence: 25 hermetic tests in `tests/test_driver_core/test_vision_verify.py`,
+including both prompts and bars, the 2s/5s polls, slow capture and slow
+verdict, malformed answers, flag-off doing no work, pack floor/agreement, the
+sentinel non-leak, Driver integration and dry-run behavior. The change shifted
+three audit-report anchors, and the full suite caught them: the report and its
+executable guard now point at `harness/perception_client.py:183` and
+`docs/driver.md:347,360` (`fd653f4`).
+
+Gates at `fd653f4`: driver_core 450 OK (1 skipped), conformance 26, router 26
+(no direct `chat()` Muse id), packaging 5, architecture 9, citation 23, D7 pin
+2, repo_cards up to date, ruff clean in the CI scope plus `driver_core` and
+`audits`, driver_core drift 3.5.0, secret scan 0 hits. Full hermetic suite at
+the head carrying this row: **5,568 tests OK (skipped=73)**, exit 0. It follows
+a 5,568-test run at `1322a65` whose only failures were the three stale anchors
+above, repaired before this run.
+
+S3 disposition, recorded rather than dressed as a pass: the live calibration
+corpus and freeze are not produced on this lane. They require screenshots from
+the installed FreeBuff build and a live key; neither is present. Named
+follow-up on #272: capture the eight launch fields from an installed FreeBuff,
+freeze the corpus alongside `launch-verify@1.0.0`, then run the live per-field
+scoring and attach the receipts. #272 remains open until a merge SHA.
+
+CI read at the head carrying this row: recorded on #272 as-is; no protection
+was relaxed.
