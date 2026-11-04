@@ -220,3 +220,11 @@ Gates at f2c9faa: driver_core 425 OK (1 skipped), conformance 26, router 26,
 packaging 5, architecture 9, ruff clean (CI scope and `driver_core`), secret scan
 0 hits.
 
+Queue note, same day: owner steering posted on #442 at 2026-11-03 23:36 HST
+(D3 decided; STEP 0 is the Jev inclusivity audit report; the main-to-green
+drive runs on the CircleCI port because Actions is billing-locked). That
+steering supersedes the #272 next-item order: the report comes first, then the
+main-green drive, then the remaining plan items. The report is not on the lane
+-- no file in `reports/`, no commit, no issue comment -- so it is recorded as
+the immediate next item, not as delivered.
+
