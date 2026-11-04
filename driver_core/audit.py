@@ -25,6 +25,8 @@ import os
 import threading
 from datetime import datetime, timezone
 
+from .osal import audit_path_lock
+
 #: The genesis constant. A chain's first record links to this rather than to
 #: a magic empty string, so the linkage rule is uniform at every position.
 GENESIS = "driver-core/audit/v1"
@@ -127,29 +129,17 @@ class AuditLog:
     def _tail(self):
         """Resume from the existing chain so a restarted run extends it.
 
-        A truncated final line (a crash mid-write) is reported rather than
-        silently skipped, because a log with an unexplained hole is not
-        evidence of what happened.
+        Validate the complete snapshot while holding the same path lock used
+        by append and verify. An incomplete final line is never extended.
         """
-        last, count = GENESIS, 0
-        with open(self.path, encoding="utf-8") as handle:
-            for lineno, line in enumerate(handle, 1):
-                line = line.rstrip("\n")
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    raise AuditError(
-                        f"{self.path}:{lineno} is not valid JSON ({exc}); the "
-                        f"chain cannot be trusted past this point") from None
-                if count and record.get("previous") != last:
-                    raise AuditError(
-                        f"{self.path}:{lineno} does not chain to its "
-                        f"predecessor; the log has been altered")
-                last = record["hash"]
-                count += 1
-        return last, count
+        with self._lock, audit_path_lock(self.path):
+            records = self._read_all_unlocked()
+            verdict = self._verify_records(records)
+            if not verdict.ok:
+                raise AuditError(
+                    f"append refused: {verdict.detail}",
+                    record_index=verdict.records)
+            return (records[-1]["hash"] if records else GENESIS, len(records))
 
     @property
     def count(self):
@@ -164,19 +154,26 @@ class AuditLog:
         """Append one chained record and return it."""
         if not kind:
             raise ValueError("a record needs a kind")
-        with self._lock:
+        with self._lock, audit_path_lock(self.path):
+            records = self._read_all_unlocked()
+            verdict = self._verify_records(records)
+            if not verdict.ok:
+                raise AuditError(
+                    f"append refused: {verdict.detail}",
+                    record_index=verdict.records)
+            previous = records[-1]["hash"] if records else GENESIS
             record = {
-                "seq": self._count,
+                "seq": len(records),
                 "kind": kind,
                 "at": _now(),
-                "previous": self._last,
+                "previous": previous,
             }
             record.update(fields)
             record["hash"] = digest(
-                {k: v for k, v in record.items() if k != "hash"}, self._last)
-            self._last = record["hash"]
-            self._count += 1
+                {k: v for k, v in record.items() if k != "hash"}, previous)
             self._write(record)
+            self._last = record["hash"]
+            self._count = len(records) + 1
             return record
 
     def _write(self, record):
@@ -190,41 +187,105 @@ class AuditLog:
             handle.flush()
             os.fsync(handle.fileno())
 
-    def read_all(self):
-        """Every record, in order."""
-        if not self.path or not os.path.exists(self.path):
+    def _read_all_unlocked(self):
+        """Read one complete JSONL snapshot; caller holds the path lock."""
+        if not self.path:
             return []
+        try:
+            with open(self.path, "rb") as handle:
+                raw = handle.read()
+        except FileNotFoundError:
+            return []
+        if not raw:
+            return []
+
+        if not raw.endswith(b"\n"):
+            line_number = raw.count(b"\n") + 1
+            record_index = sum(1 for line in raw.splitlines()[:-1]
+                               if line.strip())
+            raise AuditError(
+                f"{self.path}:{line_number} is truncated (missing final "
+                f"newline); the chain cannot be trusted past this point",
+                record_index=record_index)
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            line_number = raw[:exc.start].count(b"\n") + 1
+            record_index = sum(
+                1 for line in raw[:exc.start].splitlines() if line.strip())
+            raise AuditError(
+                f"{self.path}:{line_number} is not valid UTF-8; the chain "
+                f"cannot be trusted past this point",
+                record_index=record_index) from None
+
         out = []
-        with open(self.path, encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if line:
-                    out.append(json.loads(line))
+        for lineno, line in enumerate(text.splitlines(), 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise AuditError(
+                    f"{self.path}:{lineno} is not valid JSON ({exc.msg}); the "
+                    f"chain cannot be trusted past this point",
+                    record_index=len(out)) from None
+            if not isinstance(record, dict):
+                raise AuditError(
+                    f"{self.path}:{lineno} is not a JSON object; the chain "
+                    f"cannot be trusted past this point",
+                    record_index=len(out))
+            out.append(record)
         return out
 
-    def verify(self):
-        """Re-hash the whole chain. Returns a verdict, never raises on drift."""
+    def read_all(self):
+        """Every record from one locked snapshot, in order."""
+        with self._lock, audit_path_lock(self.path):
+            return self._read_all_unlocked()
+
+    @staticmethod
+    def _verify_records(records):
         previous = GENESIS
-        for index, record in enumerate(self.read_all()):
-            if record.get("seq") != index:
+        for index, record in enumerate(records):
+            sequence = record.get("seq")
+            if type(sequence) is not int or sequence != index:
                 return ChainVerdict(False, index,
-                                    f"record {index} has seq "
-                                    f"{record.get('seq')!r}")
+                                    f"record {index} has seq {sequence!r}")
             if record.get("previous") != previous:
+                if index == 0:
+                    return ChainVerdict(
+                        False, index,
+                        "record 0 does not point to the genesis hash")
                 return ChainVerdict(
                     False, index,
                     f"record {index} does not chain to its predecessor")
             expected = digest(
-                {k: v for k, v in record.items() if k != "hash"}, previous)
+                {key: value for key, value in record.items()
+                 if key != "hash"}, previous)
             if record.get("hash") != expected:
                 return ChainVerdict(False, index,
                                     f"record {index} has been altered")
             previous = record["hash"]
-        return ChainVerdict(True, len(self.read_all()), "chain verified")
+        return ChainVerdict(True, len(records), "chain verified")
+
+    def verify(self):
+        """Re-hash one locked snapshot; return a verdict, never drift claims."""
+        with self._lock, audit_path_lock(self.path):
+            try:
+                records = self._read_all_unlocked()
+            except AuditError as exc:
+                index = (exc.record_index
+                         if exc.record_index is not None else 0)
+                return ChainVerdict(False, index, str(exc))
+            return self._verify_records(records)
 
 
 class AuditError(Exception):
     """The log is not a trustworthy chain, so it may not be extended."""
+
+    def __init__(self, message, *, record_index=None):
+        super().__init__(message)
+        self.record_index = record_index
 
 
 #: The description formula every MCP tool contract must follow (#284).
@@ -304,5 +365,5 @@ class MemoryAuditLog(AuditLog):
     def _write(self, record):
         self.records.append(dict(record))
 
-    def read_all(self):
+    def _read_all_unlocked(self):
         return list(self.records)
