@@ -54,7 +54,7 @@ from .errors import (
     VocabularyError,
 )
 from . import osal
-from .executor import Executor, NO_CONSENT_NEEDED
+from .executor import Executor
 from .executor_registry import build_driver_registry, executability
 from .extractors import ExtractorPool
 from .jev_client import JevClient
@@ -197,7 +197,8 @@ class Driver:
             vocabulary=vocabulary,
             registry=build_driver_registry(
                 input_backend=input_backend,
-                allow_write=self.settings.allow_write),
+                allow_write=self.settings.allow_write,
+                launch_app=self.settings.launch_app_enabled),
             dry_run=self.settings.dry_run,
             audit=self.audit)
 

@@ -64,6 +64,12 @@ USE_REGISTERED_INPUT_BACKEND = object()
 #: How long a child process may run before it is killed.
 DEFAULT_TIMEOUT = 30
 
+#: How long an application launcher may take to hand off before it is killed.
+#: A launcher that has not returned in three seconds is not going to: the
+#: action fails rather than occupying the step, which is what "spawn timeout:
+#: 3s or fail" means in the vocabulary's own terms.
+LAUNCH_TIMEOUT = 3.0
+
 #: The largest stdout we will read from a child, in bytes. A command that
 #: prints without bound must not be able to exhaust memory in the driver.
 MAX_CAPTURE_BYTES = 1 << 20
@@ -323,6 +329,54 @@ def describe_screen():
         return _describe_windows()
     return None, (f"screen description is not supported on {name}; this is a "
                   f"platform gap, not a configuration one")
+
+
+def launch_app(app_name, executable, *, timeout=LAUNCH_TIMEOUT):
+    """Start one declared application, no shell, bounded hand-off.
+
+    The three platforms spell "open this program" differently, and each
+    spelling is declared here rather than guessed at a call site. Windows uses
+    ``cmd /c start "" <exe>`` -- the empty first argument is the window title,
+    without which ``start`` consumes the program name as the title. macOS uses
+    ``open -a <app>``; Linux uses ``xdg-open <desktop-target>``.
+
+    ``app_name`` is the allowlist's logical name and is used only in messages;
+    ``executable`` is the value the platform launcher was declared with. A
+    launcher that has not handed off within ``timeout`` is killed, so a stuck
+    launcher is a failed action rather than a step that never ends.
+
+    Returns ``(output, detail)``: ``(dict, "")`` on a hand-off,
+    ``(None, reason)`` on refusal or failure.
+    """
+    if not executable:
+        return None, f"no launch declaration for {app_name!r}"
+    platform = platform_name()
+    if platform == "windows":
+        argv = ["cmd", "/c", "start", "", executable]
+        creationflags = CREATE_NO_WINDOW
+    elif platform == "darwin":
+        argv = ["open", "-a", executable]
+        creationflags = 0
+    elif platform == "linux":
+        argv = ["xdg-open", executable]
+        creationflags = 0
+    else:
+        return None, (f"launch_app is not supported on {platform}; this is a "
+                      f"platform gap, not a configuration one")
+    try:
+        process = subprocess.Popen(
+            argv, shell=False, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=creationflags)
+    except OSError as exc:
+        return None, f"could not start {app_name!r}: {exc}"
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        return None, (f"launcher for {app_name!r} did not hand off within "
+                      f"{timeout:g}s; the process was killed")
+    return {"app": app_name, "argv": argv, "pid": process.pid}, ""
 
 
 def _describe_windows():
@@ -1154,12 +1208,18 @@ def native_input_backend(platform=None, *, window_api=None):
     widen the exact consent the operator supplied. Other platforms and kinds
     remain refused until they have equally bounded implementations.
 
-    ``window_api`` is a test seam for the small window operations used below.
+    ``window_api`` supplies the small window operations used below. There is
+    no default implementation, so omitting it fails closed with a named error
+    instead of a ``NameError`` from a class that does not exist.
     """
     platform = platform or platform_name()
     if platform != "windows":
         return None
-    api = window_api or _WindowsWindowApi()
+    if window_api is None:
+        raise RuntimeError(
+            "native Windows input needs an injected window API; "
+            "driver_core ships no default implementation")
+    api = window_api
 
     def focus_backend(kind, *, value=None, target=None):
         if kind != "focus":

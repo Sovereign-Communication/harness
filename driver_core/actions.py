@@ -175,6 +175,9 @@ def _declare():
                "any"),
         Action("scroll", MUTATING, "scroll", ("direction",),
                "Scroll the focused scrollable region.", "any"),
+        Action("launch_app", MUTATING, "launch_app", ("app_name",),
+               "Launch one application declared in the code-owned allowlist, "
+               "named exactly as the allowlist names it.", "any"),
         Action("write_file", MUTATING, "write_file", ("path", "content"),
                "Write a file through the backup-and-atomic-write policy.",
                "filesystem", normalisers={"path": "resolve_path"}),

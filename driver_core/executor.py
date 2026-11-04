@@ -37,7 +37,7 @@ from .audit import KIND_ACTION, required
 from .errors import (ConsentError, ExecutionOutcomeUnknown,
                      ExecutorError, PersistentStateUnavailable,
                      VocabularyError)
-from .executor_registry import WRITE_EXECUTORS, input_backend_needs
+from .executor_registry import input_backend_needs
 
 #: Declared parameter normalisers, by name. An ``Action`` names one; this is
 #: where the name becomes a function. The indirection exists so that
@@ -310,8 +310,7 @@ class Executor:
             # have registered; blaming the write switch for an unwired
             # read-only action would name the wrong gate in the refusal the
             # operator actually reads (#439).
-            note = (self.registry.policy_note
-                    if action.executor in WRITE_EXECUTORS else "")
+            note = self.registry.note_for(action.executor)
             raise ExecutorError(
                 f"action {action.name!r} names executor {action.executor!r}, "
                 f"which is not registered; registered: "

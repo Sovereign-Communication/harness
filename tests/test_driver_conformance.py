@@ -84,7 +84,7 @@ class DriverLiveConformanceTest(unittest.TestCase):
 
         vocab = self.adapter.vocabulary()
         self.assertTrue(vocab.get("ok"))
-        self.assertEqual(len(vocab.get("vocabulary", {}).get("actions", [])), 14)
+        self.assertEqual(len(vocab.get("vocabulary", {}).get("actions", [])), 15)
 
         schemas = self.adapter.schemas()
         self.assertTrue(schemas.get("ok"))

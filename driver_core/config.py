@@ -70,6 +70,23 @@ DEFAULT_CONFIDENCE_THRESHOLD = 0.70
 DEFAULT_QUORUM = 2
 DEFAULT_MIN_AGREEMENT = 1.0
 
+#: Applications this package may launch, declared in code -- never from the
+#: environment. Logical name -> platform -> the value that platform's
+#: launcher receives. A launch allowlist an operator can widen is not an
+#: allowlist; adding an application is a reviewed code change.
+APP_ALLOWLIST = {
+    "notepad": {
+        "windows": "notepad.exe",
+        "darwin": "TextEdit",
+        "linux": "org.gnome.TextEditor",
+    },
+    "freebuff": {
+        "windows": "FreeBuff.exe",
+        "darwin": "FreeBuff",
+        "linux": "freebuff",
+    },
+}
+
 #: The shortest token this package will accept from an operator. The REST
 #: token is the only thing standing between a loopback caller and the action
 #: tier, and it is bearer-only: whoever holds it may execute anything consent
@@ -177,6 +194,12 @@ class Settings:
     #: The in-repo native input backend is a separate, explicit opt-in. It is
     #: still constrained by ``allow_write`` and per-action consent.
     native_input_enabled: bool = False
+    #: Application launching is a second, independent opt-in. Write authority
+    #: alone does not confer it: opening a program is computer control, and a
+    #: deployment that allowed file writes was not thereby asked to allow it.
+    #: The Harness host maps ``HARNESS_NL_CONTROL`` onto ``DRIVER_LAUNCH_APP``
+    #: so this package still reads only its own namespace.
+    launch_app_enabled: bool = False
 
     @property
     def jev_images(self):
@@ -264,6 +287,7 @@ class Settings:
             "dry_run": self.dry_run,
             "allow_write": self.allow_write,
             "native_input_enabled": self.native_input_enabled,
+            "launch_app_enabled": self.launch_app_enabled,
         }
         return data
 
@@ -324,6 +348,7 @@ def load_settings(env=None, **overrides):
         dom_url=env.get(ENV_PREFIX + "DOM_URL", ""),
         screen_enabled=_env_bool(env, "SCREEN", False),
         native_input_enabled=_env_bool(env, "NATIVE_INPUT", False),
+        launch_app_enabled=_env_bool(env, "LAUNCH_APP", False),
     )
     return settings.with_overrides(**overrides) if overrides else settings
 

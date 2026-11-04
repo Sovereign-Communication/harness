@@ -873,6 +873,15 @@ def ensure_driver_daemon(port=None):
     with _DRIVER_DAEMON_LOCK:
         if not _DRIVER_DAEMON:
             settings = _dc_config.load_settings()
+            # The roadmap's HARNESS_NL_CONTROL is a host flag; driver-core
+            # reads only DRIVER_*, so the host maps it onto the driver's own
+            # switch here. Write authority alone never enables launching.
+            nl_control = os.environ.get("HARNESS_NL_CONTROL", "")
+            nl_enabled = nl_control.strip().lower() not in (
+                "", "0", "false", "no", "off")
+            settings = settings.with_overrides(
+                launch_app_enabled=(settings.launch_app_enabled
+                                    or nl_enabled))
             service = _dc_server.Service(_dc_server.driver_from_settings(settings))
             httpd, _ = _dc_server.serve(
                 host=settings.host,

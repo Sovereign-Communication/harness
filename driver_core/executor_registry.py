@@ -38,6 +38,7 @@ everything else out of it. Every handler below reaches the outside world
 import os
 
 from . import osal
+from .config import APP_ALLOWLIST
 from .errors import ExecutorError
 
 
@@ -127,6 +128,33 @@ def _delete_file(action, params):
     return osal.remove_file(params["path"])
 
 
+def _launch_app(action, params):
+    """``launch_app``: start one application from the code-owned allowlist.
+
+    The vocabulary names a *declared* application, never a path or a command:
+    the logical name is looked up in ``config.APP_ALLOWLIST`` and only that
+    platform's declared value reaches the launcher. An unlisted name is
+    refused together with the declared set, so a caller learns what it may
+    ask for instead of guessing at spellings.
+    """
+    name = str(params.get("app_name") or "").strip().lower()
+    declaration = APP_ALLOWLIST.get(name)
+    if declaration is None:
+        _refused(
+            f"app {name!r} is not in the declared launch allowlist; "
+            f"declared: {sorted(APP_ALLOWLIST)}")
+    platform = osal.platform_name()
+    executable = declaration.get(platform)
+    if not executable:
+        _refused(
+            f"app {name!r} has no launch declaration for {platform}; "
+            f"declared platforms: {sorted(declaration)}")
+    output, detail = osal.launch_app(name, executable)
+    if output is None:
+        _refused(detail)
+    return output
+
+
 #: The mutating and irreversible executors this package can perform itself.
 #: Registered as a group so the gate is one switch with one meaning, rather
 #: than six independently configurable half-capabilities that an operator has
@@ -140,6 +168,7 @@ WRITE_EXECUTORS = {
     "write_file": _write_file,
     "delete_file": _delete_file,
     "submit_irreversible": _submit_irreversible,
+    "launch_app": _launch_app,
 }
 
 #: Executors that reach the machine through ``osal.send_input`` and are
@@ -188,15 +217,11 @@ def executability(action, registry):
     """
     needs = []
     if registry.get(action.executor) is None:
-        # The write-policy note explains a *write* refusal, so it is attached
-        # only when the missing executor is one ``DRIVER_ALLOW_WRITE`` would
-        # have registered. Attaching it to an unwired read-only action (an
-        # ``executability`` view of ``read_dom`` in a build without it) would
-        # name the wrong gate, and a refusal whose stated reason contradicts
-        # the action's class sends the operator to fix a switch that is not
-        # the problem (#439).
-        note = (registry.policy_note
-                if action.executor in WRITE_EXECUTORS else "")
+        # The note names the gate that is actually closed, and the registry
+        # owns which note applies (#439: never blame the write switch for an
+        # unwired read-only action, nor the write switch when a second gate --
+        # application launching -- is the one that is off).
+        note = registry.note_for(action.executor)
         needs.append(f"executor {action.executor!r} is not registered."
                      f"{note}")
     needs.extend(input_backend_needs(action, registry))
@@ -211,6 +236,15 @@ WRITE_DISABLED_NOTE = (
     "DRIVER_ALLOW_WRITE is off; nothing in this build can perform them."
 )
 
+#: Appended when writes are allowed but application launching is not. The
+#: write switch is not the problem in that state, so the refusal must not name
+#: it; the operator needs the second gate, not the one already open.
+LAUNCH_DISABLED_NOTE = (
+    " Application launching is not registered because DRIVER_LAUNCH_APP is "
+    "off (the Harness host maps HARNESS_NL_CONTROL onto it); write authority "
+    "alone does not enable it."
+)
+
 
 class ExecutorRegistry:
     """A closed name -> handler map."""
@@ -220,6 +254,9 @@ class ExecutorRegistry:
         self._handlers = dict(handlers or {})
         #: Extra text appended to the "not registered" refusal.
         self.policy_note = policy_note
+        #: Per-executor refusal notes, which take precedence over the
+        #: class-wide ``policy_note`` so a second gate is named correctly.
+        self.disabled_notes = {}
         #: A driver-local backend, or the process registration seam when the
         #: sentinel is left in place. Explicit None means no backend.
         self._input_backend = osal.freeze_input_backend(input_backend)
@@ -245,6 +282,19 @@ class ExecutorRegistry:
         """The handler, or ``None``. There is intentionally no default."""
         return self._handlers.get(name)
 
+    def note_for(self, name):
+        """Why a missing executor is missing, in operator terms.
+
+        A per-executor note wins over the class-wide write-policy note: when
+        writes are on but application launching is not, the write switch is
+        not the problem, and naming it would send the operator to fix the
+        wrong gate.
+        """
+        specific = self.disabled_notes.get(name)
+        if specific:
+            return specific
+        return self.policy_note if name in WRITE_EXECUTORS else ""
+
     def names(self):
         return tuple(sorted(self._handlers))
 
@@ -255,8 +305,10 @@ class ExecutorRegistry:
         return len(self._handlers)
 
     def clone(self):
-        return ExecutorRegistry(self._handlers, policy_note=self.policy_note,
+        copy = ExecutorRegistry(self._handlers, policy_note=self.policy_note,
                                 input_backend=self.input_backend)
+        copy.disabled_notes = dict(self.disabled_notes)
+        return copy
 
 
 def _noop(action, params):
@@ -466,6 +518,7 @@ def build_read_only_registry(state_provider=None, *,
 
 
 def build_driver_registry(state_provider=None, *, allow_write=False,
+                          launch_app=False,
                           input_backend=osal.USE_REGISTERED_INPUT_BACKEND):
     """What a :class:`~driver_core.driver.Driver` runs with.
 
@@ -480,6 +533,9 @@ def build_driver_registry(state_provider=None, *, allow_write=False,
                                         input_backend=input_backend)
     if allow_write:
         for name, handler in WRITE_EXECUTORS.items():
+            if name == "launch_app" and not launch_app:
+                registry.disabled_notes[name] = LAUNCH_DISABLED_NOTE
+                continue
             if name in INPUT_BACKED and input_backend is not \
                     osal.USE_REGISTERED_INPUT_BACKEND:
                 def handler_with_backend(action, params, _handler=handler):

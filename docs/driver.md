@@ -106,7 +106,7 @@ Every permitted action still requires consent for its exact action and
 parameters. The service creates its native backend per driver, so one driver
 cannot inherit another driver's native-input setting.
 
-What the executor actually implements (the vocabulary declares 14 actions;
+What the executor actually implements (the vocabulary declares 15 actions;
 only these have an executor behind them, and anything else is refused as
 unregistered):
 
@@ -118,6 +118,15 @@ unregistered):
   replace) and `delete_file` (irreversible). Input executors also require a
   registered backend; the native Windows backend makes only exact-title
   `focus` executable when `DRIVER_NATIVE_INPUT=1`.
+- Only when both `DRIVER_ALLOW_WRITE` and `DRIVER_LAUNCH_APP` are set:
+  `launch_app`. It starts one application from the code-owned
+  `APP_ALLOWLIST` in `driver_core/config.py` (`notepad`, `freebuff`), never a
+  caller-supplied path or command, through the platform launcher
+  (`cmd /c start ""`, `open -a`, `xdg-open`), and fails if the launcher has
+  not handed off within three seconds. The Harness host maps
+  `HARNESS_NL_CONTROL` onto `DRIVER_LAUNCH_APP` (driver-core reads only its
+  own namespace); write authority alone does not confer launching, and an
+  unlisted application is refused with the declared set named.
 
 ### Read-only probes
 

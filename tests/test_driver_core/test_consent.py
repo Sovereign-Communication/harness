@@ -344,6 +344,12 @@ class InputBackendTests(unittest.TestCase):
     def test_native_backend_is_unavailable_on_unsupported_platforms(self):
         self.assertIsNone(osal.native_input_backend(platform="linux"))
 
+    def test_native_backend_without_a_window_api_fails_closed(self):
+        """The opt-in path must name what is missing, not raise NameError."""
+        with self.assertRaises(RuntimeError) as caught:
+            osal.native_input_backend(platform="windows")
+        self.assertIn("injected window API", str(caught.exception))
+
     def test_a_backend_can_be_withdrawn_at_runtime(self):
         """Observe the machine, never drive it -- as a policy, not an
         accident of never having configured it."""
