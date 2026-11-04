@@ -127,5 +127,5 @@ target file exists on this tip and is checked by the B6 test.
   `driver_core/actions.py:167` (`focus`), `driver_core/actions.py:169` (`click`),
   `driver_core/actions.py:171` (`type_text`), `harness/perception_client.py:182`
   (driver `health` client), `pyproject.toml:40` (`harness-desktop` entry point),
-  `docs/driver.md:300` (headless key provisioning), `docs/driver.md:313` (keyless vs
+  `docs/driver.md:309` (headless key provisioning), `docs/driver.md:322` (keyless vs
   keyed table).
