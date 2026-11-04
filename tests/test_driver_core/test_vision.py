@@ -665,7 +665,12 @@ class LocalHttpVisionSmokeTests(unittest.TestCase):
             settings = _keyed().with_overrides(quorum=1)
             extractor = _extractor(
                 "local-smoke", settings, budget=budget, audit=audit,
-                image_preparer=_resize_preparer)
+                image_preparer=_resize_preparer,
+                # Platform facts are merged after the model's state, so a
+                # hermetic suite supplies them instead of reading whatever
+                # window happens to be focused on the machine (#292).
+                describer=lambda: ({"window_title": "report - editor",
+                                    "foreground_app": "editor"}, ""))
             decision = FakeJev(action_answer("observe", confidence=0.99))
             driver = Driver(
                 audit=audit, settings=settings, budget=budget,
@@ -711,6 +716,29 @@ class LocalHttpVisionSmokeTests(unittest.TestCase):
                 server.server_close()
                 worker.join(timeout=2)
             self.assertFalse(worker.is_alive())
+
+    def test_the_suite_reads_no_real_foreground_window(self):
+        """The describer is an injectable seam, not a live desktop read.
+
+        ``VisionExtractor`` merges the platform facts after the model's
+        judgments, so leaving the default in place makes a test depend on
+        whatever window is focused where it runs. This guard fails if the
+        injected describer is dropped: the real ``osal.describe_screen``
+        raises here rather than returning this desktop's window.
+        """
+        with mock.patch("driver_core.extractors.vision.osal.describe_screen",
+                        side_effect=AssertionError("read a live desktop")):
+            extractor = _extractor(
+                "hermetic", _keyed(), budget=Budget(
+                    1.0, step_ceiling_usd=1.0),
+                audit=MemoryAuditLog(),
+                describer=lambda: ({"window_title": "report - editor",
+                                    "foreground_app": "editor"}, ""),
+                transport_module=FakeService(_ok_response()))
+            extraction = extractor.extract(_capture(), SCREEN_SCHEMA)
+
+        self.assertTrue(extraction.ok, extraction.reason)
+        self.assertEqual(extraction.state["window_title"], "report - editor")
 
 
 if __name__ == "__main__":
