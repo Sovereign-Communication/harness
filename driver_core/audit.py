@@ -18,6 +18,14 @@ write a thinner record.
 
 This log is driver-core's own. It shares no path, no file and no format with
 any neighbouring project's ledger.
+
+An existing log is not evidence merely because it parses. It is opened and
+extended only after one locked snapshot has been checked end to end: the
+genesis pointer, every sequence number, every ``previous`` link and every
+record digest. A chain that fails any check is refused before a byte is
+written, so a payload edited without updating its stored hash cannot be
+extended. The refusal names the first bad record; a valid chain still reopens
+and appends exactly one correctly linked record.
 """
 import hashlib
 import json
