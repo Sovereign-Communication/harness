@@ -312,3 +312,46 @@ open. This slice proves the verifier contract and the label gate; it does not
 claim an end-to-end report.
 
 Gates: citation slice 23 OK, ruff clean, D7 doc-module pin 2 OK.
+
+## 2026-11-04 - #292 closeout: driver_core 3.5.0 pin and live drift check
+
+The 3.5.0 reconciliation itself was already landed at `76fb1cf` and is an
+ancestor of the current tip; `driver_core.__version__` is 3.5.0 and
+`driver_core/__init__.py` resolves to this checkout. The recorded WIP
+`a30dbf6` is an earlier, superseded attempt: it predates the later lane work
+and is not merged. Its nine named failure classes are green at the tip:
+125 focused vision/audit/declaration/service/consent-ledger tests, 26
+conformance tests, and `driver_core --json verify` reporting a verified
+2,233-record chain.
+
+The remaining acceptance gap was the live drift check and the stale vendoring
+pin, both now closed at code head `39695db`:
+
+- `driver_core/UPSTREAM.json` pins repository `Treystu/driver-core`, version
+  `3.5.0`, commit `47d4362`, and the raw HTTPS source.
+- `scripts/check_driver_core_drift.py` compares the vendored `__version__`
+  with the pin offline (`:82`) and, with `--remote`, reads the standalone raw
+  `driver_core/__init__.py` (`:69`) and fails if the versions differ; a fetch
+  failure is a drift failure, never a pass (`:129` CLI).
+- `.github/workflows/ci.yml:120-122` runs the remote check in checkout
+  hygiene.
+- `tests/test_driver_core_drift.py` has 11 hermetic drop-fails cases
+  (`:23-119`): shipping pin equality, planted pin/vendored/remote mismatch,
+  remote fetch failure, missing version, malformed pin, CLI exit codes, and
+  docs/CI wiring.
+- `docs/driver.md:346` now names 3.5.0 as vendored; `:363-368` records the
+  measured 3.4.0-to-3.5.0 delta and the parallel-line reconciliation;
+  `:388-394` documents the live check. `driver_core/__init__.py:10` carries
+  the 3.5.0 changelog entry.
+
+Verification at `39695db`: full hermetic suite **5,543 tests OK (skipped=73)**
+in 480.837s; driver_core 425 OK (1 skipped); conformance 26; router 26;
+packaging 5; architecture 9; citation 23; D7 pin 2; drift 11; ruff clean in
+CI scope, driver_core and audits; repo_cards clean; secret scan 0 hits; live
+remote check returned upstream 3.5.0 == vendored 3.5.0. No `[Unreleased]`
+CHANGELOG entry.
+
+CI at `39695db`: run 41819905848, 15 jobs, zero steps, every runnable job
+failed and audit/installed-package were skipped; the annotation is still the
+owner billing lock ("The job was not started because your account is locked
+due to a billing issue"). No code signal; protection was not relaxed.
