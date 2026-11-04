@@ -83,3 +83,19 @@ packaging 5 OK, architecture 9 OK, ruff clean on harness tests,
 secret scan clean. Evidence posted on #286; status mirrored to #442
 and #295.
 
+## 2026-11-04 - #430 terminal restart/consent refusal state
+
+A validated restart or stale-consent refusal becomes one durable
+blocked/reapproval_required state (request id, assignment hash,
+completed stages, checkpoint, prior results, consent identity, reason,
+next action). Repeated identical refusals deduplicate and dispatch
+nothing; checkpoint resume is distinct, request/plan-bound, and never
+reuses expired consent. The production restart decision attaches the
+terminal state. Landing commit 9a0037b.
+
+Gates: #430 focused 10 OK, hourglass consent 23 OK, hourglass Jev 42
+OK, driver_core 403 OK (1 skipped), conformance 26 OK, router 26 OK,
+packaging 5 OK, architecture 9 OK, ruff clean on harness tests,
+secret scan clean. Evidence posted on #430; status mirrored to #442
+and #295.
+
