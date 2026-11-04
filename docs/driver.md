@@ -332,8 +332,6 @@ persistent audit path.
 
 ## Status
 
-## Status
-
 Delivered: the native module, the adapter, the CLI, the REST routes, the
 Driver pane and the MCP tools. The opt-in native input backend supports only
 Windows exact-title `focus`, gated by `DRIVER_ALLOW_WRITE=1`,

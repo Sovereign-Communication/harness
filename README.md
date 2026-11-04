@@ -148,6 +148,14 @@ with the venv activated. Without the extra, `harness-desktop` falls back to the
 system browser. Both install modes provide `harness`, `harness-mcp`,
 `harness-desktop`, and `driver-core`.
 
+`driver-core` is the headless verification face. A headless install (sandbox,
+CI runner, oversight verifier) becomes keyed through one named environment
+variable, `DRIVER_JEV_API_KEY`; see
+[docs/driver.md](https://github.com/Sovereign-Communication/harness/blob/main/docs/driver.md#headless-key-provisioning).
+`health`, `verify`
+and `vocabulary` are intentionally keyless, and `health` reports `keyed` plus
+a `key_provisioning` object naming that variable -- never its value.
+
 Two packaging facts matter when installing:
 
 - The distribution is `sovereign-harness`; the import name is `harness`. PyPI
