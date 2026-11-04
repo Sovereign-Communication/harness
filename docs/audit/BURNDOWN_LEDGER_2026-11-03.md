@@ -179,3 +179,44 @@ seams, not against a live Chromium.
 Landing commits 7ee0bf0 + 8b48d52. Evidence posted on #426; status mirrored
 to #442 and #295.
 
+## 2026-11-04 - #270 launch_app behind a declared boundary
+
+`driver_core` gains `Action("launch_app", MUTATING, "launch_app",
+("app_name",))`. The issue's `execute_launch_app` in `executor.py` is stale
+against the tip: handlers live in `executor_registry.py` and the OS boundary is
+`osal.py`, so the action lands there. The executor resolves the logical name
+against code-owned `APP_ALLOWLIST` (`notepad`, `freebuff`; one spelling per
+platform) and starts only that declared value through `osal.launch_app`:
+Windows `cmd /c start "" <exe>` (the empty title is required), macOS `open -a`,
+Linux `xdg-open`; no shell, stdio discarded, and a launcher that has not handed
+off in `LAUNCH_TIMEOUT` = 3.0 s is killed and the action fails.
+
+Two independent gates. `DRIVER_ALLOW_WRITE` registers write executors; starting
+an application additionally needs `DRIVER_LAUNCH_APP` (default off).
+`driver_core` reads only its own environment namespace, so the Harness host maps
+`HARNESS_NL_CONTROL` onto `DRIVER_LAUNCH_APP` in `harness/server.py`; write
+authority alone never confers launching. `ExecutorRegistry.note_for` makes the
+refusal name the gate that is actually closed, so a writes-on / launch-off build
+does not blame the write switch.
+
+15 hermetic tests in `tests/test_driver_core/test_launch_app.py`: declaration and
+parameter shape, code-owned allowlist, per-OS argv and `shell=False`, a value
+outside the declaration is refused, per-platform gap, unknown platform, empty
+declaration, the 3 s kill, default-off, two-gate registration, the per-gate note,
+consent still required, and `Driver` wiring. Drop-fails: removing the launch gate
+reds the gate tests, `shell=True` reds the argv test, and dropping the timeout
+kill reds the handoff test. No real application is launched on this machine; the
+OS boundary is proven at the argv and kill seams.
+
+The vocabulary addition shifts the fixed audit run's decision probabilities from
+14 to 15 actions, so `test_audit_compat` now pins `CURRENT_CHAIN` for byte
+stability and keeps `GOLDEN_CHAIN` for the pre-owner compatibility claim; the
+conformance action count moves to 15. A pre-existing `F821` on the opt-in
+native-input path (`osal.native_input_backend` referenced a `_WindowsWindowApi`
+that does not exist anywhere) now fails closed with a named `RuntimeError`, with
+a test; found by widening ruff to `driver_core`.
+
+Gates at f2c9faa: driver_core 425 OK (1 skipped), conformance 26, router 26,
+packaging 5, architecture 9, ruff clean (CI scope and `driver_core`), secret scan
+0 hits.
+
