@@ -35,6 +35,7 @@ from . import osal
 from .executor import DEFAULT_PLAN_WORKERS, PlanExecutor
 from .mcp_lanes import LANES, lane_for
 from .mcp_schemas import TOOL_SCHEMAS
+from driver_core.audit import lint_tool_descriptions
 from .jev_completion import dogfood_phase, score_all_phases
 from .jev_policy import aggregate_structural, policy_for
 from .jev_packs import validate_log_pack, validate_operator_pack
@@ -554,6 +555,7 @@ class McpServer:
             self._remove_progress(request_id)
 
     def _tools(self):
+        lint_tool_descriptions(TOOL_SCHEMAS)
         return TOOL_SCHEMAS
 
     def _refuse(self, reason, message, task_id=None, model=None,

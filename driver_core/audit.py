@@ -227,6 +227,55 @@ class AuditError(Exception):
     """The log is not a trustworthy chain, so it may not be extended."""
 
 
+#: The description formula every MCP tool contract must follow (#284).
+MCP_DESCRIPTION_LABELS = ("When:", "In:", "Out:")
+
+
+def lint_tool_descriptions(schemas):
+    """Enforce When / In / Out on every served MCP tool description.
+
+    A description is the only documentation a model sees before choosing a
+    tool, so it has to answer the same three questions in the same order:
+    when to use the tool, what goes in, and what comes out. The check is
+    deliberately literal -- labels, order and non-empty segments -- because
+    a prose heuristic would let a description drift back to "does a thing"
+    while still passing. Raises :class:`AuditError`: the catalog may not be
+    served when its contracts do not state those three facts.
+    """
+    problems = []
+    for schema in schemas:
+        name = str(schema.get("name") or "<unnamed>")
+        description = schema.get("description")
+        if not isinstance(description, str) or not description.strip():
+            problems.append(f"{name}: description is missing")
+            continue
+        text = " ".join(description.split())
+        if not text.startswith(MCP_DESCRIPTION_LABELS[0]):
+            problems.append(f"{name}: description must start with When:")
+        positions = []
+        for label in MCP_DESCRIPTION_LABELS:
+            index = text.find(label)
+            if index < 0:
+                problems.append(f"{name}: missing {label}")
+                positions = None
+                break
+            positions.append(index)
+        if positions is None:
+            continue
+        if positions != sorted(positions) or len(set(positions)) != len(positions):
+            problems.append(f"{name}: labels are out of order")
+            continue
+        for offset, label in enumerate(MCP_DESCRIPTION_LABELS):
+            start = positions[offset] + len(label)
+            end = (positions[offset + 1]
+                   if offset + 1 < len(positions) else len(text))
+            if not text[start:end].strip():
+                problems.append(f"{name}: {label} is empty")
+    if problems:
+        raise AuditError("MCP tool description lint failed: " + "; ".join(problems))
+    return len(schemas)
+
+
 class ChainVerdict:
     __slots__ = ("ok", "records", "detail")
 
