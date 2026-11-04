@@ -8,7 +8,8 @@ after the operator forbade tools.
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from typing import Any, cast
+from unittest.mock import patch
 
 from harness.agent import AutonomousAgent
 from harness.provider_errors import ProviderSpendLimitError, provider_spend_limit_error
@@ -72,7 +73,7 @@ class ReadOnlyAuditIntentTests(unittest.TestCase):
 
     def test_audit_specimen_never_reaches_the_edit_lane(self):
         with tempfile.TemporaryDirectory() as tmp:
-            agent = AutonomousAgent(settings=_lane_settings(),
+            agent = AutonomousAgent(settings=cast(Any, _lane_settings()),
                                     history_dir=Path(tmp), root_dir=Path(tmp))
             sentinel = {"status": "ok", "intent": "audit"}
             with patch("harness.request_router.load_memory", return_value={}), \
@@ -100,7 +101,7 @@ class NoToolsConstraintTests(unittest.TestCase):
 
     def test_no_tools_specimen_is_not_sent_to_retrieval(self):
         with tempfile.TemporaryDirectory() as tmp:
-            agent = AutonomousAgent(settings=_lane_settings(),
+            agent = AutonomousAgent(settings=cast(Any, _lane_settings()),
                                     history_dir=Path(tmp), root_dir=Path(tmp))
             sentinel = {"status": "ok", "intent": "conversation"}
             with patch("harness.request_router.load_memory", return_value={}), \
@@ -150,22 +151,25 @@ class WorkspaceAuditScopeTests(unittest.TestCase):
 
 
 class ProviderPaymentRequiredCauseTests(unittest.TestCase):
-    def test_funding_402_keeps_the_actionable_diagnosis(self):
-        err = provider_spend_limit_error(
-            402, {"error": {"message": "Insufficient credits"}})
+    def _error(self, status, response):
+        err = provider_spend_limit_error(status, response)
         self.assertIsInstance(err, ProviderSpendLimitError)
+        assert err is not None
+        return err
+
+    def test_funding_402_keeps_the_actionable_diagnosis(self):
+        err = self._error(402, {"error": {"message": "Insufficient credits"}})
         self.assertEqual(err.cause, "account_funding")
         self.assertEqual(err.kind, "provider_spend_limit")
         self.assertIn("spend limit exhausted", str(err))
         self.assertTrue(err.next_step)
 
     def test_payment_required_code_is_funding(self):
-        err = provider_spend_limit_error(
-            402, {"error": {"code": "payment_required"}})
+        err = self._error(402, {"error": {"code": "payment_required"}})
         self.assertEqual(err.cause, "account_funding")
 
     def test_route_restriction_402_does_not_claim_balance(self):
-        err = provider_spend_limit_error(
+        err = self._error(
             402, {"error": {"message": "No endpoints found for model",
                             "code": "model_not_found"}})
         self.assertEqual(err.cause, "route_or_model_restriction")
@@ -173,8 +177,7 @@ class ProviderPaymentRequiredCauseTests(unittest.TestCase):
         self.assertIn("route", str(err).lower())
 
     def test_unattributable_402_is_recorded_as_unknown(self):
-        err = provider_spend_limit_error(
-            402, {"error": {"message": "request refused"}})
+        err = self._error(402, {"error": {"message": "request refused"}})
         self.assertEqual(err.cause, "unknown")
         self.assertIsNone(err.next_step)
 

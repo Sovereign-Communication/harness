@@ -34,6 +34,8 @@ class ProviderSpendLimitError(HarnessError):
 
     kind = "provider_spend_limit"
     CAUSES = ("account_funding", "route_or_model_restriction", "unknown")
+    cause: str
+    next_step: Optional[str]
 
     def __init__(self, detail: str, *, http_status: Optional[int] = None,
                  known_cost: float = 0.0, cause: str = "account_funding"):
