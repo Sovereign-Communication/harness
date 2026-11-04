@@ -7,6 +7,10 @@ the built wheel, the running service and this docstring cannot drift apart.
 What each version changed, one line each; the mechanisms they introduced are
 documented where those mechanisms live.
 
+* ``3.5.0``: the standalone 3.5.0 reconciliation -- the ``extractors/``
+  package plus guardrails, Jev audit context, locate and verdicts.  The
+  harness-local patches remain deliberate; see ``docs/driver.md``'s vendoring
+  table before replacing any file.
 * ``3.4.0``: the audit log's record vocabulary has one owner (``audit.py``'s
   ``KIND_*`` constants); producers import the names. Nothing written changed.
 * ``3.3.0``: a declared command tokenises with no escapes -- whitespace

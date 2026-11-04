@@ -343,8 +343,10 @@ persistent audit path.
 
 The package under `driver_core/` is a vendored copy of
 [`Treystu/driver-core`](https://github.com/Treystu/driver-core), pinned by
-`driver_core/__init__.py`'s `__version__` (`3.4.0` as vendored). The standalone
-repository publishes no tags, so the pin is the version string, not a tag.
+`driver_core/__init__.py`'s `__version__` (`3.5.0` as vendored), with the
+upstream identity recorded in `driver_core/UPSTREAM.json` (repository,
+version, commit and raw source URL). The standalone repository publishes no
+tags, so the pin is the version plus commit, not a tag.
 
 **The copy is not a pure mirror.** The harness carries local patches upstream
 does not have, and harness-owned tests import modules upstream has removed. A
@@ -358,16 +360,18 @@ wholesale copy over `driver_core/` is therefore wrong:
 | `tests/test_driver_conformance.py` imports `driver_core.consent_ledger` | `tests/test_driver_conformance.py:25` |
 | `tests/test_driver_core/test_audit_compat.py` imports `driver_core.extractors` | `tests/test_driver_core/test_audit_compat.py:39` |
 
-Measured upstream delta on 2026-11-04 (vendored `3.4.0` vs `Treystu/driver-core`
-`main` at `3.5.0`): 66 files, +4918/-1987; `extractors.py` becomes the
-`extractors/` package; `consent_ledger.py` is removed upstream; `guardrails.py`,
-`jev_audit.py`, `jev_context.py`, `locate.py` and `verdicts.py` are new. The
-sync is tracked by #292 and must land as a three-way merge, not a copy.
+The measured `3.4.0`-to-`3.5.0` delta (2026-11-04) is 66 files,
++4918/-1987: `extractors.py` became the `extractors/` package;
+`consent_ledger.py` is absent upstream; `guardrails.py`, `jev_audit.py`,
+`jev_context.py`, `locate.py` and `verdicts.py` are new. The sync landed at
+`76fb1cf` (#292). Upstream 3.5.0 is a parallel line, not a superset, so the
+harness patches in the table above were reapplied deliberately.
 
 ### Sync procedure
 
-1. Record the upstream `main` commit SHA and its `__version__`; the SHA is the
-   pin for the sync, because the standalone repository has no tags.
+1. Record the upstream `main` commit SHA and its `__version__` in
+   `driver_core/UPSTREAM.json`; the SHA is the pin for the sync, because the
+   standalone repository has no tags.
 2. Reconstruct the upstream tree the vendored copy was taken from (the 3.4.0
    base) before diffing; a two-way diff against `main` mixes the upstream delta
    with the harness patches in the table above.
@@ -378,10 +382,15 @@ sync is tracked by #292 and must land as a three-way merge, not a copy.
 5. Run `python -m unittest discover -s tests/test_driver_core -t .`,
    `python -m unittest tests.test_driver_conformance`, the hermetic suite, and
    `python -m ruff check harness tests` before landing.
-6. Update `__version__` and this section in the same commit.
+6. Update `__version__`, `driver_core/UPSTREAM.json` and this section in the
+   same commit.
 
-The drift check (#292) is not yet in CI; it must land with the sync so the pin
-cannot go stale silently.
+`scripts/check_driver_core_drift.py` is the live drift check. It compares
+`driver_core.__version__` with the pin, and with `--remote` it reads the
+standalone `driver_core/__init__.py` from the pin's HTTPS source and fails if
+that version differs. A fetch failure is a drift failure. The checkout-hygiene
+job runs the remote form; `tests/test_driver_core_drift.py` covers both the
+pin-only and remote paths without network access.
 
 ## Status
 

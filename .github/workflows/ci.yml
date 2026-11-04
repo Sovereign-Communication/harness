@@ -117,6 +117,9 @@ jobs:
           fi
           echo "working tree clean; eol inventory:"
           git ls-files --eol | awk '{print $1}' | sort | uniq -c
+      - name: Vendored driver_core matches its upstream pin
+        shell: bash
+        run: python scripts/check_driver_core_drift.py --remote
 
   driving-hygiene:
     name: Driving hygiene (deterministic)
