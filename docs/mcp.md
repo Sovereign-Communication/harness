@@ -114,3 +114,26 @@ accepted requests drain after stdin reaches EOF. Cancellation notifications
 only affect currently in-flight work and stop it cooperatively between governed
 operations. Verification process cancellation should be validated on the
 target platform before relying on it for hard interruption.
+
+## Tool-call logging
+
+Set `HARNESS_MCP_LOG` to a file path (or pass `mcp_log_path` to the server) to
+append one JSON object per `tools/call`:
+
+```json
+{"args":{"prompt":"..."},"at":"2026-11-04T00:00:00.000+00:00","duration_ms":12,"ok":true,"tool":"ask"}
+```
+
+Arguments are scrubbed with the repository's credential patterns before
+serialization; a token, key, bearer value, or private-key block becomes
+`[REDACTED]`. The logging path writes only to that file: stdout and stderr
+belong to the stdio transport, and a log line there would corrupt JSON-RPC.
+If no path is configured, no log file is written.
+
+## Additive-only tool versioning
+
+Tool schemas may gain optional fields. Removing a field, renaming it, or
+changing its type requires a new tool name; clients that cached the old
+contract must never be silently surprised. Prefer a new optional field plus
+a new tool name for a breaking change over a version bump on the existing
+name.

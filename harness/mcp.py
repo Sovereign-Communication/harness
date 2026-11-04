@@ -4,9 +4,19 @@ This module owns JSON-RPC framing, dispatch, cancellation lifecycle, and
 response serialization; the tool contracts (schemas) live in
 harness/mcp_schemas.py as pure data, and the lane-scheduling policy
 (which serial worker runs each tool) lives in harness/mcp_lanes.py.
+
+Tool-call logging is opt-in: set ``HARNESS_MCP_LOG`` to a file path and every
+``tools/call`` appends one JSON line with the tool, scrubbed arguments, outcome
+and duration. stdio is the transport, so the logging path never writes to
+stdout or stderr.
+
+Tool schemas are additive-only: a schema may gain optional fields, but
+removing, renaming, or retyping a field requires a new tool name. The policy
+is repeated in ``docs/mcp.md`` where contributors look.
 """
 import json
 import math
+import os
 import sys
 import threading
 import time
@@ -36,6 +46,7 @@ from .executor import DEFAULT_PLAN_WORKERS, PlanExecutor
 from .mcp_lanes import LANES, lane_for
 from .mcp_schemas import TOOL_SCHEMAS
 from driver_core.audit import lint_tool_descriptions
+from .mcp_log import log_tool_call
 from .jev_completion import dogfood_phase, score_all_phases
 from .jev_policy import aggregate_structural, policy_for
 from .jev_packs import validate_log_pack, validate_operator_pack
@@ -145,7 +156,7 @@ class McpServer:
                  max_panelists=3, use_free=True, stdin=None, stdout=None,
                  allow_verify=False, allow_write=False, allowed_roots=None,
                  tool_timeout=None, caller=None, auth_token=None,
-                 hourglass=None, settings=None):
+                 hourglass=None, settings=None, mcp_log_path=None):
         self.transport = transport
         self.api_key = api_key
         self.governor = governor
@@ -195,6 +206,10 @@ class McpServer:
         # created on this connection carry it; trust scores break out
         # per-caller history from it.
         self.caller = caller
+        # Structured tool-call log: explicit path or HARNESS_MCP_LOG. No path
+        # means no file; the logging path never touches stdio.
+        self.mcp_log_path = (mcp_log_path
+                             or os.environ.get("HARNESS_MCP_LOG") or None)
         # Remote safety is explicit: verify commands and file writes are not
         # enabled merely because a protocol client can reach this process.
         self.allow_verify = bool(allow_verify)
@@ -444,15 +459,58 @@ class McpServer:
             return request_id in self._cancelled
 
     def _call_tool(self, msg):
+        started = time.monotonic()
         request_id = msg.get("id")
         if "id" in msg:
             with self._cancel_lock:
                 if request_id in self._cancelled:
                     self._cancelled.discard(request_id)
-                    return {"jsonrpc": "2.0", "id": request_id,
-                            "error": {"code": -32800,
-                                       "message": "Request cancelled before execution"}}
-        return self._call_tool_impl(msg)
+                    response = {
+                        "jsonrpc": "2.0", "id": request_id,
+                        "error": {"code": -32800,
+                                  "message": "Request cancelled before execution"},
+                    }
+                    self._log_tool_call(msg, response, started)
+                    return response
+        try:
+            response = self._call_tool_impl(msg)
+        except Exception as exc:
+            self._log_tool_call(
+                msg, {"error": {"message": str(exc)}}, started)
+            raise
+        self._log_tool_call(msg, response, started)
+        return response
+
+    def _log_tool_call(self, msg, response, started):
+        path = self.mcp_log_path
+        if not path:
+            return
+        params = msg.get("params")
+        if not isinstance(params, dict):
+            params = {}
+        result = response.get("result")
+        if isinstance(result, dict):
+            ok = not bool(result.get("isError"))
+            error = None if ok else self._error_text(result)
+        else:
+            ok = False
+            raw = response.get("error")
+            error = (raw.get("message") if isinstance(raw, dict)
+                     else str(raw or "request failed"))
+        log_tool_call(
+            path, tool=params.get("name"), args=params.get("arguments"),
+            ok=ok, duration_ms=(time.monotonic() - started) * 1000,
+            error=error)
+
+    @staticmethod
+    def _error_text(result):
+        content = result.get("content")
+        if isinstance(content, list) and content:
+            first = content[0]
+            if isinstance(first, dict) and first.get("text"):
+                return first["text"]
+        return result.get("errorKind") or "tool failed"
+
 
     def _check_auth(self, msg):
         """Shared-secret gate for tools/call when auth_token is configured."""
