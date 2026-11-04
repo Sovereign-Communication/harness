@@ -3,6 +3,7 @@ import struct
 import zlib
 
 
+SIGNATURE = b"\x89PNG\r\n\x1a\n"
 MAX_SCANLINE_BYTES = 4 * 1024 * 1024
 MAX_DECODED_BYTES = 256 * 1024 * 1024
 

@@ -138,10 +138,14 @@ class FakeService:
         self.responses = []
 
     def call_service(self, url, questions, *, headers=None, timeout=60,
-                     body_extra=None, assets=None):
+                     body_extra=None, assets=None, images_enabled=None):
+        recorded = dict(body_extra or {})
+        if assets:
+            recorded["assets"] = assets
         self.requests.append({"url": url, "questions": questions,
-                              "headers": headers, "body": body_extra,
-                              "assets": assets})
+                              "headers": headers, "body": recorded,
+                              "assets": assets,
+                              "images_enabled": images_enabled})
         from driver_core.transport import Response
         if not self.payloads:
             return Response(0, "transport_error", detail="fake queue empty")
@@ -195,7 +199,7 @@ class OneClientPathTests(unittest.TestCase):
             "format": "png",
             "data_base64": base64.b64encode(capture.payload).decode("ascii"),
         })
-        self.assertIn("`screen`", sent["questions"]["observation"]
+        self.assertIn("'screen'", sent["questions"]["observation"]
                       ["instructions"])
 
     def test_image_request_reserves_the_full_context_bound(self):

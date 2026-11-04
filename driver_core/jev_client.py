@@ -91,7 +91,7 @@ class Decision:
                  reasons=(), model=None, native=False, cost=0.0,
                  input_tokens=0, output_tokens=0,
                  usage_source=USAGE_UNAVAILABLE, stop_reason="",
-                 probability_deviation=0.0):
+                 probability_deviation=None):
         self.status = status
         self.recommended_action = recommended_action
         self.confidence = confidence
@@ -153,8 +153,8 @@ class Decision:
             "output_tokens": self.output_tokens,
             "usage_source": self.usage_source,
             "stop_reason": self.stop_reason,
-            "probability_deviation": (None if self.probability_deviation is None
-                                      else round(self.probability_deviation, 9)),
+            **({} if self.probability_deviation is None else
+               {"probability_deviation": round(self.probability_deviation, 9)}),
             "usable": self.usable,
         }
 
@@ -176,8 +176,8 @@ class Decision:
             "native": self.native,
             "cost_usd": round(self.cost, 9),
             "usage_source": self.usage_source,
-            "probability_deviation": (None if self.probability_deviation is None
-                                      else round(self.probability_deviation, 9)),
+            **({} if self.probability_deviation is None else
+               {"probability_deviation": round(self.probability_deviation, 9)}),
         }
 
     def __repr__(self):
@@ -327,9 +327,12 @@ def accepted_deviation(probabilities):
 def probability_deviation(probabilities):
     """How far a distribution lands from 1, or ``None`` if it is not numeric."""
     try:
-        return sum(float(value) for value in (probabilities or {}).values()) - 1.0
+        value = sum(float(value) for value in (probabilities or {}).values()) - 1.0
     except (TypeError, ValueError):
         return None
+    # An exactly-normalised distribution has no deviation to report; None is
+    # the absence of a finding, not a zero that reads like one.
+    return None if abs(value) < 1e-12 else value
 
 
 def validate_answers(answers, questions, vocabulary):
@@ -550,7 +553,7 @@ class JevClient:
                 usage_source=usage_source,
                 # How far the returned distribution landed from 1, so a decision
                 # acted on after a tolerated deviation still says so in the log.
-                probability_deviation=probability_deviation(probabilities) or 0.0)
+                probability_deviation=probability_deviation(probabilities))
             return self._record(decision, step_id, receipt)
 
         return self.budget.exchange(

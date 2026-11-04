@@ -99,7 +99,12 @@ def _observed_state(payload, schema, described):
     if choice.get("choice") != "observed":
         return None
 
-    state = {name: value for name, value in (described or {}).items()
+    facts = {name: value for name, value in (described or {}).items()
+             if value not in ("", None)}
+    for name, value in (payload.get("state") or {}).items():
+        if facts.get(name) in ("", None):
+            facts[name] = value
+    state = {name: value for name, value in facts.items()
              if name in schema.field_names()}
     for field in schema.fields:
         if field.type not in JUDGMENT_TYPES:

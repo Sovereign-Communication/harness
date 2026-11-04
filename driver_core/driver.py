@@ -50,10 +50,11 @@ from .budget import Budget
 from .consensus import tally
 from .config import Settings, default_audit_path, load_settings
 from .errors import (
-    ConsentError, OsalError, PerceptionUnavailable, VocabularyError,
+    ConsentError, OsalError, PerceptionUnavailable, PersistentStateUnavailable,
+    VocabularyError,
 )
 from . import osal
-from .executor import Executor
+from .executor import Executor, NO_CONSENT_NEEDED
 from .executor_registry import build_driver_registry, executability
 from .extractors import ExtractorPool
 from .jev_client import JevClient
@@ -76,7 +77,7 @@ class StepResult:
 
     def __init__(self, step_id, *, ok, stopped_at, reason=None, detail="",
                  capture=None, agreement=None, decision=None, execution=None,
-                 receipt=None, cost=0.0):
+                 receipt=None, cost=0.0, needs=()):
         self.step_id = step_id
         self.ok = ok
         self.stopped_at = stopped_at
@@ -104,6 +105,7 @@ class StepResult:
             "execution": self.execution.to_dict() if self.execution else None,
             "receipt": self.receipt,
             "cost_usd": round(self.cost, 9),
+            "needs": list(self.needs),
         }
 
     def __repr__(self):
@@ -226,7 +228,8 @@ class Driver:
         try:
             capture = self._capture(target, prefer)
         except PerceptionUnavailable as exc:
-            return self._stop(step_id, "capture", "no_capture", str(exc))
+            return self._stop(step_id, "capture", "no_capture", str(exc),
+                              needs=self._capture_needs())
         self.audit.append(KIND_CAPTURE, step_id=step_id, **capture.summary())
 
         # 2 + 3. extract and tally
@@ -311,15 +314,13 @@ class Driver:
                               cost=decision.cost)
         guard_cost = 0.0
         try:
-            # The action the consent names is compared *before* the decided
-            # action's parameters are judged. Both are real faults, but only
-            # one of them is the caller's to fix, and a wrong-action consent
-            # reported as a missing parameter sends the operator to edit the
-            # wrong thing. The message keeps its single owner: this delegates
-            # to the check the executor already performs.
-            if (consent is not None and action.requires_consent
-                    and consent.action not in ("*", action.name)):
-                self.executor.check_consent(action, {}, consent)
+            # Missing consent is the first thing a caller can fix, so it is
+            # named before parameter validation can report a different fault.
+            if (action.requires_consent and consent is None
+                    and params is not None):
+                raise ConsentError(
+                    f"action {action.name!r} is {action.action_class} and no "
+                    f"consent was supplied")
             if self.settings.jev_guardrails and action.requires_consent:
                 # The guardrail pack judges the proposed action against the
                 # observed screen at the execution gate. It gates acting,
@@ -350,6 +351,10 @@ class Driver:
             execution = self.executor.execute(
                 action.name, _params_for(action, params),
                 consent=consent, step_id=step_id)
+        except PersistentStateUnavailable:
+            # Durable replay-state failures must reach the REST boundary as
+            # server errors, not as ordinary action refusals.
+            raise
         except Exception as exc:
             return self._stop(step_id, "execution", "execution_refused", str(exc),
                               capture=capture, agreement=agreement,

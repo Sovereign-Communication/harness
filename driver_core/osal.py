@@ -46,6 +46,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -843,7 +844,8 @@ def http_get(url, *, timeout=20, max_bytes=FETCH_MAX_BYTES):
     return status, body.decode(charset, "replace")
 
 
-def send_input(kind, value=None, *, target=None):
+def send_input(kind, value=None, *, target=None,
+               backend=USE_REGISTERED_INPUT_BACKEND):
     """Perform one synthetic input. Returns ``(ok, detail)``.
 
     Three refusals, in this order, each named so the operator can tell which
@@ -868,6 +870,10 @@ def send_input(kind, value=None, *, target=None):
         return False, (
             f"synthetic {kind} has no registered backend on {name}; "
             f"the embedding application must register one explicitly")
+    supported = tuple(getattr(backend, "supported_kinds", INPUT_KINDS))
+    if kind not in supported:
+        return False, (f"{name} input backend does not support {kind!r}; "
+                       f"it supports {list(supported)}")
     try:
         outcome = backend(kind, value=value, target=target)
     except Exception as exc:
@@ -1137,6 +1143,19 @@ class _FrozenInputBackend:
         return self._backend(kind, value=value, target=target)
 
 
+def validate_prepared_image(data):
+    """Return dimensions only for a complete PNG inside the measured bounds."""
+    dimensions = png_dimensions_of_bytes(data)
+    if dimensions is None or not decodable_png(data):
+        return None, "prepared image is not a complete, decodable PNG"
+    try:
+        if fit_target(*dimensions) != dimensions:
+            return None, "prepared image dimensions are outside the image bounds"
+    except ValueError as exc:
+        return None, f"prepared image dimensions are invalid: {exc}"
+    return dimensions, ""
+
+
 def prepare_image_bytes(data, *, scaler=None):
     """Validate and fit a PNG capture, returning immutable prepared bytes.
 
@@ -1146,7 +1165,7 @@ def prepare_image_bytes(data, *, scaler=None):
     ``scaler`` is an internal test seam; production uses the platform scaler.
     """
     dimensions = png_dimensions_of_bytes(data)
-    if dimensions is None or not png_decodable(data):
+    if dimensions is None or not decodable_png(data):
         return None, "capture is not a complete, decodable PNG"
     width, height = dimensions
     try:

@@ -478,7 +478,6 @@ def build_driver_registry(state_provider=None, *, allow_write=False,
     """
     registry = build_read_only_registry(state_provider,
                                         input_backend=input_backend)
-    input_backend = registry.input_backend
     if allow_write:
         for name, handler in WRITE_EXECUTORS.items():
             if name in INPUT_BACKED and input_backend is not \

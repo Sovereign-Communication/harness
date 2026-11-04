@@ -19,10 +19,18 @@ from ..audit import KIND_EXTRACTION
 from ..budget import estimate_call_cost
 from ..config import JEV_INPUT_PRICE_PER_MILLION, image_model
 from ..consensus import AGREED, INSUFFICIENT, Vote, tally_boxes
-from ..jev_client import SYSTEM_ONE_URL
+from .. import jev_client
 from ..locate import LocatedTarget, locate as locate_targets
 from .sizing import IMAGE_REQUEST_TOKEN_BOUND
 from .tiles import search_tiles
+
+
+def _system_one_url():
+    """Resolve the endpoint at call time so a host can point it at a local
+    service without rebuilding the extractor."""
+    import sys
+    package = sys.modules.get(__package__)
+    return getattr(package, "SYSTEM_ONE_URL", jev_client.SYSTEM_ONE_URL)
 
 
 class LocateRungs:
@@ -152,7 +160,7 @@ class LocateRungs:
 
         def dispatch():
             return self._transport.call_service(
-                SYSTEM_ONE_URL, questions,
+                _system_one_url(), questions,
                 headers={"Authorization":
                          f"Bearer {self.settings.jev_api_key}"},
                 timeout=self.timeout,

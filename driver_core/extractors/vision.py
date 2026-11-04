@@ -9,7 +9,7 @@ from .. import transport
 from ..audit import KIND_EXTRACTION
 from ..budget import estimate_call_cost
 from ..config import JEV_INPUT_PRICE_PER_MILLION, image_model
-from ..jev_client import SYSTEM_ONE_URL
+from .. import jev_client
 from ..perception import VISION_CLASS
 from .frames import FrameHistory, STABILITY_QUESTION
 from .locate_rungs import LocateRungs
@@ -17,6 +17,17 @@ from .questions import _extraction_questions, _observed_state
 from .sizing import (IMAGE_REQUEST_TOKEN_BOUND, _capture_state,
                      _estimate_capture_tokens)
 from .structured import Extraction
+
+
+def _system_one_url():
+    """Resolve the endpoint at call time so a host can point it at a local
+    service without rebuilding the extractor."""
+    import sys
+    package = sys.modules.get(__package__)
+    return getattr(package, "SYSTEM_ONE_URL", jev_client.SYSTEM_ONE_URL)
+
+
+_VISION_MODELS_WITH_VERIFIED_BOUND = ("jev-latest", "jev-1.13.0")
 
 
 class VisionExtractor(LocateRungs):
@@ -81,6 +92,7 @@ class VisionExtractor(LocateRungs):
         # An injected captor likewise supplies the original image/crop.
         self._captor = captor or (lambda: osal.capture_screen(max_side=None))
         self._preparer = preparer or osal.prepare_image
+        self._image_preparer = image_preparer
         # One history per slot: this extractor's own view of how the screen
         # has been moving, fed from the same prepared capture the pixels
         # mode ships. See :class:`FrameHistory` for why nothing else holds
@@ -105,6 +117,9 @@ class VisionExtractor(LocateRungs):
         """
         if hasattr(schema, "payload") and not hasattr(capture, "payload"):
             schema, capture = capture, schema
+        if not self.settings.screen_enabled:
+            return self._record(Extraction(
+                reason="screen vision is not enabled"))
         if not self.settings.keyed:
             # No call, no reservation, no charge. An unkeyed vision slot is
             # "unavailable", never "answered nothing".
@@ -122,6 +137,11 @@ class VisionExtractor(LocateRungs):
         # falls back to -- a fallback recorded in the reason, not hidden.
         described, why = self._describer()
         use_pixels = bool(self.settings.jev_images)
+        if (use_pixels and self.settings.jev_model
+                not in _VISION_MODELS_WITH_VERIFIED_BOUND):
+            return self._record(Extraction(
+                reason="no verified image budget bound for configured Jev "
+                       "model; use jev-latest or jev-1.13.0"))
         assets = None
         note = ""
         if use_pixels:
@@ -131,6 +151,9 @@ class VisionExtractor(LocateRungs):
             finally:
                 if path:
                     os.unlink(path)
+            if assets is None and capture is not None:
+                return self._record(Extraction(
+                    reason=f"image admission refused: {asset_why}"))
             if assets is None:
                 use_pixels = False
                 note = f"pixels unavailable ({asset_why}); "
@@ -163,9 +186,11 @@ class VisionExtractor(LocateRungs):
 
         def dispatch():
             return self._transport.call_service(
-                SYSTEM_ONE_URL, questions,
+                _system_one_url(), questions,
                 headers={"Authorization":
-                         f"Bearer {self.settings.jev_api_key}"},
+                         f"Bearer {self.settings.jev_api_key}",
+                         "TypeSafe-Danger-Zone-Images":
+                         "true" if use_pixels else "false"},
                 timeout=self.timeout,
                 body_extra={"state": state_payload, "model": model},
                 assets=assets,
@@ -224,14 +249,22 @@ class VisionExtractor(LocateRungs):
             path, why = self._captor()
             if not path:
                 return None, None, why or "no capture"
-        prepared, why = self._preparer(path)
+        if self._image_preparer is not None:
+            with open(path, "rb") as handle:
+                prepared, why = self._image_preparer(handle.read())
+        else:
+            prepared, why = self._preparer(path)
         if prepared is None:
             return None, None, why
-        data = prepared.data
+        data = getattr(prepared, "data", prepared)
+        dimensions, why = osal.validate_prepared_image(data)
+        if dimensions is None:
+            return None, None, why
+        geometry = getattr(prepared, "geometry", dimensions)
         ref = f"screen-{uuid.uuid4().hex[:8]}"
         entry = {"type": "image", "format": "png",
                  "data_base64": base64.b64encode(data).decode("ascii")}
-        return {ref: entry}, prepared.geometry, ""
+        return {ref: entry}, geometry, ""
 
     @staticmethod
     def _capture_path(capture):
