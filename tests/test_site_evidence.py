@@ -1,4 +1,5 @@
 """Rendered site evidence: the DOM facts an audit is allowed to cite."""
+import socket
 import sys
 import tempfile
 import types
@@ -193,10 +194,12 @@ class _Browser:
         self.page = page
         self.closed = False
         self.context_kwargs = {}
+        self.context = None
 
     def new_context(self, **kwargs):
         self.context_kwargs = kwargs
-        return _Context(self.page)
+        self.context = _Context(self.page)
+        return self.context
 
     def close(self):
         self.closed = True
@@ -205,6 +208,12 @@ class _Browser:
 class _Context:
     def __init__(self, page):
         self.page = page
+        self.route_pattern = None
+        self.route_handler = None
+
+    def route(self, pattern, handler):
+        self.route_pattern = pattern
+        self.route_handler = handler
 
     def new_page(self):
         return self.page
@@ -214,10 +223,14 @@ class _Chromium:
     def __init__(self, page):
         self.page = page
         self.headless = None
+        self.launch_kwargs = {}
+        self.browser = None
 
-    def launch(self, headless=False):
+    def launch(self, headless=False, **kwargs):
         self.headless = headless
-        return _Browser(self.page)
+        self.launch_kwargs = kwargs
+        self.browser = _Browser(self.page)
+        return self.browser
 
 
 class _Playwright:
@@ -232,16 +245,21 @@ class _Playwright:
 
 
 def _fake_modules(page):
+    playwright = _Playwright(page)
     module = types.ModuleType("playwright.sync_api")
-    module.sync_playwright = lambda: _Playwright(page)
+    module.sync_playwright = lambda: playwright
+    module._playwright = playwright
     parent = types.ModuleType("playwright")
     parent.__path__ = []
     parent.sync_api = module
     return {"playwright": parent, "playwright.sync_api": module}
 
 
-def _render(page, tmp, **kwargs):
-    with mock.patch.dict(sys.modules, _fake_modules(page)), \
+def _render(page, tmp, record=None, **kwargs):
+    modules = _fake_modules(page)
+    if record is not None:
+        record["playwright"] = modules["playwright.sync_api"]._playwright
+    with mock.patch.dict(sys.modules, modules), \
          mock.patch.object(site_evidence, "_public_https",
                            return_value="example.test"), \
          mock.patch.object(site_evidence, "emit") as events:
@@ -400,6 +418,172 @@ class SiteEvidenceHelperTests(unittest.TestCase):
                                           fail_click=True)])
         self.assertIn("failed: RuntimeError",
                       site_evidence._click_mode(failure, "Off-grid")["result"])
+
+
+class _FakeRoute:
+    def __init__(self, url):
+        self.request = types.SimpleNamespace(url=url)
+        self.outcome = None
+
+    def continue_(self):
+        self.outcome = "continue"
+
+    def abort(self, reason=None):
+        self.outcome = f"abort:{reason}"
+
+
+class EgressProxyTests(unittest.TestCase):
+    """The browser's network boundary, exercised with real sockets."""
+
+    def _proxy(self, **kwargs):
+        proxy = site_evidence._ValidatedEgressProxy(**kwargs)
+        self.addCleanup(proxy.close)
+        return proxy
+
+    @staticmethod
+    def _resolver(answers):
+        calls = []
+
+        def resolve(host, port, **_kwargs):
+            calls.append(host)
+            address = answers[min(len(calls), len(answers)) - 1]
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "",
+                     (address, port))]
+
+        resolve.calls = calls
+        return resolve
+
+    def _connect(self, proxy, authority):
+        client = socket.create_connection(("127.0.0.1", proxy.port),
+                                          timeout=5)
+        self.addCleanup(client.close)
+        client.sendall(
+            f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n"
+            .encode("ascii"))
+        return client, client.recv(4096)
+
+    def test_loopback_private_link_local_and_metadata_are_refused(self):
+        proxy = self._proxy()
+        for authority in ("127.0.0.1:443", "[::1]:443", "10.0.0.7:443",
+                          "169.254.169.254:443", "[fe80::1]:443"):
+            with self.subTest(authority=authority):
+                _client, reply = self._connect(proxy, authority)
+                self.assertIn(b" 403 ", reply)
+                self.assertNotIn(b" 200 ", reply)
+
+    def test_a_dns_answer_that_turns_private_never_connects(self):
+        connected = []
+
+        def connector(address, timeout=None):
+            connected.append(address)
+            raise AssertionError("a disallowed destination was connected")
+
+        resolver = self._resolver(["127.0.0.1", "93.184.216.34"])
+        proxy = self._proxy(resolve=resolver, connect=connector)
+        _client, reply = self._connect(proxy, "public.test:443")
+        self.assertIn(b" 403 ", reply)
+        self.assertEqual(connected, [])
+        self.assertEqual(resolver.calls, ["public.test"])
+
+    def test_no_request_reaches_a_local_listener(self):
+        listener = socket.create_server(("127.0.0.1", 0))
+        self.addCleanup(listener.close)
+        listener.setblocking(False)
+        proxy = self._proxy()
+        _client, reply = self._connect(
+            proxy, f"127.0.0.1:{listener.getsockname()[1]}")
+        self.assertIn(b" 403 ", reply)
+        with self.assertRaises(BlockingIOError):
+            listener.accept()
+
+    def test_the_tunnel_uses_the_address_it_validated(self):
+        connected = []
+        resolver = self._resolver(["93.184.216.34", "127.0.0.1"])
+
+        def connector(address, timeout=None):
+            connected.append(address)
+            client_end, peer = socket.socketpair()
+            self.addCleanup(peer.close)
+            return client_end
+
+        proxy = self._proxy(resolve=resolver, connect=connector)
+        _client, reply = self._connect(proxy, "public.test:443")
+        self.assertIn(b" 200 ", reply)
+        self.assertEqual(connected, [("93.184.216.34", 443)])
+        self.assertEqual(resolver.calls, ["public.test"])
+
+    def test_non_connect_and_non_443_are_refused(self):
+        proxy = self._proxy()
+        client = socket.create_connection(("127.0.0.1", proxy.port),
+                                          timeout=5)
+        self.addCleanup(client.close)
+        client.sendall(b"GET http://127.0.0.1/ HTTP/1.1\r\nHost: x\r\n\r\n")
+        self.assertIn(b" 403 ", client.recv(4096))
+        _client, reply = self._connect(proxy, "example.test:8443")
+        self.assertIn(b" 403 ", reply)
+
+
+class RequestGuardTests(unittest.TestCase):
+    """Every request type is refused before the tunnel is requested."""
+
+    def test_public_https_continues_and_private_destinations_abort(self):
+        guard = site_evidence._request_guard()
+
+        def public(url):
+            if "127.0.0.1" in url or "169.254" in url or "fe80" in url:
+                raise HarnessError("site evidence refused: non-public")
+            return "example.test"
+
+        with mock.patch.object(site_evidence, "_public_https", public), \
+                mock.patch.object(site_evidence, "emit"):
+            allowed = _FakeRoute("https://example.test/app.js")
+            guard(allowed)
+            self.assertEqual(allowed.outcome, "continue")
+            for url in ("https://127.0.0.1/x", "https://169.254.169.254/",
+                        "http://example.test/", "https://[fe80::1]/"):
+                route = _FakeRoute(url)
+                guard(route)
+                self.assertTrue(route.outcome.startswith("abort:"), url)
+            data = _FakeRoute("data:image/png;base64,AA")
+            guard(data)
+            self.assertEqual(data.outcome, "continue")
+
+    def test_a_refused_host_is_not_resolved_again(self):
+        guard = site_evidence._request_guard()
+        calls = []
+
+        def public(url):
+            calls.append(url)
+            raise HarnessError("site evidence refused: non-public")
+
+        with mock.patch.object(site_evidence, "_public_https", public), \
+                mock.patch.object(site_evidence, "emit"):
+            first = _FakeRoute("https://private.test/a")
+            second = _FakeRoute("https://private.test/b")
+            guard(first)
+            guard(second)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(first.outcome, "abort:blockedbyclient")
+        self.assertEqual(second.outcome, "abort:blockedbyclient")
+
+
+class EgressWiringTests(unittest.TestCase):
+    def test_the_browser_is_forced_through_the_validated_proxy(self):
+        page = _Page(body="rendered")
+        record = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            _render(page, tmp, record=record)
+        chromium = record["playwright"].chromium
+        browser = chromium.browser
+
+        self.assertEqual(chromium.launch_kwargs["proxy"]["bypass"],
+                         "<-loopback>")
+        self.assertTrue(chromium.launch_kwargs["proxy"]["server"]
+                        .startswith("http://127.0.0.1:"))
+        self.assertEqual(browser.context_kwargs["service_workers"], "block")
+        self.assertEqual(browser.context.route_pattern, "**/*")
+        self.assertTrue(callable(browser.context.route_handler))
 
 
 if __name__ == "__main__":

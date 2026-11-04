@@ -4,13 +4,23 @@ A static fetch cannot see a client-rendered progress indicator, an active mode
 button, or the controls a user actually gets.  This module renders one public
 HTTPS page in a headless Chromium, captures the visible text plus targeted DOM
 facts, exercises the on-grid/off-grid mode controls when present, and writes a
-screenshot.  It is bounded to one page and never follows a redirect to a
-private address.
+screenshot.  It is bounded to one page.
+
+The network boundary is enforced for the whole browser session, not only the
+initial URL.  Chromium runs behind a loopback CONNECT proxy that resolves each
+destination once, requires every answer to be globally public, and opens the
+tunnel to that validated address -- so a redirect, iframe, script, image,
+fetch, or a DNS answer that changes between check and connection cannot reach
+loopback, private, link-local, reserved, or metadata addresses.  Port 443 is
+the only tunnel and HTTPS the only scheme; a route guard refuses a disallowed
+request before the browser even asks the proxy.
 """
 from __future__ import annotations
 
 import re
+import select
 import socket
+import threading
 import time
 import urllib.parse
 from datetime import datetime, timezone
@@ -158,6 +168,239 @@ def evidence_summary(evidence: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+#: Largest CONNECT head accepted from the browser.  A real one is a few
+#: hundred bytes; the cap keeps a hostile request from growing memory.
+_MAX_TUNNEL_HEAD = 64 * 1024
+
+
+def _public_addresses(host, port=443, resolve=None):
+    """Resolve *host* once and return every answer, all globally public.
+
+    The same predicate the fetch lane uses (:mod:`harness.web`), applied to one
+    resolution whose answers the caller then connects to.  Resolving once and
+    connecting to that exact answer is what makes the boundary immune to a DNS
+    reply that changes between the check and the connection.
+    """
+    from .web import _validate_public_addresses
+
+    resolver = resolve or socket.getaddrinfo
+    try:
+        infos = resolver(host, port, type=socket.SOCK_STREAM)
+    except Exception as exc:  # noqa: BLE001 - a DNS failure is a refusal
+        raise HarnessError(
+            f"site evidence refused: DNS resolution failed for '{host}': "
+            f"{exc}") from exc
+    addresses = []
+    for info in infos or []:
+        sockaddr = info[4] if len(info) > 4 else None
+        address = sockaddr[0] if sockaddr else None
+        if address:
+            addresses.append(address)
+    return _validate_public_addresses(host, addresses)
+
+
+def _split_authority(authority):
+    """Split ``host[:port]`` from a CONNECT line, including ``[v6]:port``."""
+    authority = (authority or "").strip()
+    if authority.startswith("["):
+        end = authority.find("]")
+        if end < 0:
+            raise ValueError("unterminated IPv6 literal")
+        host = authority[1:end]
+        rest = authority[end + 1:]
+        if rest and not rest.startswith(":"):
+            raise ValueError("malformed authority")
+        return host, int(rest[1:]) if rest else 443
+    host, sep, port = authority.rpartition(":")
+    if not sep:
+        return authority, 443
+    return host, int(port)
+
+
+class _ValidatedEgressProxy:
+    """A loopback CONNECT proxy that validates and pins every destination.
+
+    Chromium is pointed at this proxy for the whole session, with the implicit
+    localhost bypass disabled, so redirects, iframes, scripts, images and
+    fetches all arrive here.  A CONNECT is refused unless the authority is
+    hostname-or-IP on port 443, every resolved answer is globally public, and
+    the tunnel opens to that validated answer rather than being re-resolved by
+    the browser.  Nothing outside the proxy can be reached.
+    """
+
+    def __init__(self, *, resolve=None, connect=None):
+        self._resolve = resolve or socket.getaddrinfo
+        self._connect = connect or socket.create_connection
+        self._server = socket.create_server(("127.0.0.1", 0))
+        self.port = self._server.getsockname()[1]
+        self._closed = threading.Event()
+        self._workers = []
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    @property
+    def server_url(self):
+        return f"http://127.0.0.1:{self.port}"
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        self.close()
+        return False
+
+    def close(self):
+        self._closed.set()
+        try:
+            self._server.close()
+        except OSError:
+            pass
+        self._thread.join(timeout=2)
+        for worker in list(self._workers):
+            worker.join(timeout=1)
+
+    def _serve(self):
+        while not self._closed.is_set():
+            try:
+                client, _address = self._server.accept()
+            except OSError:
+                return
+            worker = threading.Thread(target=self._handle, args=(client,),
+                                      daemon=True)
+            self._workers.append(worker)
+            worker.start()
+
+    @staticmethod
+    def _read_head(client):
+        """Read one request head, bounded; None when the peer sends nothing."""
+        buffer = b""
+        while b"\r\n\r\n" not in buffer:
+            chunk = client.recv(4096)
+            if not chunk:
+                return None
+            buffer += chunk
+            if len(buffer) > _MAX_TUNNEL_HEAD:
+                raise ValueError("request head too large")
+        return buffer.split(b"\r\n\r\n", 1)[0].decode("latin-1")
+
+    @staticmethod
+    def _refuse(client, reason):
+        body = reason.encode("ascii", "replace")
+        client.sendall(
+            b"HTTP/1.1 403 Forbidden\r\n"
+            b"Content-Type: text/plain; charset=ascii\r\n"
+            b"Content-Length: " + str(len(body)).encode("ascii") +
+            b"\r\nConnection: close\r\n\r\n" + body)
+
+    def _handle(self, client):
+        upstream = None
+        try:
+            client.settimeout(10)
+            head = self._read_head(client)
+            if head is None:
+                return
+            first_line = head.split("\r\n", 1)[0]
+            parts = first_line.split()
+            if len(parts) != 3 or parts[0].upper() != "CONNECT":
+                self._refuse(client, "only HTTPS tunnels are allowed")
+                return
+            try:
+                host, port = _split_authority(parts[1])
+            except ValueError:
+                self._refuse(client, "malformed destination")
+                return
+            if not host or port != 443:
+                self._refuse(client, "only port 443 may be reached")
+                return
+            try:
+                addresses = _public_addresses(host, port, self._resolve)
+            except HarnessError:
+                self._refuse(client, "destination is not public")
+                return
+            upstream = self._connect((addresses[0], port), timeout=10)
+            client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            self._relay(client, upstream)
+        except Exception:  # noqa: BLE001 - one tunnel never kills the proxy
+            pass
+        finally:
+            for sock in (upstream, client):
+                if sock is None:
+                    continue
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+
+    @staticmethod
+    def _relay(client, upstream):
+        """Copy bytes both ways until either side closes or goes idle."""
+        peers = {client: upstream, upstream: client}
+        while True:
+            try:
+                readable, _writable, errored = select.select(
+                    list(peers), [], list(peers), 30)
+            except OSError:
+                return
+            if errored:
+                return
+            if not readable:
+                return  # idle beyond the bound: close, never grow forever
+            for source in readable:
+                data = source.recv(65536)
+                if not data:
+                    return
+                peers[source].sendall(data)
+
+
+def _request_guard():
+    """A route handler that revalidates every browser request.
+
+    The proxy is the enforcement -- it pins the address it validated -- and
+    this guard refuses a disallowed URL before the tunnel is even requested,
+    so a redirect, iframe, script, image, fetch or popup aimed at a private
+    destination ends as a blocked request rather than a silent load.  The
+    verdict is cached per host: a page with fifty images resolves once.
+    """
+    verdicts = {}
+
+    def guard(route):
+        try:
+            url = route.request.url
+            parsed = urllib.parse.urlsplit(url)
+            scheme = (parsed.scheme or "").lower()
+            if scheme in ("data", "blob", "about"):
+                route.continue_()
+                return
+            host = (parsed.hostname or "").lower()
+            if scheme != "https" or not host:
+                emit("site_evidence", phase="blocked", url=url,
+                     reason="only https requests are rendered")
+                route.abort("blockedbyclient")
+                return
+            if host in verdicts:
+                reason = verdicts[host]
+            else:
+                try:
+                    _public_https(url)
+                except HarnessError as exc:
+                    reason = verdicts[host] = str(exc)
+                else:
+                    reason = verdicts[host] = None
+            if reason is not None:
+                emit("site_evidence", phase="blocked", url=url,
+                     reason=reason)
+                route.abort("blockedbyclient")
+                return
+            route.continue_()
+        except Exception:  # noqa: BLE001 - an unhandled route hangs the page
+            try:
+                route.abort("failed")
+            except Exception:  # noqa: BLE001
+                pass
+
+    return guard
+
+
 def render_site_evidence(
     url: str,
     *,
@@ -182,14 +425,22 @@ def render_site_evidence(
     title = ""
     text = ""
     screenshot = ""
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+    with sync_playwright() as p, _ValidatedEgressProxy() as proxy:
+        browser = p.chromium.launch(
+            headless=True,
+            # Every request -- redirects and subresources included -- is
+            # forced through the validated proxy.  `<-loopback>` cancels
+            # Chromium's implicit localhost bypass, which would otherwise
+            # let a loopback destination skip the proxy entirely.
+            proxy={"server": proxy.server_url, "bypass": "<-loopback>"})
         try:
             context = browser.new_context(
                 viewport={"width": 1280, "height": 900},
                 geolocation={"latitude": 30.2672, "longitude": -97.7431},
                 permissions=["geolocation"],
+                service_workers="block",
             )
+            context.route("**/*", _request_guard())
             page = context.new_page()
             page.goto(url, wait_until="domcontentloaded",
                       timeout=int(timeout * 1000))
