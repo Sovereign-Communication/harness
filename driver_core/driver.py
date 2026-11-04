@@ -76,7 +76,7 @@ class StepResult:
 
     def __init__(self, step_id, *, ok, stopped_at, reason=None, detail="",
                  capture=None, agreement=None, decision=None, execution=None,
-                 receipt=None, cost=0.0, needs=()):
+                 receipt=None, cost=0.0):
         self.step_id = step_id
         self.ok = ok
         self.stopped_at = stopped_at
@@ -104,7 +104,6 @@ class StepResult:
             "execution": self.execution.to_dict() if self.execution else None,
             "receipt": self.receipt,
             "cost_usd": round(self.cost, 9),
-            "needs": list(self.needs),
         }
 
     def __repr__(self):
@@ -227,8 +226,7 @@ class Driver:
         try:
             capture = self._capture(target, prefer)
         except PerceptionUnavailable as exc:
-            return self._stop(step_id, "capture", "no_capture", str(exc),
-                              needs=self._capture_needs())
+            return self._stop(step_id, "capture", "no_capture", str(exc))
         self.audit.append(KIND_CAPTURE, step_id=step_id, **capture.summary())
 
         # 2 + 3. extract and tally

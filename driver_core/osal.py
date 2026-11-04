@@ -46,7 +46,6 @@ import struct
 import subprocess
 import sys
 import tempfile
-import threading
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -844,8 +843,7 @@ def http_get(url, *, timeout=20, max_bytes=FETCH_MAX_BYTES):
     return status, body.decode(charset, "replace")
 
 
-def send_input(kind, value=None, *, target=None,
-               backend=USE_REGISTERED_INPUT_BACKEND):
+def send_input(kind, value=None, *, target=None):
     """Perform one synthetic input. Returns ``(ok, detail)``.
 
     Three refusals, in this order, each named so the operator can tell which
