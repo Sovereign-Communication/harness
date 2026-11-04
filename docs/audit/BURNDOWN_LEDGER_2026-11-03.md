@@ -408,3 +408,32 @@ scoring and attach the receipts. #272 remains open until a merge SHA.
 
 CI read at the head carrying this row: recorded on #272 as-is; no protection
 was relaxed.
+
+Re-verified at `0234946` on 2026-11-04, with no code redo: the enforcement is
+still on the renderer path -- `harness/site_evidence.py:39` validates the
+initial HTTPS URL, `:220` is the loopback CONNECT proxy with one-resolution
+address pinning, `:355` revalidates every browser request, `:428` launches
+Chromium behind that proxy, `:441` blocks service workers and `:443` installs
+`context.route("**/*")`. Focused evidence: `tests.test_site_evidence` 23 OK
+(`EgressProxyTests:435`, `RequestGuardTests:526`, `EgressWiringTests:571`) and
+`tests.test_web` 78 OK, 101 total. The module docstring now states exactly that
+boundary. #426 remains open until a merge SHA; there is no new code or
+follow-up disguised as a landing.
+
+## 2026-11-04 - #273 S4 queue note: blocked before code
+
+The recorded S4 re-scope (issue comment 2026-11-03T01:24:32Z) defers the NL
+endpoint with #271 and requires a manifest-declared launch plan,
+assignment-bound preauthorization, a fail-closed pre-launch checklist and one
+real queue item launched under a frozen protocol. The tip has no launch-plan
+path: `harness/server.py:924` `run_driver_task` accepts goal/target/schema and
+max steps; `:1167` `RUNNERS` has no `/driver/nl` and `:2249` only dispatches
+the driver task; `harness/task_lifecycle.py:222` sends only goal, max_steps and
+target; `harness/mission_record.py:209` validates a mission spec with no step
+list. There is no `missions/` directory in this worktree and no operator queue
+pack or frozen launch protocol. Named follow-up on #273: the operator supplies
+that pack and freeze; #271 stays deferred. No implementation is claimed, and
+this is a disposition, not a pass.
+
+Re-checked once this session: `tools/harness-verify` absent, no
+`route-contract` reference, no `generality` specimen; H1/H2 stay parked.
