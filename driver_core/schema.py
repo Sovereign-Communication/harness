@@ -137,9 +137,6 @@ class Schema:
             raise SchemaError(
                 f"schema {self.id!r} declares no field {name!r}") from None
 
-    def required_names(self):
-        return tuple(f.name for f in self.fields if f.required)
-
     def field_names(self):
         return tuple(f.name for f in self.fields)
 

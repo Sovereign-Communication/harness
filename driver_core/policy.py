@@ -22,10 +22,11 @@ comparisons; it does not own the numbers, because the right confidence bar
 for "click a button" is not obviously the right bar for "read a field".
 """
 from .consensus import AGREED, DISAGREED, INSUFFICIENT
-from .errors import AgreementError, DecisionError
+from .verdicts import PASS, REVIEW, Verdict
 
-# Gate verdicts.
-PASS = "pass"
+# This gate's own refusal. Distinct values, distinct remedies: ``blocked``
+# names *this* gate's refusal, while ``pass`` and ``review`` are the shared
+# vocabulary, owned by :mod:`driver_core.verdicts` and re-exported here.
 BLOCKED = "blocked"
 
 # Why a state was blocked. Distinct values, distinct remedies.
@@ -75,12 +76,21 @@ def check_agreement(agreement, *, quorum, min_agreement, min_answering=None):
                       f"agreed on {len(agreement.agreed_fields)} field(s)")
 
 
-def check_decision(decision, *, threshold, require_stable=True):
+def check_decision(decision, *, threshold, require_stable=True,
+                   action_class=None, ladder=None):
     """Decide whether a recommendation may be executed.
 
     Order matters: usability is checked before confidence, because an
     unusable envelope has no confidence to compare and reporting it as
     "low confidence" would send an operator looking in the wrong place.
+
+    The per-action ladder runs *last*, after every other gate has passed,
+    and only when one is handed in. It can therefore only raise the bar:
+    nothing this function refused before can pass with a ladder in play,
+    and without one the verdicts are exactly the ones above. ``ladder`` maps
+    a declared consequence class to its rung; ``action_class`` is the
+    decided action's class, and a class with no rung keeps the global
+    ``threshold`` alone.
     """
     if not decision.usable:
         return GateResult(
@@ -110,24 +120,48 @@ def check_decision(decision, *, threshold, require_stable=True):
                 f"the application is still in flight (P(stable)={stable}); "
                 f"acting now would act on a transient state")
 
-    return GateResult(PASS, None,
-                      f"confidence {decision.confidence} at or above "
-                      f"{threshold:g}")
+    rung = None
+    if ladder is not None and action_class is not None:
+        rung = ladder.get(action_class)
+    if rung is None:
+        return GateResult(PASS, None,
+                          f"confidence {decision.confidence} at or above "
+                          f"{threshold:g}")
+    if decision.confidence >= rung.act:
+        return GateResult(
+            PASS, None,
+            f"confidence {decision.confidence} clears the {rung.act:g} act "
+            f"rung for {action_class}")
+    if decision.confidence >= rung.confirm:
+        return GateResult(
+            REVIEW, LOW_CONFIDENCE,
+            f"confidence {decision.confidence} is below the {rung.act:g} act "
+            f"rung for {action_class} but at its {rung.confirm:g} "
+            f"confirmation rung: a confirmation step is required before this "
+            f"action is taken")
+    return GateResult(
+        BLOCKED, LOW_CONFIDENCE,
+        f"confidence {decision.confidence} is below the {rung.act:g} act rung "
+        f"for {action_class} and below its {rung.confirm:g} confirmation "
+        f"rung")
 
 
-class GateResult:
-    """One gate's verdict."""
+class GateResult(Verdict):
+    """One gate's verdict over the state or the decision.
 
-    __slots__ = ("verdict", "reason", "detail")
+    Carries a machine-readable reason code beside the verdict, so a caller
+    can tell a shortfall from a disagreement and act accordingly. The
+    ``passed`` and ``confirmable`` answers are the shared shape's
+    (:class:`driver_core.verdicts.Verdict`): a block here is never
+    confirmable, and the stability and usability gates answer properties of
+    the situation that no confirmation changes.
+    """
+
+    __slots__ = ("reason",)
 
     def __init__(self, verdict, reason, detail):
-        self.verdict = verdict
+        super().__init__(verdict, detail)
         self.reason = reason
-        self.detail = detail
-
-    @property
-    def passed(self):
-        return self.verdict == PASS
 
     def to_dict(self):
         return {"verdict": self.verdict, "reason": self.reason,
@@ -138,17 +172,3 @@ class GateResult:
 
     def __repr__(self):
         return f"GateResult({self.verdict!r}, {self.reason!r})"
-
-
-def require_agreement(result):
-    """Raise a named failure for a blocked agreement gate."""
-    if not result.passed:
-        raise AgreementError(result.reason, result.detail)
-    return result
-
-
-def require_decision(result):
-    """Raise a named failure for a blocked decision gate."""
-    if not result.passed:
-        raise DecisionError(f"{result.reason}: {result.detail}")
-    return result

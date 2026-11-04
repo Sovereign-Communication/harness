@@ -40,7 +40,7 @@ and the audit log records it as a first-class event.
 """
 import uuid
 
-from . import osal, policy
+from . import policy
 from .actions import DEFAULT_VOCABULARY
 from .audit import (
     KIND_CAPTURE, KIND_ESCALATION, KIND_EXTRACTION, KIND_REFUSAL, AuditLog,
@@ -49,13 +49,14 @@ from .audit import (
 from .budget import Budget
 from .consensus import tally
 from .config import Settings, default_audit_path, load_settings
-from .errors import (PerceptionUnavailable, PersistentStateUnavailable,
-                     VocabularyError)
+from .errors import (
+    ConsentError, OsalError, PerceptionUnavailable, VocabularyError,
+)
 from .executor import Executor
-from .executor_registry import INPUT_BACKED, build_driver_registry, executability
+from .executor_registry import build_driver_registry
 from .extractors import ExtractorPool
 from .jev_client import JevClient
-from .perception import select_capture
+from .perception import GUI, select_capture
 from .states import SCREEN_SCHEMA
 from .wiring import configured_pools, configured_sources
 
@@ -70,12 +71,11 @@ class StepResult:
     """
 
     __slots__ = ("step_id", "ok", "stopped_at", "reason", "detail", "capture",
-                 "agreement", "decision", "execution", "receipt", "cost",
-                 "needs")
+                 "agreement", "decision", "execution", "receipt", "cost")
 
     def __init__(self, step_id, *, ok, stopped_at, reason=None, detail="",
                  capture=None, agreement=None, decision=None, execution=None,
-                 receipt=None, cost=0.0, needs=()):
+                 receipt=None, cost=0.0):
         self.step_id = step_id
         self.ok = ok
         self.stopped_at = stopped_at
@@ -87,9 +87,6 @@ class StepResult:
         self.execution = execution
         self.receipt = receipt
         self.cost = float(cost or 0.0)
-        #: What would have to exist for this step to get further (a source,
-        #: an input backend, a write switch). Empty on success.
-        self.needs = list(needs)
 
     def to_dict(self):
         """The wire form -- the contract a host adapter serialises."""
@@ -105,7 +102,6 @@ class StepResult:
             "execution": self.execution.to_dict() if self.execution else None,
             "receipt": self.receipt,
             "cost_usd": round(self.cost, 9),
-            "needs": list(self.needs),
         }
 
     def __repr__(self):
@@ -124,7 +120,7 @@ class Driver:
     def __init__(self, *, audit, settings=None, budget=None,
                  vocabulary=DEFAULT_VOCABULARY, pool=None, jev=None,
                  executor=None, sources=None, screen=None, pools=None,
-                 input_backend=osal.USE_REGISTERED_INPUT_BACKEND):
+                 input_backend=None):
         self.settings = settings or load_settings()
         self.budget = budget or Budget(self.settings.run_ceiling_usd,
                                        step_ceiling_usd=self.settings.step_ceiling_usd)
@@ -141,15 +137,6 @@ class Driver:
         # cannot observe rather than a driver that merged the declared
         # sources underneath, and a caller who passes ``pools`` gets exactly
         # the pools they passed.
-        self.sources = list(configured_sources(self.settings)
-                            if sources is None else sources)
-        if screen is not None and not any(s is screen for s in self.sources):
-            # A screen source passed separately joins the one list rather
-            # than becoming a second handle onto it. Two handles are how the
-            # same pixels got captured twice and the vision tier got reported
-            # twice; ``screen`` below is now derived, not stored.
-            self.sources.append(screen)
-
         #: The fallback pool, used for a target whose class is undeclared.
         self.pool = pool or ExtractorPool([])
         #: Pools keyed by declared target class. This is where "three of the
@@ -157,9 +144,28 @@ class Driver:
         #: extraction side: a class is only ever handed the pool that
         #: declared it, so a vision pool is not a candidate for a ``dom``
         #: target rather than merely being discouraged.
+        #
+        # Built before the sources on purpose: whether the screen source
+        # should take a screenshot is a fact about the pool that will read
+        # the capture, and asking the pool afterwards would mean either
+        # capturing and discarding, or a second place that has to know what
+        # a vision pool is.
         self.pools = (configured_pools(self.settings, budget=self.budget,
                                        audit=self.audit)
                       if pools is None else dict(pools))
+
+        gui_pool = self.pools.get(GUI)
+        self.sources = list(
+            configured_sources(
+                self.settings,
+                reads_captures=(gui_pool is None or gui_pool.reads_captures))
+            if sources is None else sources)
+        if screen is not None and not any(s is screen for s in self.sources):
+            # A screen source passed separately joins the one list rather
+            # than becoming a second handle onto it. Two handles are how the
+            # same pixels got captured twice and the vision tier got reported
+            # twice; ``screen`` below is now derived, not stored.
+            self.sources.append(screen)
 
         self.jev = jev or JevClient(self.settings, budget=self.budget,
                                     audit=self.audit)
@@ -176,18 +182,11 @@ class Driver:
         if executor is not None:
             same_chain(getattr(executor, "audit", None), self.audit,
                        type(executor).__name__)
-        if (input_backend is osal.USE_REGISTERED_INPUT_BACKEND
-                and self.settings.allow_write
-                and self.settings.native_input_enabled):
-            # The native backend is never installed as process-global state.
-            # Each driver gets only the backend its own explicit settings
-            # authorize, so a second driver cannot inherit this capability.
-            input_backend = osal.native_input_backend()
         self.executor = executor or Executor(
             vocabulary=vocabulary,
             registry=build_driver_registry(
-                allow_write=self.settings.allow_write,
-                input_backend=input_backend),
+                input_backend=input_backend,
+                allow_write=self.settings.allow_write),
             dry_run=self.settings.dry_run,
             audit=self.audit)
 
@@ -218,12 +217,12 @@ class Driver:
         try:
             capture = self._capture(target, prefer)
         except PerceptionUnavailable as exc:
-            return self._stop(step_id, "capture", "no_capture", str(exc),
-                              needs=self._capture_needs())
+            return self._stop(step_id, "capture", "no_capture", str(exc))
         self.audit.append(KIND_CAPTURE, step_id=step_id, **capture.summary())
 
         # 2 + 3. extract and tally
-        votes = self._pool_for(capture).run(capture, schema)
+        pool = self._pool_for(capture)
+        votes = pool.run(capture, schema)
         agreement = tally(votes, schema, quorum=self.settings.quorum,
                           min_agreement=self.settings.min_agreement)
         receipt = agreement.receipt(schema.identity(), step_id)
@@ -239,21 +238,54 @@ class Driver:
                               receipt=receipt, cost=agreement.cost)
 
         # 5. decide
-        decision = self.jev.decide(agreement.state, self.vocabulary,
-                                   receipt=receipt, step_id=step_id)
+        decision = self.jev.decide(
+            agreement.state, self.vocabulary, receipt=receipt,
+            step_id=step_id,
+            # What this build can actually do, not merely what it declares. A
+            # model offered an action with no handler can only ever be refused,
+            # and a refusal the model had no way to avoid is a fault in what it
+            # was offered rather than in what it chose.
+            performable=self.executor.registry.names(),
+            # The frame history's judgment, when the vision tier has one.
+            # The decision tier's stability guard is fed compared captures
+            # instead of re-asking (and re-billing) a single-frame guess;
+            # ``None`` leaves the question in place, untouched.
+            stability=pool.stability())
 
         # 6. gate on the decision
+        proposed = self._proposed(decision)
         decision_gate = policy.check_decision(
             decision, threshold=self.settings.confidence_threshold,
-            require_stable=require_stable)
+            require_stable=require_stable,
+            # The per-action ladder, when the operator opted in: the decided
+            # action's consequence class selects the rung, which can only
+            # raise the bar the threshold already sets. Without the flag the
+            # ladder is not passed and the gate is exactly what it was.
+            action_class=(proposed.action_class if proposed is not None
+                          else None),
+            ladder=(self.settings.confidence_ladder
+                    if self.settings.jev_ladder else None))
         if not decision_gate.passed:
+            if not (decision_gate.confirmable
+                    and self._confirmed(proposed, params, consent)):
+                self.audit.append(KIND_ESCALATION, step_id=step_id,
+                                  reason=decision_gate.reason,
+                                  detail=decision_gate.detail)
+                return self._stop(step_id, "decision", decision_gate.reason,
+                                  decision_gate.detail, capture=capture,
+                                  agreement=agreement, decision=decision,
+                                  receipt=receipt, cost=decision.cost)
+            # The ladder's "or a confirmation step": a consent bound to this
+            # exact proposed (action, params) satisfies the confirmation
+            # rung below the act rung, so the step proceeds. The record says
+            # a human was asked -- a below-rung action must never read as a
+            # clean pass in the log -- and every gate above stays untouched:
+            # a confirmation substitutes for the confidence rung and for
+            # nothing else.
             self.audit.append(KIND_ESCALATION, step_id=step_id,
-                              reason=decision_gate.reason,
-                              detail=decision_gate.detail)
-            return self._stop(step_id, "decision", decision_gate.reason,
-                              decision_gate.detail, capture=capture,
-                              agreement=agreement, decision=decision,
-                              receipt=receipt, cost=decision.cost)
+                              action=proposed.name, reason="review_confirmed",
+                              detail=f"consent satisfied the confirmation "
+                                     f"rung: {decision_gate.detail}")
 
         # 7. execute -- no model past this line
         #    A model naming an action the vocabulary does not declare is a
@@ -268,30 +300,52 @@ class Driver:
                               capture=capture, agreement=agreement,
                               decision=decision, receipt=receipt,
                               cost=decision.cost)
-        if (action.requires_consent and consent is None
-                and action.name in INPUT_BACKED):
-            return self._stop(
-                step_id, "execution", "execution_refused",
-                f"action {action.name!r} is {action.action_class} and no "
-                "consent was supplied", capture=capture,
-                agreement=agreement, decision=decision, receipt=receipt,
-                cost=decision.cost,
-                needs=executability(action, self.executor.registry)[1])
+        guard_cost = 0.0
         try:
+            # The action the consent names is compared *before* the decided
+            # action's parameters are judged. Both are real faults, but only
+            # one of them is the caller's to fix, and a wrong-action consent
+            # reported as a missing parameter sends the operator to edit the
+            # wrong thing. The message keeps its single owner: this delegates
+            # to the check the executor already performs.
+            if (consent is not None and action.requires_consent
+                    and consent.action not in ("*", action.name)):
+                self.executor.check_consent(action, {}, consent)
+            if self.settings.jev_guardrails and action.requires_consent:
+                # The guardrail pack judges the proposed action against the
+                # observed screen at the execution gate. It gates acting,
+                # never observing: a read-only action is safe to repeat, so
+                # the pack is not asked about one. Anything short of a pass
+                # is a refusal with the verdict named -- except a review,
+                # which the same bound consent that satisfies the ladder's
+                # confirmation rung may satisfy here. A block is never
+                # confirmable: the remedy for a hazard is a different
+                # action, not a braver yes.
+                verdict = self.jev.guard(action.name, agreement.state,
+                                         step_id=step_id)
+                guard_cost = verdict.cost
+                if not verdict.passed:
+                    if not (verdict.confirmable
+                            and self._confirmed(action, params, consent)):
+                        return self._stop(
+                            step_id, "execution", "execution_refused",
+                            f"guardrail {verdict.verdict}: {verdict.detail}",
+                            capture=capture, agreement=agreement,
+                            decision=decision, receipt=receipt,
+                            cost=decision.cost + guard_cost)
+                    self.audit.append(
+                        KIND_ESCALATION, step_id=step_id, action=action.name,
+                        reason="review_confirmed",
+                        detail=f"consent satisfied the guardrail review: "
+                               f"{verdict.detail}")
             execution = self.executor.execute(
                 action.name, _params_for(action, params),
                 consent=consent, step_id=step_id)
-        except PersistentStateUnavailable:
-            # Durable replay-state failures must reach the REST boundary as
-            # server errors, not as ordinary action refusals.
-            raise
         except Exception as exc:
             return self._stop(step_id, "execution", "execution_refused", str(exc),
                               capture=capture, agreement=agreement,
                               decision=decision, receipt=receipt,
-                              cost=decision.cost,
-                              needs=executability(
-                                  action, self.executor.registry)[1])
+                              cost=decision.cost + guard_cost)
 
         # An executor that refused did not do the thing. The pipeline
         # reaching the end is not the same as the action having happened,
@@ -307,15 +361,13 @@ class Driver:
                               execution.detail, capture=capture,
                               agreement=agreement, decision=decision,
                               execution=execution, receipt=receipt,
-                              cost=decision.cost,
-                              needs=executability(
-                                  action, self.executor.registry)[1])
+                              cost=decision.cost + guard_cost)
 
         return StepResult(step_id, ok=True, stopped_at="executed",
                           capture=capture, agreement=agreement,
                           decision=decision, execution=execution,
                           receipt=receipt,
-                          cost=agreement.cost + decision.cost)
+                          cost=agreement.cost + decision.cost + guard_cost)
 
     @property
     def screen(self):
@@ -350,32 +402,48 @@ class Driver:
             return self.pools[target_class]
         return self.pool
 
-    def _capture_needs(self):
-        """What a ``no_capture`` stop is waiting on, in operator terms.
+    def _proposed(self, decision):
+        """The decided action's declaration, or ``None`` for a name the
+        vocabulary does not declare.
 
-        Two independent gaps, both named: nothing serves the target (so
-        configure a source), and -- because a capture is only the first half
-        of acting -- any declared action that could not execute today.
+        ``None`` means the confidence ladder does not refine this decision
+        and no confirmation can be established -- the right answers for a
+        name that is refused at the execution gate exactly as before: a
+        class nothing was declared for is not one to invent a threshold or
+        a confirmation for here.
         """
-        configured = sorted({s.name for s in self.sources}) or ["none"]
-        needs = [
-            "configure a perception source for the target class (set "
-            "DRIVER_CLI_COMMAND, DRIVER_MCP_COMMAND with DRIVER_MCP_TOOL, "
-            "DRIVER_DOM_URL, or DRIVER_SCREEN=1); configured now: "
-            + ", ".join(configured)]
-        blocked = []
-        for action in self.vocabulary.actions():
-            if action.requires_consent:
-                ok, why = executability(action, self.executor.registry)
-                if not ok:
-                    blocked.append(action.name)
-        if blocked:
-            needs.append(
-                "to act (not just observe): register an input backend "
-                "(driver_core.osal.register_input_backend) and/or set "
-                "DRIVER_ALLOW_WRITE=1; declared but not executable now: "
-                + ", ".join(blocked))
-        return needs
+        try:
+            return self.vocabulary.resolve(decision.recommended_action)
+        except VocabularyError:
+            return None
+
+    def _confirmed(self, action, params, consent):
+        """Whether a human's consent confirms this exact proposed action.
+
+        The confirmation *is* the executor's consent check and nothing else:
+        the matching rules have one owner, and this delegates to them exactly
+        as the wrong-action check does. "Confirmed" therefore means what the
+        consent machinery means -- granted, bound to this action name and
+        these resolved parameters, unspent for an irreversible -- and a
+        proposal that cannot even be resolved is not one that was confirmed.
+
+        Only a consent-requiring action can be confirmed. An action that
+        needs no consent cannot borrow one, so a review band on a read-only
+        action stays a stop rather than being waved through by a consent
+        that was never needed in the first place.
+        """
+        if action is None or consent is None or not action.requires_consent:
+            return False
+        try:
+            _, resolved = self.executor.resolve(action.name, params or {})
+            self.executor.check_consent(action, resolved, consent)
+        except (VocabularyError, ConsentError, OsalError):
+            # Each of these is a declared refusal of the machinery being
+            # asked -- undeclared params, an unresolvable path, a consent
+            # bound elsewhere -- and all three answer the same way here:
+            # nothing was confirmed, so the stop stands as it did before.
+            return False
+        return True
 
     def _stop(self, step_id, stopped_at, reason, detail, **kwargs):
         self.audit.append(KIND_REFUSAL, step_id=step_id, stopped_at=stopped_at,

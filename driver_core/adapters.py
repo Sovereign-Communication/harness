@@ -99,9 +99,15 @@ class ScreenSource:
 
     serves = (GUI,)
 
-    def __init__(self, *, encoder=None):
+    def __init__(self, *, encoder=None, pixels=True):
         self.name = SCREEN_SOURCE
         self._encoder = encoder or _default_encoder
+        #: Whether this source should take a screenshot at all. Set False
+        #: when the pool that will read the capture declares it never
+        #: looks at a payload, which a vision pool does: its extractors
+        #: read the window through the operating system. See
+        #: :attr:`driver_core.extractors.ExtractorPool.reads_captures`.
+        self.pixels = bool(pixels)
 
     def can_serve(self, target):
         # Same rule as StructuredSource, but it cannot be overridden: this is
@@ -111,6 +117,20 @@ class ScreenSource:
         return target.target_class == GUI
 
     def capture(self, target=None):
+        if not self.pixels:
+            # Nothing will read a payload, so there is nothing here worth
+            # photographing. Capturing anyway meant spawning a screenshot
+            # process, writing a file and holding roughly half a megabyte
+            # of base64 in memory on every step, to fingerprint a payload
+            # no consumer reads -- and it made an unrelated environment
+            # variable a precondition for the vision tier working at all.
+            # What that tier actually reads is the window-manager
+            # description, so that is what is observed.
+            described, why = osal.describe_screen()
+            if not described:
+                return Capture(SCREEN_SOURCE, target, None, detail=why)
+            return Capture(SCREEN_SOURCE, target, described,
+                           fingerprint=fingerprint(described))
         path, detail = osal.capture_screen()
         if not path:
             return Capture(SCREEN_SOURCE, target, None, detail=detail)

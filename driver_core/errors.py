@@ -12,14 +12,6 @@ class DriverError(Exception):
     """Base class for every driver-core failure."""
 
 
-class PersistentStateUnavailable(DriverError):
-    """Safety state could not be checked or durably updated."""
-
-
-class ExecutionOutcomeUnknown(PersistentStateUnavailable):
-    """An action succeeded but its durable completion could not be recorded."""
-
-
 class SchemaError(DriverError):
     """A declared schema was malformed, or a state did not satisfy it."""
 
@@ -31,24 +23,6 @@ class VocabularyError(DriverError):
     declare is an action the code cannot consent to, log, or bound. This is
     the single most important refusal in the package.
     """
-
-
-class AgreementError(DriverError):
-    """The extractors did not reach a usable verdict.
-
-    Carries the reason (``insufficient`` or ``disagreed``) so a caller can
-    distinguish "nobody answered" from "they answered differently" -- two
-    failures with completely different remedies.
-    """
-
-    def __init__(self, reason, detail=""):
-        super().__init__(f"{reason}: {detail}" if detail else reason)
-        self.reason = reason
-        self.detail = detail
-
-
-class DecisionError(DriverError):
-    """The decision tier could not produce a usable recommendation."""
 
 
 class ConsentError(DriverError):
@@ -90,3 +64,11 @@ class OsalError(DriverError):
     cannot do it, or the host withheld permission" -- conditions the caller
     can correct, as opposed to retrying.
     """
+
+
+class PersistentStateUnavailable(DriverError):
+    """Safety state could not be checked or durably updated."""
+
+
+class ExecutionOutcomeUnknown(PersistentStateUnavailable):
+    """An action succeeded but its durable completion could not be recorded."""

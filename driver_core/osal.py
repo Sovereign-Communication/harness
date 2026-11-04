@@ -18,39 +18,40 @@ So the rules are boring and total:
   differ, the answer is a named constant and a comment, so a reader learns
   the rule instead of inferring it from a bug.
 
-Screen capture and synthetic input are here for the same reason. Input is
-opt-in and bounded: this package implements exact visible-window focus on
-Windows and refuses kinds it cannot safely perform. Other backends can still
-be supplied by an embedding application. Two reasons, and the second is the
+Screen capture and synthetic input are here for the same reason. Synthetic
+input is *not* implemented here, and that is a decision rather than an
+omission: this package declares which kinds of input exist and refuses
+everything it cannot honestly perform, but the mechanism that moves a mouse
+is supplied by the embedding application. Two reasons, and the second is the
 one that matters:
 
-* **A backend is a capability.** The native implementation is deliberately
-  limited to focusing one uniquely titled visible window. The current click,
-  type, key, scroll and submit parameters do not identify a safe destination,
-  so those requests are refused rather than guessed.
-* **Opt-in controls existence.** The native backend is created only for a
-  driver whose operator enables both ``DRIVER_ALLOW_WRITE`` and
-  ``DRIVER_NATIVE_INPUT``. It is driver-local, not process-global. The
-  explicit registration API remains available to embedding applications.
+* **A backend is a supply chain.** Synthesising input needs platform APIs --
+  ``SendInput`` on Windows, Accessibility on macOS, XTest on Linux -- and each
+  of those arrives as a dependency or as ``ctypes`` against a DLL whose ABI
+  is not yours to depend on. A driver that acts on a machine is the last
+  place to add one.
+* **Registration controls existence.** What this machine is permitted to
+  touch is a policy decision belonging to whoever deploys the driver, not a
+  library default. A host that never registers a clicker cannot have one,
+  which means no bug in this package's consent handling can conjure one.
 
-So :func:`send_input` dispatches only to a backend the host supplied or that
-the operator explicitly enabled for this driver. Missing and unsupported
-paths refuse -- loudly, by name -- rather than appearing to succeed while
-doing nothing.
+So :func:`send_input` is a *declaration* with a pluggable backend. Unregistered
+is the default state, and it refuses -- loudly, by name -- rather than
+appearing to succeed while doing nothing.
 """
 import math
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
-import threading
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 
 from .errors import OsalError
-from .png import SIGNATURE as PNG_SIGNATURE, decodable as png_decodable
-from .png import dimensions as png_dimensions
+from .png import decodable as decodable_png
 
 #: How long a child process may run before it is killed.
 DEFAULT_TIMEOUT = 30
@@ -62,13 +63,6 @@ MAX_CAPTURE_BYTES = 1 << 20
 #: Declared platform support. Anything absent here is refused rather than
 #: attempted, and the refusal says so by name.
 SUPPORTED = ("linux", "darwin", "windows")
-
-# Measured image-request bounds ported from driver-core's current preparation
-# rule: 280..1568 px per side and at least 78,400 total pixels. The longest
-# side sets the pixel ceiling; padding clears the minimum without stretching.
-MAX_IMAGE_SIDE = 1568
-MIN_IMAGE_SIDE = 280
-MIN_IMAGE_PIXELS = MIN_IMAGE_SIDE * MIN_IMAGE_SIDE
 
 #: Suffix for the copy ``atomic_write`` leaves beside the file it replaced.
 #: A mutating action that cannot be undone by hand is a mutating action that
@@ -93,10 +87,6 @@ def platform_name():
     if sys.platform.startswith("linux"):
         return "linux"
     return f"unknown:{sys.platform}"
-
-
-def is_supported():
-    return platform_name() in SUPPORTED
 
 
 def run(argv, *, cwd=None, timeout=DEFAULT_TIMEOUT, env=None, input_text=None,
@@ -192,21 +182,129 @@ class ProcessResult:
 # always a named answer and never an empty file that looks like a blank
 # screen.
 
-def capture_screen():
-    """Capture the screen. Returns ``(path, detail)``; ``path`` may be None.
+#: Measured endpoint bounds: 280..1568 px per side and
+#: 78,400..2,458,624 total pixels -- and since 1568 * 1568 is exactly the
+#: total-pixel ceiling, fitting the per-side cap fits both bounds at the
+#: top. The floor is closed here too (see :func:`fit_target`), so that
+#: *any* capture leaves this module a valid request asset: an
+#: under-minimum capture is padded out to the bounds rather than enlarged,
+#: because enlarging invents pixels and a padded canvas invents nothing.
+MAX_IMAGE_SIDE = 1568
+
+#: The floor of the same bounds: per side, and total pixels (280 * 280).
+#: Docs still say 256, but live 1-bit and RGB PNG probes on 2026-10-14
+#: rejected 279-pixel sides and accepted 280 (including narrow rectangles).
+MIN_IMAGE_SIDE = 280
+MIN_IMAGE_PIXELS = 78400
+
+#: PNG's eight magic bytes. Every capture here is PNG, but reading beats
+#: trusting: the header is checked rather than assumed.
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def capture_screen(*, max_side=MAX_IMAGE_SIDE):
+    """Capture the screen, fitted to the image caps. Returns ``(path,
+    detail)``; ``path`` may be None.
 
     A refusal is a first-class result. A driver handed an unreadable capture
     should route to a structured source, not ask a vision model to describe
     a file that does not exist.
+
+    ``max_side`` fits the capture to the endpoint's image bounds at
+    capture time (PNG in, PNG out), because the far end *rejects* an
+    out-of-range image rather than resizing it -- so the file returned
+    here is a valid request asset at both bounds, padded onto a canvas if
+    it is small. Pass ``max_side=None`` to capture raw.
     """
     name = platform_name()
     if name == "windows":
-        return _capture_windows()
-    if name == "darwin":
-        return _capture_macos()
-    if name == "linux":
-        return _capture_linux()
-    return None, f"screen capture is not supported on {name}"
+        path, detail = _capture_windows()
+    elif name == "darwin":
+        path, detail = _capture_macos()
+    elif name == "linux":
+        path, detail = _capture_linux()
+    else:
+        return None, f"screen capture is not supported on {name}"
+    if path is None or max_side is None:
+        return path, detail
+    fitted, why = fit_image(path, max_side=max_side)
+    if fitted is None:
+        return None, why
+    return fitted, detail
+
+
+def describe_screen():
+    """Describe the foreground window as text. Returns ``(fields, detail)``.
+
+    **The words mode, and the facts reader.** The endpoint takes pixels
+    now, so this is no longer the only way a screen can reach a question.
+    It still runs on every path: the window manager holds the title
+    *exactly* rather than as a transcription of a picture, so these are the
+    facts the state merges whatever the model judged -- and the evidence
+    the pixels mode falls back to when no capture can be taken.
+
+    Reading the foreground window through the window manager is also cheaper
+    and more exact than describing a picture of it: the title is the title,
+    not a transcription of a title. That is the same preference the tier order
+    already encodes -- structured input before pixels -- applied inside the one
+    tier that used to be the exception.
+
+    The return is a dict of plain, already-typed values rather than prose, so
+    a schema can consume it without parsing English. ``None`` is a refusal
+    with a reason, exactly as in :func:`capture_screen`.
+    """
+    name = platform_name()
+    if name == "windows":
+        return _describe_windows()
+    return None, (f"screen description is not supported on {name}; this is a "
+                  f"platform gap, not a configuration one")
+
+
+def _describe_windows():
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+
+    hwnd = user32.GetForegroundWindow()
+    if not hwnd:
+        return None, "no foreground window"
+
+    length = user32.GetWindowTextLengthW(hwnd)
+    title = ctypes.create_unicode_buffer(length + 1)
+    user32.GetWindowTextW(hwnd, title, length + 1)
+
+    window_class = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(hwnd, window_class, 256)
+
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+
+    # The process image is a *second* independent fact about the same window,
+    # read through a different API. It is also the one place a path can leak a
+    # username, so only the application name is kept -- the directory is
+    # dropped here rather than at the call site, because a value that was
+    # never assembled cannot be logged by accident.
+    app = ""
+    handle = kernel32.OpenProcess(0x1000, False, pid.value)
+    if handle:
+        try:
+            image = ctypes.create_unicode_buffer(1024)
+            size = wintypes.DWORD(1024)
+            if kernel32.QueryFullProcessImageNameW(handle, 0, image,
+                                                   ctypes.byref(size)):
+                app = image.value.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+                if app.lower().endswith(".exe"):
+                    app = app[:-4]
+        finally:
+            kernel32.CloseHandle(handle)
+
+    return {
+        "window_title": title.value,
+        "foreground_app": app,
+        "window_class": window_class.value,
+    }, ""
 
 
 def _capture_windows():
@@ -247,12 +345,34 @@ def _capture_linux():
     return out, ""
 
 
+# ---- image preparation --------------------------------------------------
+# The endpoint takes a PNG or JPEG inside hard pixel bounds and *rejects*
+# anything outside them rather than resizing it, so fitting a capture to
+# those bounds is part of capture rather than a caller's problem: a file
+# this module returns is a valid request asset or it is a named refusal,
+# never a capture that will fail later at the far end.
+#
+# The arithmetic lives here, in Python: the canvas a capture must become
+# and the size its content is drawn at on that canvas. The platform step
+# only composes -- "fill a WxH canvas with the content drawn at DxH,
+# centred". Two owners of one fit rule is how a Windows capture and a
+# Linux capture end up obeying different caps.
+
+
 def fit_within(width, height, max_side=MAX_IMAGE_SIDE):
-    """Return the aspect-preserving content size within the side bound."""
+    """The size to send so an image fits the caps; aspect preserved.
+
+    Uniform scale toward the cap: an image already inside it is returned
+    unchanged, and an oversized one comes back with its longest side
+    exactly at ``max_side`` and the other side rounded to whole pixels.
+    This is the only place the shrink decision is made -- platform scalers
+    receive their target from here and get no say in it.
+    """
     for name, value in (("width", width), ("height", height),
                         ("max_side", max_side)):
         if not isinstance(value, int) or value < 1:
-            raise ValueError(f"{name} must be a positive integer")
+            raise ValueError(
+                f"{name} must be a positive integer, got {value!r}")
     longest = max(width, height)
     if longest <= max_side:
         return width, height
@@ -262,10 +382,25 @@ def fit_within(width, height, max_side=MAX_IMAGE_SIDE):
 
 def fit_target(width, height, *, max_side=MAX_IMAGE_SIDE,
                min_side=MIN_IMAGE_SIDE, min_pixels=MIN_IMAGE_PIXELS):
-    """Choose a provider-valid canvas, shrinking content before padding."""
+    """The canvas that makes this image a valid asset at *both* bounds.
+
+    Shrinks first (:func:`fit_within`), then grows the canvas to clear the
+    floor. Growing was deliberately absent while preparation only had to
+    shrink -- enlarging invents pixels -- but "a valid asset for any
+    capture" has to give somewhere, and the choice is padding over
+    upscaling: a padded canvas is always constructible and invents
+    nothing, while a uniform upscale cannot always reach the floor without
+    breaching the cap (1000x20 would have to be 1980 px wide at its own
+    aspect to reach 78,400 pixels). The content keeps its own size on
+    that canvas; see :func:`fit_size`.
+
+    The result always satisfies the endpoint's bounds: every side within
+    ``min_side``..``max_side``, and at least ``min_pixels`` in total.
+    """
     for name, value in (("min_side", min_side), ("min_pixels", min_pixels)):
         if not isinstance(value, int) or value < 1:
-            raise ValueError(f"{name} must be a positive integer")
+            raise ValueError(
+                f"{name} must be a positive integer, got {value!r}")
     width, height = fit_within(width, height, max_side)
     if min_side > max_side or min_pixels > max_side * max_side:
         raise ValueError("image floor cannot fit within max_side")
@@ -275,6 +410,9 @@ def fit_target(width, height, *, max_side=MAX_IMAGE_SIDE,
         grow = math.sqrt(min_pixels / (canvas_width * canvas_height))
         canvas_width = min(max_side, math.ceil(canvas_width * grow))
         canvas_height = min(max_side, math.ceil(canvas_height * grow))
+        # A long side may hit its cap before proportional growth clears
+        # the area floor. Add padding on the remaining axis using exact
+        # integer division; feasible floors always fit in max_side squared.
         canvas_width = min(max_side, max(
             canvas_width, (min_pixels + canvas_height - 1) // canvas_height))
         canvas_height = max(
@@ -282,78 +420,216 @@ def fit_target(width, height, *, max_side=MAX_IMAGE_SIDE,
     return canvas_width, canvas_height
 
 
+@dataclass(frozen=True)
+class ImageGeometry:
+    """The original image and its centred, uniformly fitted content rectangle."""
+
+    width: int
+    height: int
+    canvas_width: int
+    canvas_height: int
+    draw_width: int
+    draw_height: int
+
+    @property
+    def offset(self):
+        return ((self.canvas_width - self.draw_width) // 2,
+                (self.canvas_height - self.draw_height) // 2)
+
+    def source_box(self, box):
+        """Canvas fractions -> original image/crop fractions, excluding padding.
+
+        Crop coordinates remain relative to the crop supplied by the caller;
+        preparation neither guesses a parent-frame origin nor stretches it.
+        A box entirely in padding has no location in the original image.
+        """
+        x, y = self.offset
+        result = {
+            edge: max(0.0, min(1.0, (box[edge] * canvas - offset) / draw))
+            for edge, canvas, offset, draw in (
+                ("left", self.canvas_width, x, self.draw_width),
+                ("right", self.canvas_width, x, self.draw_width),
+                ("top", self.canvas_height, y, self.draw_height),
+                ("bottom", self.canvas_height, y, self.draw_height))
+        }
+        if result["left"] >= result["right"] or result["top"] >= result["bottom"]:
+            return None
+        return result
+
+
+@dataclass(frozen=True)
+class PreparedImage:
+    """One decoded snapshot: dispatch bytes and their source geometry."""
+
+    data: bytes
+    geometry: ImageGeometry
+
+
 def fit_size(width, height, canvas_width, canvas_height):
-    """Fit content into its canvas without upscaling or changing its ratio."""
+    """The size the content is drawn at on its canvas.
+
+    The largest uniform fit of ``width`` x ``height`` inside the canvas,
+    never larger than the content itself: a canvas bigger than its content
+    is padding, not an upscale.
+    """
     for name, value in (("width", width), ("height", height),
                         ("canvas_width", canvas_width),
                         ("canvas_height", canvas_height)):
         if not isinstance(value, int) or value < 1:
-            raise ValueError(f"{name} must be a positive integer")
+            raise ValueError(
+                f"{name} must be a positive integer, got {value!r}")
     scale = min(canvas_width / width, canvas_height / height, 1.0)
-    return max(1, round(width * scale)), max(1, round(height * scale))
+    return (max(1, round(width * scale)), max(1, round(height * scale)))
 
 
-def prepare_image_bytes(data, *, scaler=None):
-    """Validate and fit a PNG capture, returning immutable prepared bytes.
+def png_dimensions(path):
+    """``(width, height)`` from a PNG's IHDR, or None if it is not a PNG.
 
-    The original is never modified. PNG structure and every scanline are
-    checked before a platform decoder is invoked; the composed output is
-    decoded and dimension-checked again before it can become an asset.
-    ``scaler`` is an internal test seam; production uses the platform scaler.
+    Reads the complete 33-byte IHDR, not the raster. Dispatch preparation
+    separately forces decoding through the platform compositor.
     """
-    dimensions = png_dimensions(data)
-    if dimensions is None or not png_decodable(data):
-        return None, "capture is not a complete, decodable PNG"
-    width, height = dimensions
     try:
-        canvas_width, canvas_height = fit_target(width, height)
-        draw_width, draw_height = fit_size(
-            width, height, canvas_width, canvas_height)
-    except ValueError as exc:
-        return None, f"cannot fit image: {exc}"
+        with open(path, "rb") as handle:
+            head = handle.read(33)
+    except OSError:
+        return None
+    if (len(head) < 33 or head[:8] != PNG_SIGNATURE
+            or head[8:12] != b"\x00\x00\x00\x0d" or head[12:16] != b"IHDR"):
+        return None
+    width, height = struct.unpack(">II", head[16:24])
+    return width, height
 
+
+def fit_image(path, *, max_side=MAX_IMAGE_SIDE, reader=None, scaler=None):
+    """Fit one captured PNG to the image bounds, in place. ``(path, detail)``.
+
+    Shrinks an oversized capture, pads an undersized one onto a canvas
+    sized by :func:`fit_target`, and draws the content at the size
+    :func:`fit_size` chose -- never enlarged. A capture already inside the
+    bounds is left untouched.
+
+    The seams are injectable so the fit-or-not decision is testable
+    without a screen, a display server, or a platform image tool -- the
+    same rule the rest of this package uses.
+    """
+    fitted, _geometry, detail = _fit_image(
+        path, max_side=max_side, reader=reader, scaler=scaler)
+    return fitted, detail
+
+
+def prepare_crop(path, region):
+    """Prepare an integer source crop without modifying the owned source PNG."""
+    size = png_dimensions(path)
+    if size is None or len(region) != 4:
+        return None, "invalid crop source or region"
+    with open(path, "rb") as handle:
+        if not decodable_png(handle.read()):
+            return None, "crop source PNG raster is not decodable"
+    x, y, width, height = region
+    if (any(type(v) is not int for v in region) or min(x, y) < 0
+            or min(width, height) < 1 or x + width > size[0]
+            or y + height > size[1]):
+        return None, "crop outside source bounds"
+    with tempfile.TemporaryDirectory(prefix="driver-crop-") as directory:
+        output = os.path.join(directory, "crop.png")
+        name = platform_name()
+        if name == "windows":
+            script = ("$ErrorActionPreference='Stop'; "
+                      "Add-Type -AssemblyName System.Drawing; "
+                      "$i=[System.Drawing.Bitmap]::FromFile($env:DRIVER_CROP_IN); "
+                      "$r=New-Object System.Drawing.Rectangle "
+                      "([int]$env:DRIVER_CROP_X),([int]$env:DRIVER_CROP_Y),"
+                      "([int]$env:DRIVER_CROP_W),([int]$env:DRIVER_CROP_H); "
+                      "$b=$i.Clone($r,$i.PixelFormat); $i.Dispose(); "
+                      "$b.Save($env:DRIVER_CROP_OUT,"
+                      "[System.Drawing.Imaging.ImageFormat]::Png); $b.Dispose()")
+            result = run(["powershell", "-NoProfile", "-NonInteractive",
+                          "-Command", script], timeout=45, env={
+                              "DRIVER_CROP_IN": path, "DRIVER_CROP_OUT": output,
+                              "DRIVER_CROP_X": str(x), "DRIVER_CROP_Y": str(y),
+                              "DRIVER_CROP_W": str(width),
+                              "DRIVER_CROP_H": str(height)})
+        elif name == "darwin":
+            result = run(["sips", "--cropToHeightWidth", str(height), str(width),
+                          "--cropOffset", str(y), str(x), path, "--out", output],
+                         timeout=45)
+        elif name == "linux":
+            result = run(["convert", path, "-crop", f"{width}x{height}+{x}+{y}",
+                          "+repage", output], timeout=45)
+        else:
+            return None, f"cropping is not supported on {name}"
+        if not result.ok:
+            return None, f"crop failed: {result.error or result.stderr[:200]}"
+        if png_dimensions(output) != (width, height):
+            return None, "crop dimensions do not match source region"
+        return prepare_image(output)
+
+
+def prepare_image(path, *, max_side=MAX_IMAGE_SIDE, reader=None, scaler=None):
+    """Return (PreparedImage, detail), or a refusal, without changing source.
+
+    Decode/re-encode even in-range files through the platform compositor.
+    The temporary snapshot is removed before returning; callers own only
+    immutable bytes and geometry from the same preparation operation.
+    """
     try:
         with tempfile.TemporaryDirectory(prefix="driver-image-") as directory:
-            path = os.path.join(directory, "prepared.png")
-            with open(path, "wb") as handle:
-                handle.write(data)
-            compose = scaler or _scale_image
-            try:
-                scaled, detail = compose(
-                    path, canvas_width, canvas_height,
-                    draw_width, draw_height)
-            except Exception as exc:
-                return None, f"image scaling failed: {exc}"
-            if scaled is None:
-                return None, detail or "platform image preparation failed"
-            if scaled != path:
-                return None, "image scaler returned an unexpected output path"
-            with open(scaled, "rb") as handle:
-                prepared = handle.read()
-    except (OSError, ValueError) as exc:
+            snapshot = os.path.join(directory, "prepared.png")
+            shutil.copyfile(path, snapshot)
+            with open(snapshot, "rb") as handle:
+                if not decodable_png(handle.read()):
+                    return None, "PNG raster is not decodable"
+            fitted, geometry, detail = _fit_image(
+                snapshot, max_side=max_side, reader=reader, scaler=scaler,
+                decode=True)
+            if fitted is None:
+                return None, detail
+            with open(fitted, "rb") as handle:
+                data = handle.read()
+            if not decodable_png(data):
+                return None, "prepared PNG raster is not decodable"
+            return PreparedImage(data, geometry), detail
+    except OSError as exc:
         return None, f"image preparation failed: {exc}"
 
-    dimensions, detail = validate_prepared_image(prepared)
-    if dimensions != (canvas_width, canvas_height):
-        return None, detail or "prepared PNG dimensions do not match the fit"
-    return prepared, ""
 
-
-def validate_prepared_image(data):
-    """Return dimensions only for a complete PNG inside the measured bounds."""
-    dimensions = png_dimensions(data)
-    if dimensions is None or not png_decodable(data):
-        return None, "prepared image is not a complete, decodable PNG"
+def _fit_image(path, *, max_side, reader=None, scaler=None, decode=False):
+    """Compose a private snapshot, or the legacy fit_image in-place target."""
+    reader = reader or png_dimensions
+    scaler = scaler or _scale_image
+    size = reader(path)
+    if size is None:
+        return None, None, f"not a readable PNG: {path}"
+    width, height = size
     try:
-        if fit_target(*dimensions) != dimensions:
-            return None, "prepared image dimensions are outside the image bounds"
+        target = fit_target(width, height, max_side=max_side)
+        if max_side > MAX_IMAGE_SIDE:
+            raise ValueError(f"max_side must not exceed {MAX_IMAGE_SIDE}")
     except ValueError as exc:
-        return None, f"prepared image dimensions are invalid: {exc}"
-    return dimensions, ""
+        return None, None, f"cannot fit {path}: {exc}"
+    draw_width, draw_height = fit_size(width, height, *target)
+    geometry = ImageGeometry(width, height, *target, draw_width, draw_height)
+    if target == (width, height) and not decode:
+        return path, geometry, f"already within the image bounds: {width}x{height}"
+    scaled, detail = scaler(path, target[0], target[1],
+                            draw_width, draw_height)
+    if scaled is None:
+        return None, None, detail
+    if reader(scaled) != target:
+        return None, None, "prepared PNG dimensions do not match the fit target"
+    return scaled, geometry, (
+        f"fitted {width}x{height} into {target[0]}x{target[1]}"
+        + (f"; {detail}" if detail else ""))
 
 
 def _scale_image(path, width, height, draw_width, draw_height):
-    """Compose one PNG in place; platform tools only receive computed sizes."""
+    """Compose one PNG in place, platform-native. ``(path, detail)``/refusal.
+
+    A ``width`` x ``height`` canvas with the content drawn at
+    ``draw_width`` x ``draw_height``, centred. Composition, not policy:
+    both sizes were chosen in Python and the platform step gets no say in
+    them.
+    """
     name = platform_name()
     if name == "windows":
         return _scale_windows(path, width, height, draw_width, draw_height)
@@ -365,6 +641,11 @@ def _scale_image(path, width, height, draw_width, draw_height):
 
 
 def _scale_windows(path, width, height, draw_width, draw_height):
+    # System.Drawing, the same toolset the capture step already uses. The
+    # values travel through the child environment rather than being
+    # formatted into the script, so a path with a space or a quote can
+    # only ever be a value. The script composes only: a black canvas with
+    # the content centred at the draw size Python chose.
     script = ("$ErrorActionPreference = 'Stop'; "
               "Add-Type -AssemblyName System.Drawing; "
               "$i = [System.Drawing.Image]::FromFile($env:DRIVER_SCALE_IN); "
@@ -379,7 +660,8 @@ def _scale_windows(path, width, height, draw_width, draw_height):
               "[int][math]::Floor(($h - $dh) / 2), $dw, $dh); "
               "$g.Dispose(); $i.Dispose(); "
               "$b.Save($env:DRIVER_SCALE_IN, "
-              "[System.Drawing.Imaging.ImageFormat]::Png); $b.Dispose()")
+              "[System.Drawing.Imaging.ImageFormat]::Png); "
+              "$b.Dispose()")
     result = run(["powershell", "-NoProfile", "-NonInteractive",
                   "-Command", script], timeout=45,
                  env={"DRIVER_SCALE_IN": path,
@@ -388,31 +670,44 @@ def _scale_windows(path, width, height, draw_width, draw_height):
                       "DRIVER_SCALE_DW": str(draw_width),
                       "DRIVER_SCALE_DH": str(draw_height)})
     if not result.ok:
-        return None, f"scaling failed: {result.error or result.stderr[:200]}"
+        return None, (f"scaling failed: "
+                      f"{result.error or result.stderr[:200]}")
     return path, ""
 
 
 def _scale_darwin(path, width, height, draw_width, draw_height):
+    # sips ships with macOS and resizes in place; -z takes height, width.
+    # Two steps because the draw size is Python's and the pad is sips':
+    # the content first at its own ratio, then the canvas around it.
     result = run(["sips", "-z", str(draw_height), str(draw_width), path],
                  timeout=45)
     if not result.ok:
-        return None, f"scaling failed: {result.error or result.stderr[:200]}"
+        return None, (f"scaling failed: "
+                      f"{result.error or result.stderr[:200]}")
     if (draw_width, draw_height) == (width, height):
         return path, ""
     result = run(["sips", "--padToHeightWidth", str(height), str(width),
                   "--padColor", "000000", path], timeout=45)
     if not result.ok:
-        return None, f"scaling failed: {result.error or result.stderr[:200]}"
+        return None, (f"scaling failed: "
+                      f"{result.error or result.stderr[:200]}")
     return path, ""
 
 
 def _scale_linux(path, width, height, draw_width, draw_height):
+    # ImageMagick's convert, the declared Linux scaler. The trailing "!"
+    # pins the exact draw size -- the aspect is already right, fit_size
+    # chose a uniform scale -- and the canvas is a centred black extent.
+    # A missing binary comes back from run() as a named refusal rather
+    # than a crash.
     result = run(["convert", path,
                   "-resize", f"{draw_width}x{draw_height}!",
                   "-background", "black", "-gravity", "center",
-                  "-extent", f"{width}x{height}", path], timeout=45)
+                  "-extent", f"{width}x{height}", path],
+                 timeout=45)
     if not result.ok:
-        return None, f"scaling failed: {result.error or result.stderr[:200]}"
+        return None, (f"scaling failed: "
+                      f"{result.error or result.stderr[:200]}")
     return path, ""
 
 
@@ -421,9 +716,10 @@ def _scale_linux(path, width, height, draw_width, draw_height):
 # named refusal, so an unregistered driver cannot half-work its way through a
 # run by doing nothing and reporting success.
 
-#: The kinds of synthetic input that exist. This is the contract between the
-#: executor tier and a backend. Native Windows currently implements only
-#: exact-title focus; remaining kinds need a backend that safely supports them.
+#: The kinds of synthetic input that exist. This is the *contract* between
+#: this package and a host-supplied backend, not a claim that any of them is
+#: implemented anywhere: every one of them is refused until a backend is
+#: registered.
 #:
 #: ``focus``, ``scroll`` and ``submit`` are declared separately from
 #: ``click`` rather than folded into it. Folding them in would be a silent
@@ -432,166 +728,9 @@ def _scale_linux(path, width, height, draw_width, draw_height):
 #: and those deserve different handling at every layer above this one.
 INPUT_KINDS = ("click", "type", "key", "focus", "scroll", "submit")
 
-# The executor registry can either use a backend explicitly supplied to that
-# driver or fall back to the embedding application's process registration.
-# A sentinel keeps an explicit ``None`` fail-closed instead of falling back.
-USE_REGISTERED_INPUT_BACKEND = object()
-
-#: Embedding-application backends, keyed by platform name. Empty by default.
-#: The optional native focus backend is driver-local and never stored here.
+#: Registered backends, keyed by platform name. Empty by default; see the
+#: module docstring for why empty is the shipped state.
 _INPUT_BACKENDS = {}
-_INPUT_CAPABILITY_LOCK = threading.RLock()
-
-
-class _FrozenInputBackend:
-    """Immutable registry record for a backend and its declared capabilities."""
-
-    __slots__ = ("_backend", "_supported_kinds")
-
-    def __init__(self, backend, supported_kinds):
-        object.__setattr__(self, "_backend", backend)
-        object.__setattr__(self, "_supported_kinds", supported_kinds)
-
-    def __setattr__(self, name, value):
-        raise AttributeError("registered input backend capabilities are immutable")
-
-    @property
-    def supported_kinds(self):
-        return self._supported_kinds
-
-    def __call__(self, kind, *, value=None, target=None):
-        return self._backend(kind, value=value, target=target)
-
-
-class _WindowsWindowApi:
-    """Small, exact-title window adapter over the Windows user32 API."""
-
-    def __init__(self):
-        if platform_name() != "windows":
-            raise OsalError("native window focus is supported only on Windows")
-        import ctypes
-        from ctypes import wintypes
-
-        self._ctypes = ctypes
-        self._wintypes = wintypes
-        self._user32 = ctypes.WinDLL("user32", use_last_error=True)
-        self._user32.EnumWindows.argtypes = [
-            ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM),
-            wintypes.LPARAM,
-        ]
-        self._user32.EnumWindows.restype = wintypes.BOOL
-        self._user32.IsWindow.argtypes = [wintypes.HWND]
-        self._user32.IsWindow.restype = wintypes.BOOL
-        self._user32.IsWindowVisible.argtypes = [wintypes.HWND]
-        self._user32.IsWindowVisible.restype = wintypes.BOOL
-        self._user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
-        self._user32.GetWindowTextLengthW.restype = ctypes.c_int
-        self._user32.GetWindowTextW.argtypes = [
-            wintypes.HWND, wintypes.LPWSTR, ctypes.c_int,
-        ]
-        self._user32.GetWindowTextW.restype = ctypes.c_int
-        self._user32.GetForegroundWindow.restype = wintypes.HWND
-        self._user32.SetForegroundWindow.argtypes = [wintypes.HWND]
-        self._user32.SetForegroundWindow.restype = wintypes.BOOL
-
-    def _title(self, hwnd):
-        length = self._user32.GetWindowTextLengthW(hwnd)
-        if length <= 0:
-            return ""
-        text = self._ctypes.create_unicode_buffer(length + 1)
-        self._user32.GetWindowTextW(hwnd, text, len(text))
-        return text.value
-
-    def find_exact_visible(self, title):
-        matches = []
-        callback_type = self._ctypes.WINFUNCTYPE(
-            self._wintypes.BOOL, self._wintypes.HWND, self._wintypes.LPARAM)
-
-        @callback_type
-        def visit(hwnd, _):
-            if (self._user32.IsWindowVisible(hwnd)
-                    and self._title(hwnd) == title):
-                matches.append(hwnd)
-            return True
-
-        if not self._user32.EnumWindows(visit, 0):
-            error = self._ctypes.get_last_error()
-            raise OsalError(f"could not enumerate windows (Windows error {error})")
-        return matches
-
-    def focus(self, hwnd, expected_title):
-        # Recheck the handle immediately before using it; a closed window may
-        # have disappeared or the numeric handle may have been recycled.
-        if (not self._user32.IsWindow(hwnd)
-                or not self._user32.IsWindowVisible(hwnd)
-                or self._title(hwnd) != expected_title):
-            return False
-        if self._user32.GetForegroundWindow() == hwnd:
-            return True
-        self._user32.SetForegroundWindow(hwnd)
-        return self._user32.GetForegroundWindow() == hwnd
-
-
-def native_input_backend(platform=None, *, window_api=None):
-    """Return the opt-in native backend available on ``platform``.
-
-    This backend intentionally supports only ``focus``: the current action
-    vocabulary gives clicks no coordinates or control identifier, and gives
-    typing/keys/scroll no window target. Guessing those destinations would
-    widen the exact consent the operator supplied. Other platforms and kinds
-    remain refused until they have equally bounded implementations.
-
-    ``window_api`` is a test seam for the small window operations used below.
-    """
-    platform = platform or platform_name()
-    if platform != "windows":
-        return None
-    api = window_api or _WindowsWindowApi()
-
-    def focus_backend(kind, *, value=None, target=None):
-        if kind != "focus":
-            return False, (f"native Windows input does not support {kind!r}; "
-                           "only exact-title focus is implemented")
-        if value is not None:
-            return False, "focus accepts a window title and no value"
-        if not isinstance(target, str) or not target:
-            return False, "focus requires a non-empty exact window title"
-        matches = api.find_exact_visible(target)
-        if len(matches) != 1:
-            return False, (f"expected one visible window titled {target!r}; "
-                           f"found {len(matches)}")
-        if not api.focus(matches[0], target):
-            return False, f"Windows refused to focus the window titled {target!r}"
-        return True, "focused exact-title window"
-
-    focus_backend.supported_kinds = ("focus",)
-    return freeze_input_backend(focus_backend)
-
-
-def freeze_input_backend(backend):
-    """Capture declared kinds in a separate immutable registry record."""
-    if backend is None or backend is USE_REGISTERED_INPUT_BACKEND:
-        return backend
-    if isinstance(backend, _FrozenInputBackend):
-        return backend
-    with _INPUT_CAPABILITY_LOCK:
-        for registered in _INPUT_BACKENDS.values():
-            if (isinstance(registered, _FrozenInputBackend)
-                    and registered._backend is backend):
-                return registered
-
-        declared = INPUT_KINDS
-        try:
-            declared = getattr(backend, "supported_kinds", INPUT_KINDS)
-            if isinstance(declared, (str, bytes, bytearray)):
-                snapshot = ()
-            else:
-                snapshot = tuple(declared)
-        except Exception:
-            snapshot = ()
-        if any(not isinstance(kind, str) for kind in snapshot):
-            snapshot = ()
-        return _FrozenInputBackend(backend, snapshot)
 
 
 def register_input_backend(platform, backend):
@@ -601,9 +740,7 @@ def register_input_backend(platform, backend):
     ``(ok, detail)``. It is responsible for raising a clear error when the
     platform refuses the request -- an accessibility permission the host has
     not been granted, a display server nobody is connected to -- because
-    that condition is not visible from inside this process. An optional
-    ``supported_kinds`` iterable declares a narrower capability; if absent,
-    the backend supports the full :data:`INPUT_KINDS` contract.
+    that condition is not visible from inside this process.
     """
     if platform not in SUPPORTED:
         raise OsalError(
@@ -612,9 +749,7 @@ def register_input_backend(platform, backend):
     if not callable(backend):
         raise OsalError(
             f"an input backend must be callable, got {type(backend).__name__}")
-    with _INPUT_CAPABILITY_LOCK:
-        backend = freeze_input_backend(backend)
-        _INPUT_BACKENDS[platform] = backend
+    _INPUT_BACKENDS[platform] = backend
     return backend
 
 
@@ -626,30 +761,12 @@ def disable_input_backend(platform=None):
     refusal path is reachable by policy rather than only by omission.
     """
     platform = platform or platform_name()
-    with _INPUT_CAPABILITY_LOCK:
-        return _INPUT_BACKENDS.pop(platform, None)
-
-
-def input_backend_supports(backend, kind):
-    """Whether a backend declares this input kind as executable.
-
-    Backends predating the optional capability declaration continue to
-    support the full contract. A backend that declares a narrower set is
-    checked both before execution and again at the OS boundary, where the
-    current registered backend is actually selected.
-    """
-    backend = freeze_input_backend(backend)
-    if isinstance(backend, _FrozenInputBackend):
-        supported = backend._supported_kinds
-    else:
-        supported = ()
-    return kind in supported
+    return _INPUT_BACKENDS.pop(platform, None)
 
 
 def input_backends():
     """Which platforms currently have a backend. For ``/health``."""
-    with _INPUT_CAPABILITY_LOCK:
-        return dict(_INPUT_BACKENDS)
+    return dict(_INPUT_BACKENDS)
 
 
 # ---- reaching the network -----------------------------------------------
@@ -720,8 +837,7 @@ def http_get(url, *, timeout=20, max_bytes=FETCH_MAX_BYTES):
     return status, body.decode(charset, "replace")
 
 
-def send_input(kind, value=None, *, target=None,
-               backend=USE_REGISTERED_INPUT_BACKEND):
+def send_input(kind, value=None, *, target=None):
     """Perform one synthetic input. Returns ``(ok, detail)``.
 
     Three refusals, in this order, each named so the operator can tell which
@@ -740,15 +856,11 @@ def send_input(kind, value=None, *, target=None,
         return False, (f"unknown input kind {kind!r}; declared kinds are "
                        f"{list(INPUT_KINDS)}")
     name = platform_name()
-    if backend is USE_REGISTERED_INPUT_BACKEND:
-        backend = input_backends().get(name)
+    backend = _INPUT_BACKENDS.get(name)
     if backend is None:
         return False, (
             f"synthetic {kind} has no registered backend on {name}; "
             f"the embedding application must register one explicitly")
-    backend = freeze_input_backend(backend)
-    if not input_backend_supports(backend, kind):
-        return False, f"input backend on {name} does not support {kind!r}"
     try:
         outcome = backend(kind, value=value, target=target)
     except Exception as exc:
@@ -787,7 +899,8 @@ def resolve_path(path):
     return os.path.abspath(os.path.expanduser(path))
 
 
-def atomic_write(path, content, *, encoding="utf-8", backup=True):
+def atomic_write(path, content, *, encoding="utf-8", backup=True,
+                 commit=True):
     """Write a file so that no reader ever sees a partial one.
 
     Declared divergences, both of which are answered rather than swallowed:
@@ -803,6 +916,14 @@ def atomic_write(path, content, *, encoding="utf-8", backup=True):
 
     The parent directory is **not** created. Creating a path the operator
     was never shown is a side effect consent did not cover.
+
+    ``commit=False`` performs every check and returns the *same* record,
+    then touches nothing. Every field is already computed before the
+    mutation -- whether the file existed, the byte count, the backup path
+    -- so a rehearsal is this one code path with one branch closed rather
+    than a second implementation free to disagree with the first. That is
+    what makes a dry run a rehearsal instead of a report that says
+    nothing.
     """
     resolved = resolve_path(path)
     if not isinstance(content, str):
@@ -817,6 +938,19 @@ def atomic_write(path, content, *, encoding="utf-8", backup=True):
         raise OsalError(f"{resolved!r} is a directory, not a file")
 
     existed = os.path.exists(resolved)
+    # Built once, before either exit, so the rehearsal record and the real
+    # record are the same expression rather than two that can drift.
+    record = {
+        "path": resolved,
+        "bytes": len(content.encode(encoding)),
+        "replaced": existed,
+        "backup": ((resolved + BACKUP_SUFFIX)
+                   if (existed and backup) else None),
+    }
+    if not commit:
+        # Every field is already known, so this is the real record. Returning
+        # here is the whole rehearsal: one branch closed, no second path.
+        return record
     if existed and backup:
         _backup(resolved)
 
@@ -833,15 +967,10 @@ def atomic_write(path, content, *, encoding="utf-8", backup=True):
     except OSError as exc:
         _discard(temporary)
         raise OsalError(f"could not write {resolved!r}: {exc}") from None
-    return {
-        "path": resolved,
-        "bytes": len(content.encode(encoding)),
-        "replaced": existed,
-        "backup": (resolved + BACKUP_SUFFIX) if (existed and backup) else None,
-    }
+    return record
 
 
-def remove_file(path):
+def remove_file(path, *, commit=True):
     """Delete exactly one file, and refuse every near miss.
 
     Three refusals, each because the alternative is an accident:
@@ -855,6 +984,11 @@ def remove_file(path):
 
     No backup. The action is declared ``IRREVERSIBLE``, and a backup would
     make it recoverable, which would mean the classification was wrong.
+
+    ``commit=False`` performs all three refusals and reports the size that
+    would be freed, without unlinking. The size is read before the unlink
+    either way, so a rehearsal costs nothing extra and cannot drift from
+    the real record.
     """
     resolved = resolve_path(path)
     if not os.path.lexists(resolved):
@@ -869,7 +1003,8 @@ def remove_file(path):
             f"never recurses")
     try:
         size = os.path.getsize(resolved)
-        os.unlink(resolved)
+        if commit:
+            os.unlink(resolved)
     except OSError as exc:
         # Windows adds the read-only attribute here, which is the most
         # common cause by a wide margin.
@@ -895,3 +1030,150 @@ def _discard(path):
         os.unlink(path)
     except OSError:
         pass
+
+
+USE_REGISTERED_INPUT_BACKEND = object()
+
+
+def freeze_input_backend(backend):
+    """Capture declared kinds in a separate immutable registry record."""
+    if backend is None or backend is USE_REGISTERED_INPUT_BACKEND:
+        return backend
+    if isinstance(backend, _FrozenInputBackend):
+        return backend
+    with _INPUT_CAPABILITY_LOCK:
+        for registered in _INPUT_BACKENDS.values():
+            if (isinstance(registered, _FrozenInputBackend)
+                    and registered._backend is backend):
+                return registered
+
+        declared = INPUT_KINDS
+        try:
+            declared = getattr(backend, "supported_kinds", INPUT_KINDS)
+            if isinstance(declared, (str, bytes, bytearray)):
+                snapshot = ()
+            else:
+                snapshot = tuple(declared)
+        except Exception:
+            snapshot = ()
+        if any(not isinstance(kind, str) for kind in snapshot):
+            snapshot = ()
+        return _FrozenInputBackend(backend, snapshot)
+
+
+def input_backend_supports(backend, kind):
+    """Whether a backend declares this input kind as executable.
+
+    Backends predating the optional capability declaration continue to
+    support the full contract. A backend that declares a narrower set is
+    checked both before execution and again at the OS boundary, where the
+    current registered backend is actually selected.
+    """
+    backend = freeze_input_backend(backend)
+    if isinstance(backend, _FrozenInputBackend):
+        supported = backend._supported_kinds
+    else:
+        supported = ()
+    return kind in supported
+
+
+def native_input_backend(platform=None, *, window_api=None):
+    """Return the opt-in native backend available on ``platform``.
+
+    This backend intentionally supports only ``focus``: the current action
+    vocabulary gives clicks no coordinates or control identifier, and gives
+    typing/keys/scroll no window target. Guessing those destinations would
+    widen the exact consent the operator supplied. Other platforms and kinds
+    remain refused until they have equally bounded implementations.
+
+    ``window_api`` is a test seam for the small window operations used below.
+    """
+    platform = platform or platform_name()
+    if platform != "windows":
+        return None
+    api = window_api or _WindowsWindowApi()
+
+    def focus_backend(kind, *, value=None, target=None):
+        if kind != "focus":
+            return False, (f"native Windows input does not support {kind!r}; "
+                           "only exact-title focus is implemented")
+        if value is not None:
+            return False, "focus accepts a window title and no value"
+        if not isinstance(target, str) or not target:
+            return False, "focus requires a non-empty exact window title"
+        matches = api.find_exact_visible(target)
+        if len(matches) != 1:
+            return False, (f"expected one visible window titled {target!r}; "
+                           f"found {len(matches)}")
+        if not api.focus(matches[0], target):
+            return False, f"Windows refused to focus the window titled {target!r}"
+        return True, "focused exact-title window"
+
+    focus_backend.supported_kinds = ("focus",)
+    return freeze_input_backend(focus_backend)
+
+
+class _FrozenInputBackend:
+    """Immutable registry record for a backend and its declared capabilities."""
+
+    __slots__ = ("_backend", "_supported_kinds")
+
+    def __init__(self, backend, supported_kinds):
+        object.__setattr__(self, "_backend", backend)
+        object.__setattr__(self, "_supported_kinds", supported_kinds)
+
+    def __setattr__(self, name, value):
+        raise AttributeError("registered input backend capabilities are immutable")
+
+    @property
+    def supported_kinds(self):
+        return self._supported_kinds
+
+    def __call__(self, kind, *, value=None, target=None):
+        return self._backend(kind, value=value, target=target)
+
+
+def prepare_image_bytes(data, *, scaler=None):
+    """Validate and fit a PNG capture, returning immutable prepared bytes.
+
+    The original is never modified. PNG structure and every scanline are
+    checked before a platform decoder is invoked; the composed output is
+    decoded and dimension-checked again before it can become an asset.
+    ``scaler`` is an internal test seam; production uses the platform scaler.
+    """
+    dimensions = png_dimensions(data)
+    if dimensions is None or not png_decodable(data):
+        return None, "capture is not a complete, decodable PNG"
+    width, height = dimensions
+    try:
+        canvas_width, canvas_height = fit_target(width, height)
+        draw_width, draw_height = fit_size(
+            width, height, canvas_width, canvas_height)
+    except ValueError as exc:
+        return None, f"cannot fit image: {exc}"
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="driver-image-") as directory:
+            path = os.path.join(directory, "prepared.png")
+            with open(path, "wb") as handle:
+                handle.write(data)
+            compose = scaler or _scale_image
+            try:
+                scaled, detail = compose(
+                    path, canvas_width, canvas_height,
+                    draw_width, draw_height)
+            except Exception as exc:
+                return None, f"image scaling failed: {exc}"
+            if scaled is None:
+                return None, detail or "platform image preparation failed"
+            if scaled != path:
+                return None, "image scaler returned an unexpected output path"
+            with open(scaled, "rb") as handle:
+                prepared = handle.read()
+    except (OSError, ValueError) as exc:
+        return None, f"image preparation failed: {exc}"
+
+    dimensions, detail = validate_prepared_image(prepared)
+    if dimensions != (canvas_width, canvas_height):
+        return None, detail or "prepared PNG dimensions do not match the fit"
+    return prepared, ""
