@@ -138,9 +138,10 @@ class FakeService:
         self.responses = []
 
     def call_service(self, url, questions, *, headers=None, timeout=60,
-                     body_extra=None):
+                     body_extra=None, assets=None):
         self.requests.append({"url": url, "questions": questions,
-                              "headers": headers, "body": body_extra})
+                              "headers": headers, "body": body_extra,
+                              "assets": assets})
         from driver_core.transport import Response
         if not self.payloads:
             return Response(0, "transport_error", detail="fake queue empty")

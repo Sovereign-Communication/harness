@@ -28,6 +28,14 @@ MALFORMED = "malformed"
 
 OUTCOMES = (OK, HTTP_ERROR, TRANSPORT_ERROR, MALFORMED)
 
+#: The far end's image opt-in header. Images are off by default at the
+#: endpoint, and a request that carries one without this header is rejected
+#: outright -- so it is not a preference but the admission ticket. It is
+#: attached only when a caller both opts in and actually sends assets: an
+#: ordinary request stays on the plain text surface, which is what
+#: "never sent by default" has to mean.
+IMAGES_HEADER = "TypeSafe-Danger-Zone-Images"
+
 
 class Response:
     """A transport result that never raises on remote failure."""
@@ -152,7 +160,22 @@ def score(instructions, levels):
             "criteria": [str(level) for level in levels]}
 
 
-PRIMITIVES = ("noul", "choice", "score")
+def box(instructions):
+    """Where something is in an image: four edges as image fractions.
+
+    The answer is the smallest box containing the target -- ``top``,
+    ``bottom``, ``left``, ``right``, each a fraction of the image -- and it
+    is *always* a box: there is no "not found" answer, so pair one with a
+    :func:`noul` asking whether the target is in the image at all and
+    ignore the box when that answer is low. Takes no ``criteria``; the
+    target is named in the instructions ("the coffee mug in `photo`").
+    Needs an image in the request and a model that supports boxes (Jev
+    1.14).
+    """
+    return {"type": "box", "instructions": instructions}
+
+
+PRIMITIVES = ("noul", "choice", "score", "box")
 
 
 def validate_questions(questions):
@@ -169,15 +192,81 @@ def validate_questions(questions):
                 f"used by this system")
         if not question.get("instructions"):
             raise ValueError(f"question {key!r} has no instructions")
+        if kind == "box" and "criteria" in question:
+            # The endpoint's shape, fail-closed here: a box question with
+            # criteria is not a question this system builds and not one the
+            # far end accepts.
+            raise ValueError(
+                f"question {key!r} is a box, which takes no criteria; "
+                f"name the target in its instructions instead")
     return questions
 
 
-def call_service(url, questions, *, headers=None, timeout=60, body_extra=None):
-    """POST a typed question set to a System One compatible endpoint."""
+def _validate_assets(assets):
+    """Fail closed on an assets map this system would not have built.
+
+    The keys are *references*: short strings the caller writes into
+    ``state``, ``instructions`` or ``criteria`` wherever the image belongs.
+    The bytes live in the map and nowhere else, so a request carries each
+    image once and every other mention of it is a word -- which is the
+    whole reason the endpoint takes a map instead of letting callers
+    inline base64 wherever they like.
+    """
+    if not isinstance(assets, dict) or not assets:
+        raise ValueError(
+            "assets must be a non-empty mapping of reference to asset")
+    for ref, entry in assets.items():
+        if not isinstance(ref, str) or not ref.strip():
+            raise ValueError(
+                f"asset reference {ref!r} must be a non-empty string")
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"asset {ref!r} must be a mapping, got "
+                f"{type(entry).__name__}")
+    return assets
+
+
+def call_service(url, questions, *, headers=None, timeout=60, body_extra=None,
+                 assets=None, images_enabled=False):
+    """POST a typed question set to a System One compatible endpoint.
+
+    ``assets`` is the request's image map: reference -> the endpoint's
+    asset entry (``data_base64`` + ``format``, or ``part``). Sending one
+    requires ``images_enabled``, the operator opt-in -- the far end
+    rejects image requests that lack the danger-zone header, so an asset
+    with no opt-in is refused here rather than at the wire. A ``box``
+    question is image traffic by the same rule and follows it: refused
+    without the opt-in, marked with the header with it. With the opt-in
+    but neither assets nor a box question the request stays plain and the
+    header is not attached; that asymmetry is deliberate, because the
+    header marks *this request* as image traffic, not the process as
+    image-capable.
+    """
     validate_questions(questions)
+    asks_box = any(isinstance(question, dict)
+                   and question.get("type") == "box"
+                   for question in questions.values())
+    if asks_box and not images_enabled:
+        raise ValueError(
+            "a box question cannot be sent without the images opt-in; "
+            "the endpoint rejects it without the "
+            f"{IMAGES_HEADER} header, so this fails here rather "
+            "than at the far end")
     body = {"questions": questions}
     if body_extra:
         body.update(body_extra)
+    if assets is not None:
+        _validate_assets(assets)
+        if not images_enabled:
+            raise ValueError(
+                "assets cannot be sent without the images opt-in; the "
+                "endpoint rejects image requests that lack the "
+                f"{IMAGES_HEADER} header, so this fails here rather than "
+                "at the far end")
+        body["assets"] = assets
+    if images_enabled and (assets or asks_box):
+        headers = dict(headers or {})
+        headers.setdefault(IMAGES_HEADER, "true")
     return request(url, body=body, headers=headers, timeout=timeout)
 
 

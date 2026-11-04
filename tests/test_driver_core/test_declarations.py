@@ -344,10 +344,13 @@ class AuditIsRequiredTests(unittest.TestCase):
         """Every class in the package whose constructor accepts ``audit``."""
         found = []
         root = pathlib.Path(driver_core.__file__).parent
-        for path in sorted(root.glob("*.py")):
-            module = importlib.import_module(
-                f"driver_core.{path.stem}" if path.stem != "__init__"
-                else "driver_core")
+        for path in sorted(root.rglob("*.py")):
+            parts = list(path.relative_to(root).parts)
+            if parts[-1] == "__init__.py":
+                parts = parts[:-1]
+            else:
+                parts[-1] = parts[-1][:-3]
+            module = importlib.import_module(".".join(["driver_core"] + parts))
             for _, cls in inspect.getmembers(module, inspect.isclass):
                 if cls.__module__ != module.__name__:
                     continue

@@ -178,6 +178,20 @@ class Settings:
     #: still constrained by ``allow_write`` and per-action consent.
     native_input_enabled: bool = False
 
+    @property
+    def jev_images(self):
+        """The 3.4.0 name for the screen opt-in, kept for its callers."""
+        return self.screen_enabled
+
+    @property
+    def jev_frames(self):
+        """The 3.4.0 name for frame history, gated by the same opt-in."""
+        return self.screen_enabled
+
+    jev_ladder: bool = False
+
+    jev_guardrails: bool = False
+
     def __post_init__(self):
         if not self.base_url.startswith(("http://", "https://")):
             raise ConfigError(
@@ -287,6 +301,8 @@ def load_settings(env=None, **overrides):
         base_url=env.get(ENV_PREFIX + "BASE_URL", DEFAULT_BASE_URL).rstrip("/"),
         host=env.get(ENV_PREFIX + "HOST", DEFAULT_HOST),
         port=_env_int(env, "PORT", DEFAULT_PORT),
+        jev_guardrails=_env_bool(env, "JEV_GUARDRAILS", False),
+        jev_ladder=_env_bool(env, "JEV_LADDER", False),
         jev_api_key=env.get(KEY_ENV, ""),
         token=token,
         jev_model=env.get(ENV_PREFIX + "JEV_MODEL", "jev-latest"),
@@ -346,3 +362,19 @@ def assert_no_foreign_reads(names):
             f"driver-core must not read foreign configuration {foreign}; it "
             f"reads only {ENV_PREFIX}* variables")
     return True
+
+
+JEV_IMAGE_MODEL = "jev-preview"
+
+
+def image_model(settings):
+    """The model an image-path request is sent to: a pin, never the alias.
+
+    An operator who names a version (or the docs' blessed ``jev-preview``)
+    has pinned their own choice and is obeyed; only the default alias is
+    replaced, because the alias is the thing that moves under you.
+    """
+    configured = (settings.jev_model or "").strip()
+    if configured and configured != "jev-latest":
+        return configured
+    return JEV_IMAGE_MODEL
