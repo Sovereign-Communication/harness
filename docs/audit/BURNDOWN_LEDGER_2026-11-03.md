@@ -99,3 +99,83 @@ packaging 5 OK, architecture 9 OK, ruff clean on harness tests,
 secret scan clean. Evidence posted on #430; status mirrored to #442
 and #295.
 
+## 2026-11-04 - #425 audit-chain append refusal (record completion)
+
+Implementation 21bfe18, docs 5766356. Re-verified on the lane tip rather
+than taken from the session record. Opening or extending a log validates one
+locked snapshot -- genesis pointer, sequence, every previous link, every
+record digest -- and refuses before any byte is written; append re-reads and
+revalidates under the same sidecar lock as verify. The persisted format and
+ChainVerdict output are unchanged.
+
+Gates at 8b48d52: driver_core 409 OK (1 skipped), conformance 26 OK, router
+26 OK, packaging 5 OK, architecture 9 OK, ruff clean on harness tests, secret
+scan of 5766356..8b48d52 0 hits, subprocess import provenance resolving to
+this working copy (child process import printed
+worktrees\e3283ca2\Harness\driver_core\__init__.py). The first re-verification
+was red -- 408 tests with one failure -- and the failure was the #292 vision
+hermeticity defect below, not the audit-chain change; after the cure at
+7ee0bf0 the full set above is the re-run receipt.
+
+Self-audit record, closed honestly: there is NO completed four-dimension
+verdict from this pass. The mechanical dimensions stand at A 13/13 and R
+14/14 from the session that died mid-pass, and the surviving partial artifact
+(`.lane-triage/round2_scores.partial-run.json`) records mechanical scores
+A/R/SM 10.0 and SD 8.18, Jev 7.5 on all four dimensions, jev_gate_pass false,
+is_fallback false, model jev-1.14.0. Those are per-dimension `--dim` calls:
+Jev is shown one dimension's evidence at a time, so the isolation artifact --
+not a system verdict -- is what the partial shows. The saved full-run
+baseline (A/R/SM/SD 10.0, gate true) is unchanged and was NOT refreshed by
+this pass. Two bounded attempts at a fresh four-dimension run produced no
+verdict (the first was killed at the 300 s tool cap; the second ran ~6
+minutes with only the two ledger-quarantine lines in its log and was
+stopped), so no verdict is claimed. No solo dimension was re-run to shop for
+a better number, and no [Unreleased] CHANGELOG entry was added (release
+flatten contract).
+
+## 2026-11-04 - #292 regression: the vision suite read the live desktop
+
+Found while re-verifying the #425 gate set: driver_core came back 408 tests
+with one red, and the same test passed on base main. `VisionExtractor` binds
+`osal.describe_screen` at construction and merges the platform facts *after*
+the model's state, so `LocalHttpVisionSmokeTests` asserted against whatever
+window was focused on the machine running it; it passed where the foreground
+window was empty and failed on a desktop with a real browser in front. That
+is a hermeticity defect in the test, not a flaky assertion, and it dates to
+the 3.5.0 reconcile (76fb1cf) rather than to #425.
+
+Cure 7ee0bf0: the smoke test injects the description the extractor's own
+contract says a test supplies, and a guard test patches the real describer to
+raise so the suite fails if the injection is dropped. Gates: vision 33 OK;
+driver_core 409 OK (1 skipped); ruff clean.
+
+## 2026-11-04 - #426 public-network policy in the evidence browser
+
+`render_site_evidence` validated only the initial URL, then let Chromium
+follow redirects and load subresources unconstrained while the docstring
+claimed private-address redirects were never followed. The renderer now runs
+the whole session behind a loopback CONNECT proxy (`harness/site_evidence.py`):
+each destination is resolved once, every answer must be globally public (the
+same `harness.web._validate_public_addresses` predicate the fetch lane uses),
+only HTTPS on port 443 is tunnelled, and the tunnel opens to the validated
+address -- so a DNS answer cannot change between validation and connection.
+Chromium is launched with `<-loopback>` so its implicit localhost bypass
+cannot skip the proxy, service workers are blocked, and a route guard
+revalidates every request (redirects, iframes, scripts, images, fetches,
+popups) before a tunnel is requested. The module docstring now states the
+boundary that is enforced.
+
+Tests are hermetic (no public internet, no wall-clock timing): loopback, IPv6
+loopback, private, IPv6 link-local and metadata authorities are refused with
+zero connections; a public-to-private DNS change connects only to the
+validated address; a loopback listener receives nothing; the route guard
+aborts each disallowed request type and caches a refused host; the browser
+wiring asserts the proxy, `<-loopback>` bypass, service-worker block and
+route guard. Gates: site_evidence 23 OK (was 15), web 78 OK, ruff clean.
+Limitation recorded: no real-browser smoke on this machine (playwright absent
+from both interpreters), so the enforcement is proven at the proxy and route
+seams, not against a live Chromium.
+
+Landing commits 7ee0bf0 + 8b48d52. Evidence posted on #426; status mirrored
+to #442 and #295.
+
