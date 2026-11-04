@@ -330,6 +330,50 @@ Standalone `driver-core step` and `driver-core verify` commands start separate
 processes; their in-memory budgets are separate even when they use the same
 persistent audit path.
 
+## Vendoring `driver_core`
+
+The package under `driver_core/` is a vendored copy of
+[`Treystu/driver-core`](https://github.com/Treystu/driver-core), pinned by
+`driver_core/__init__.py`'s `__version__` (`3.4.0` as vendored). The standalone
+repository publishes no tags, so the pin is the version string, not a tag.
+
+**The copy is not a pure mirror.** The harness carries local patches upstream
+does not have, and harness-owned tests import modules upstream has removed. A
+wholesale copy over `driver_core/` is therefore wrong:
+
+| Local fact | Evidence |
+|---|---|
+| Blank `DRIVER_JEV_API_KEY` is a named `ConfigError`, and health reports `key_provisioning` | `01b1bbd` (#438) |
+| Probe hardening for external dispatch | `266f186`, `c9fdbbc` (#439) |
+| Batch consent contract enforced as its docstring states | `832a059` (#300) |
+| `tests/test_driver_conformance.py` imports `driver_core.consent_ledger` | `tests/test_driver_conformance.py:25` |
+| `tests/test_driver_core/test_audit_compat.py` imports `driver_core.extractors` | `tests/test_driver_core/test_audit_compat.py:39` |
+
+Measured upstream delta on 2026-11-04 (vendored `3.4.0` vs `Treystu/driver-core`
+`main` at `3.5.0`): 66 files, +4918/-1987; `extractors.py` becomes the
+`extractors/` package; `consent_ledger.py` is removed upstream; `guardrails.py`,
+`jev_audit.py`, `jev_context.py`, `locate.py` and `verdicts.py` are new. The
+sync is tracked by #292 and must land as a three-way merge, not a copy.
+
+### Sync procedure
+
+1. Record the upstream `main` commit SHA and its `__version__`; the SHA is the
+   pin for the sync, because the standalone repository has no tags.
+2. Reconstruct the upstream tree the vendored copy was taken from (the 3.4.0
+   base) before diffing; a two-way diff against `main` mixes the upstream delta
+   with the harness patches in the table above.
+3. Merge per file, resolving each harness patch deliberately: keep, port or
+   drop, with the reason in the sync PR.
+4. Port the harness-owned tests that reference removed modules rather than
+   deleting their coverage.
+5. Run `python -m unittest discover -s tests/test_driver_core -t .`,
+   `python -m unittest tests.test_driver_conformance`, the hermetic suite, and
+   `python -m ruff check harness tests` before landing.
+6. Update `__version__` and this section in the same commit.
+
+The drift check (#292) is not yet in CI; it must land with the sync so the pin
+cannot go stale silently.
+
 ## Status
 
 Delivered: the native module, the adapter, the CLI, the REST routes, the
