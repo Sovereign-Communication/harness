@@ -839,13 +839,13 @@ def _chat_meta(transport, api_key, model, messages, max_tokens,
 
 
 def chat_for_route(route, transport, openrouter_key, fireworks_key, messages,
-                   max_tokens, governor=None, meta_key=None):
+                   max_tokens, governor=None, meta_key=None,
+                   reasoning_effort="auto", reasoning_token_budget=0.4):
     """Dispatch one call to the provider a Route names.
 
-    OpenRouter routes go through the unchanged chat() path with its defaults.
-    Fireworks and Meta routes use their plain direct payloads and never
-    reach OpenRouter. No per-call options: the only caller sends the fixed
-    verification shape, and EV-1 will own selection policy when it lands.
+    OpenRouter routes go through the unchanged chat() path, including the
+    reasoning options a lane may have set. Fireworks and Meta routes use
+    their plain direct payloads and never reach OpenRouter.
     """
     if route.provider == META_PROVIDER:
         if not meta_key:
@@ -864,7 +864,33 @@ def chat_for_route(route, transport, openrouter_key, fireworks_key, messages,
         return _chat_fireworks(transport, fireworks_key, route.wire_model,
                                messages, max_tokens, governor)
     return chat(transport, openrouter_key, route.wire_model, messages, max_tokens,
-                governor=governor)
+                reasoning_effort, reasoning_token_budget, governor)
+
+
+def chat_routed(transport, api_key, model, messages, max_tokens,
+                reasoning_effort="auto", reasoning_token_budget=0.4,
+                governor=None, *, settings=None, meta_key=None,
+                fireworks_key=None):
+    """Resolve *model* to its backend and dispatch through that route.
+
+    The single entry point for lanes that hold a model id -- panel seats, the
+    judge, the convergence specialist, apply and verify. A Muse id dispatches
+    to the Meta endpoint and a Fireworks path to Fireworks; neither can reach
+    OpenRouter (issue #447), because the provider comes from
+    ``routing_table.route_for_model`` rather than from a ``chat()`` branch.
+
+    Under the Muse preset the lane's threaded key IS the Meta key, so it is
+    used when no explicit ``meta_key`` is given; with no key at all the
+    dispatch refuses with the Meta-key message instead of falling back.
+    """
+    from .routing_table import route_for_model
+    route = route_for_model(model, settings=settings)
+    return chat_for_route(
+        route, transport, api_key, fireworks_key, messages, max_tokens,
+        governor=governor, meta_key=meta_key or (api_key if route.provider
+                                                 == META_PROVIDER else None),
+        reasoning_effort=reasoning_effort,
+        reasoning_token_budget=reasoning_token_budget)
 
 
 def chat_ladder(settings) -> list:

@@ -250,8 +250,40 @@ def resolve_tier_recommended_model(tier: int, use_free: bool = True, custom_fron
         return resolve_frontier_model(custom_frontier, use_free=False)
 
 
-def tier_model_ladder(tier: int, use_free: bool = True, custom_frontier: Optional[str] = None, allow_escalation: bool = False) -> List[str]:
+def preset_model_ladder(tier: int, *, settings=None) -> Optional[List[str]]:
+    """The committed Muse ladder when the Meta preset is active, else ``None``.
+
+    ONE owner of the preset -> ladder mapping, so the decomposition and
+    execution ladders stop being preset-blind (issue #447 Gap 2). Every id
+    returned here resolves to the Meta backend through
+    ``routing_table.route_for_model``; a preset run therefore cannot pick an
+    OpenRouter id by accident. ``None`` means "no preset, use the ordinary
+    ladder" -- an active preset that has no committed rung for this tier
+    still returns committed ids only, never a cross-provider fallback.
+    """
+    from .config import (DEFAULT_META_APPLY_POOL, DEFAULT_META_ESCALATION_POOL,
+                         DEFAULT_META_JUDGE_MODEL, DEFAULT_META_PANEL_POOL)
+    active = bool(settings is not None and (
+        getattr(settings, "meta_enabled", False)
+        or getattr(settings, "use_meta", False)))
+    if not active:
+        return None
+    if tier == TIER_0_SCOUT:
+        return list(DEFAULT_META_PANEL_POOL)
+    if tier == TIER_1_DISTILLER:
+        return list(DEFAULT_META_APPLY_POOL)
+    ladder = [DEFAULT_META_JUDGE_MODEL]
+    for model_id in DEFAULT_META_ESCALATION_POOL:
+        if model_id not in ladder:
+            ladder.append(model_id)
+    return ladder
+
+
+def tier_model_ladder(tier: int, use_free: bool = True, custom_frontier: Optional[str] = None, allow_escalation: bool = False, settings=None) -> List[str]:
     """Return an ordered candidate ladder for the given tier, cheapest first."""
+    preset = preset_model_ladder(tier, settings=settings)
+    if preset is not None:
+        return preset
     out: List[str] = []
     if use_free:
         if tier == TIER_0_SCOUT:

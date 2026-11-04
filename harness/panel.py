@@ -15,7 +15,7 @@ import concurrent.futures
 import time
 
 from .chat import (_chat_reservation_slots, _extract_json, _reported_cost,
-                   assess_output, chat, extract_content_and_cost,
+                   assess_output, chat_routed, extract_content_and_cost,
                    looks_truncated, REASONING_FALLBACK_PREFIX)
 from ._http import interruptible_sleep
 from .capability import ordered_pool
@@ -100,10 +100,10 @@ def _run_judge_attempt(*, transport, api_key, governor, judge_prompt, model,
     if cancel_check and cancel_check():
         from .errors import ToolCancelled
         raise ToolCancelled()
-    status, resp = chat(transport, api_key, model,
-                        [{"role": "user", "content": judge_prompt}],
-                        judge_reserve_tokens, reasoning_effort,
-                        reasoning_token_budget, governor)
+    status, resp = chat_routed(transport, api_key, model,
+                               [{"role": "user", "content": judge_prompt}],
+                               judge_reserve_tokens, reasoning_effort,
+                               reasoning_token_budget, governor)
     cost = _reported_cost(resp)
     err = (resp.get("error", {}).get("message", str(resp))
            if isinstance(resp, dict) else str(resp))
@@ -321,9 +321,10 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
         response_cost = 0.0
         response_cost_recorded = False
         while True:
-            status, resp = chat(transport, api_key, model,
-                                [{"role": "user", "content": prompt}], policy.vote.tokens,
-                                policy.vote.effort, reasoning_token_budget, governor)
+            status, resp = chat_routed(transport, api_key, model,
+                                       [{"role": "user", "content": prompt}],
+                                       policy.vote.tokens, policy.vote.effort,
+                                       reasoning_token_budget, governor)
             response_cost = _reported_cost(resp)
             if cancel_check and cancel_check():
                 from .errors import ToolCancelled

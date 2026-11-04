@@ -569,6 +569,77 @@ def resolve_task_class(
     return route
 
 
+# ---- Provider backends (#447 / EV-7) -------------------------------------
+# The table names MODELS; this registry names the PROVIDERS those models are
+# dispatched to, so "which backend" is a table concept instead of a branch
+# inside chat(). The three backends are the ones ``fireworks.resolve_route``
+# already implements, and that function stays the single owner of the actual
+# provider decision (offer resolution and fail-closed behaviour included).
+OPENROUTER_BACKEND = "openrouter"
+
+
+def backend_for_model(model_id: str) -> str:
+    """The provider a model id belongs to, by the id's own shape.
+
+    ``muse-`` ids are Meta's, confirmed Fireworks paths are Fireworks', and
+    everything else is OpenRouter -- the same precedence ``resolve_route``
+    applies, exposed as data so the table can report its coverage.
+    """
+    from .config import (FIREWORKS_PROVIDER, META_PROVIDER,
+                         is_fireworks_model_path, is_meta_model_id)
+    if not isinstance(model_id, str) or not model_id.strip():
+        raise ValueError("a model id is required to resolve a backend")
+    if is_meta_model_id(model_id):
+        return META_PROVIDER
+    if is_fireworks_model_path(model_id):
+        return FIREWORKS_PROVIDER
+    return OPENROUTER_BACKEND
+
+
+def backend_registry() -> Dict[str, str]:
+    """Every registered backend and the key surface that serves it.
+
+    One list, so adding a provider is a registry entry rather than another
+    special case. The key text is a pointer for diagnostics, never a value.
+    """
+    from .config import FIREWORKS_PROVIDER, META_PROVIDER
+    return {
+        META_PROVIDER: "META_API_KEY/MUSE_API_KEY (~/.config/harness/meta.env)",
+        FIREWORKS_PROVIDER: "FIREWORKS_API_KEY (~/.config/harness/fireworks.env)",
+        OPENROUTER_BACKEND: "OPENROUTER_API_KEY",
+    }
+
+
+def route_for_model(model_id: str, *, settings: Any = None,
+                    openrouter_enabled: Optional[bool] = None,
+                    fireworks_enabled: Optional[bool] = None,
+                    meta_enabled: Optional[bool] = None):
+    """Resolve one model id to its ``Route`` through the backend registry.
+
+    Flag precedence: an explicit argument wins; else the settings surface when
+    one is supplied; else the backend the id itself names. A Muse id is only
+    ever placed in a pool under the Muse preset, so its own identity is the
+    honest default -- the fail-closed gates stay where they belong, at the
+    uncommitted-offer lookup and the missing-key check in dispatch.
+    """
+    from .config import is_meta_model_id
+    from .fireworks import resolve_route
+    if openrouter_enabled is None:
+        openrouter_enabled = bool(
+            getattr(settings, "openrouter_enabled", True))
+    if fireworks_enabled is None:
+        fireworks_enabled = bool(
+            getattr(settings, "fireworks_enabled", False))
+    if meta_enabled is None:
+        if settings is not None:
+            meta_enabled = bool(getattr(settings, "meta_enabled", False))
+        else:
+            meta_enabled = is_meta_model_id(model_id)
+    return resolve_route(model_id, openrouter_enabled=bool(openrouter_enabled),
+                         fireworks_enabled=bool(fireworks_enabled),
+                         meta_enabled=bool(meta_enabled))
+
+
 def classify_model_tier(model_id: str, *, profile: Any = None) -> str:
     """Classify an OpenRouter model ID into its cost tier (T0, T1, T2, T3).
 
