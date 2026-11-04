@@ -287,6 +287,7 @@ cheap; losing either is not.
 | `harness/execution_stages.py` | planning-stage composition, stage judgments, and restart guards |
 | `harness/lifecycle_types.py` | discriminated chat/audit/auto-edit/driver/provisioning states and their cross-field invariants |
 | `harness/lifecycle.py` | the single persisted request-state owner: Jev rounds, continuation, usage liability, side-effect receipts, and terminal transitions; lane adapters do not own duplicate state |
+| `harness/restart_policy.py` | the one owner of post-refusal terminal state for a validated restart or consent refusal (#430): binds request/assignment/checkpoint, records once, never dispatches or spends, and keeps resume distinct from restart |
 | `harness/chat_policy.py` | chat intent and route policy shared by the answer lanes |
 | `harness/chat_lifecycle.py` | chat checkpoints, workspace hand-off, and continuation restoration |
 | `harness/hourglass_lifecycle.py` | multi-round chat answer generation and advisory Jev review |
@@ -314,6 +315,7 @@ cheap; losing either is not.
 | `harness/mcp.py` | MCP framing, boundary normalization, engine dispatch, cooperative cancellation + per-tool deadlines (the frame loop owns the cancellation lifecycle), and response lifecycle; composes dependencies from session.py |
 | `harness/mcp_schemas.py` | MCP tool contracts as pure data (no imports, no logic; one consumer: mcp.py) |
 | `harness/mcp_lanes.py` | MCP lane-scheduling policy (mutation/spendy/observe): `LANES`, `lane_for` -- which serial worker runs each tool |
+| `harness/mcp_log.py` | file-only JSON-lines MCP tool-call log: one object per call, credential families scrubbed before serialization, and no write at all when no path is configured (the stdio transport owns stdout/stderr) |
 | `harness/doctor.py` | `harness doctor`: bounded environment checks for interpreter, provider readiness, local services, ledger and MCP stdio; reports safe metadata and one-line fixes |
 | `harness/server.py` | `harness serve`: localhost web UI + JSON API -- the third face; dispatch calls the same engine entry points, no new policy |
 | `harness/render.py` | the ONE human-facing pretty-printer: TTY tables of result envelopes on stderr; read-only, machine JSON stays the stdout contract |
@@ -344,6 +346,7 @@ cheap; losing either is not.
 | `harness/ui.py` | the pywebview desktop shell around the harness web UI |
 | `harness/ui_auth.py` | local UI bearer-token persistence shared by the desktop and HTTP server, with symlink refusal and atomic writes |
 | `harness/workspace.py` | explicit workspace selection and canonical path access; rejects traversal, symlink escapes, and sensitive credential paths |
+| `harness/workspace_audit.py` | read-only workspace audit lane (#448): enumerated scope/exclusions/truncation, input-cost estimate and cap preflight, and routing that never dispatches a paid request on a guess |
 | `harness/refine.py` | Propose-Probe-Compose refinement loop (`REFINE-LOOP`, issue #239): code-enforced TIER 0/1/2 safety boundaries, P0 task outcome tracking on the ledger, P1 task family taxonomy (`task_families.json`), P3 lessons library (`experience.md` with 30-day recency decay), Jev 4-dimension scoring rubric with gating rules, CycleCost 3x budget check, and Phase 0 pilot state (20 cycles, TIER 2 only, no auto-merge) |
 | `tests/` | one test module per product owner (test_spend, test_panel, test_convergence, test_specialist, test_chat, test_ledger, test_prompts, ...); shared fakes and the `_gov` helper live in `tests/_fake.py` |
 

@@ -1176,6 +1176,24 @@ def sd_changelog():
                  f"ok={ok}")
 
 
+def _documented_module_names():
+    """Names a backticked ``x.py`` token in docs may resolve to.
+
+    Harness is not the only package the docs describe: ``docs/driver.md``
+    records the vendored ``driver_core`` sync, including modules that moved
+    into packages (``extractors/``). Resolve against that sibling package
+    too, or a real migration note is reported as a stale Harness module.
+    Invented names still fail closed.
+    """
+    names = set(modules()) | {q.stem for q in PKG.rglob("*.py")} | {"__init__"}
+    sibling = ROOT / "driver_core"
+    if sibling.is_dir():
+        names |= {q.stem for q in sibling.rglob("*.py")}
+        names |= {q.name for q in sibling.iterdir()
+                  if q.is_dir() and not q.name.startswith("_")}
+    return names
+
+
 def sd_docs_current():
     """architecture/security/threat docs reference only real modules; no
     stale core.py references anywhere."""
@@ -1184,7 +1202,7 @@ def sd_docs_current():
     # Subpackage-aware: a reference resolves if it names a real file
     # ANYWHERE under the package (e.g. local_fit/infer.py), not just a
     # top-level module. Still fail-closed: invented names flag.
-    real = set(modules()) | {q.stem for q in PKG.rglob("*.py")} | {"__init__"}
+    real = _documented_module_names()
     for d in docs:
         if not d.exists():
             continue
