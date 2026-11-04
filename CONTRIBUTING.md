@@ -330,6 +330,7 @@ cheap; losing either is not.
 | `harness/worktree.py` | git-worktree isolation for parallel DAG stages: per-node worktree/branch, declared-write audit, topological merge, conflict fail-closed |
 | `harness/web.py` | deliberate web access for the chat lane: allowlist-only fetch (https, redirects refused) + one operator-configured search endpoint; opt-in per run, honest failures, never an SSRF surface |
 | `harness/claims.py` | structured-claims grounding: source_refs lint + claims curation from the ledger's own evidence |
+| `harness/citation_verify.py` | deterministic citation identity and claim-to-passage provenance (#422): injected DOI metadata resolution, field-by-field comparison, closed support statuses, and a strict citation-verified gate that unresolved evidence cannot pass |
 | `harness/continuation.py` | the resumable-task state contract and its verification identity |
 | `harness/spend.py` | Cost-bounded spend: the governor that makes ceilings guarantees. Live pricing catalog, key identity, BYOK learning/denylist, free-model discovery, and the HUL-B dual envelope (`working_remaining = max - spent - terminal_reserve`; attempts never eat reserve; terminal findings may). |
 | `harness/dynamic_allocation.py` | dynamic resource allocation and runtime negotiation: model-aware token budgets, adaptive window sizing, spend ceiling evaluation, evidence sizing, and model ranking |
