@@ -42,3 +42,16 @@ The `report` job in `.github/workflows/rankings.yml` was red because `harness ec
 
 ## Counts
 - Open at triage: 80 (2026-11-04 re-derivation). Closed this pass: 0 (no per-issue evidence for closure yet landed on main). Opens stay below closes once the cures above merge; until then the ledger records the path, not a closure.
+
+## 2026-11-04 - #292 driver_core 3.5.0 sync (lane/burndown)
+
+Vendored driver_core reports 3.5.0, reconciled file by file with the
+harness patches intact: #438 key provisioning, #439 probe/refusal
+hardening, #300 check_batch, the driver-local native input backend and
+the image admission guards. consent_ledger kept deliberately; upstream
+3.5.0 has no replacement seam.
+
+Landing commit 76fb1cf. Gates: driver_core 403 OK (1 skipped),
+conformance 26 OK, router 26 OK, packaging 5 OK, ruff clean on harness
+tests, secret scan clean, subprocess import resolves to the checkout.
+Evidence posted on #292; status mirrored to #442 and #295.
