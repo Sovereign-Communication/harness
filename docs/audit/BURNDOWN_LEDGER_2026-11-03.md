@@ -564,3 +564,18 @@ that no longer exists. Ruff clean.
 
 Blocked on the owner (register rows A2/A3): the Actions lock and the CircleCI
 connection. Neither blocks other lane work.
+
+## 2026-11-05 - #301 cure landed from the flush (driver_core back in the ruff scope)
+
+The flush read found the Lane's `ci.yml` linting `scripts` but not
+`driver_core`, so the dead import #301 reports was live on the lane while a
+commit that appeared to cure it (`b5f92fd`) sat only on
+`codex/301-driver-core-ruff-scope-20261026` and never reached this branch. The
+one-line cure is restored and the scope now reads `harness tests
+examples/oc_handoff scripts driver_core`; `python -m ruff check driver_core`
+passes on this head. #301 therefore moves from "commit exists somewhere" to
+"landed on lane, unmerged" in the flush report, which is the disposition the
+evidence supports.
+
+Reminder for the next scope edit: this list has already lost `driver_core` once
+to an edit that added `scripts`. Both belong in it.
