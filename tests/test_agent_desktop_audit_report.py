@@ -29,8 +29,8 @@ ANCHORS = {
     ("driver_core/actions.py", 171): "type_text",
     ("harness/perception_client.py", 183): "def health",
     ("pyproject.toml", 40): "harness-desktop",
-    ("docs/driver.md", 347): "Headless key provisioning",
-    ("docs/driver.md", 360): "Which surfaces are keyless",
+    ("docs/driver.md", 355): "Headless key provisioning",
+    ("docs/driver.md", 368): "Which surfaces are keyless",
 }
 
 PLACEHOLDERS = ("TBD", "TODO", "FIXME", "unconfirmed", "to be written")
