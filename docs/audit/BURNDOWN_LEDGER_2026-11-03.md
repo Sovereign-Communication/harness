@@ -658,3 +658,44 @@ Tests: `tests/test_queue_launcher.py` (5) alongside the unchanged
 `tests/test_queue_bus.py` (23). The design of record is still assumption row
 A5 -- the four invariants named in the dispatch, owner confirmation due
 2026-11-08 -- and this slice adds no invariant beyond them.
+
+## 2026-11-05 - FLUSH-0: the saturation contracts, no live calls
+
+Order (d)'s four instrument drafts are all filed (`docs/audit/INSTRUMENT_AMENDMENTS_2026-11-05.md`);
+the register's next unblocked item is therefore the commission's first flush
+phase. FLUSH-0's line in the commission of 2026-11-04 reads: "contracts + gap
+register + ledger events, no live calls. Acceptance:
+`test_pass_refused_without_delta`; `test_whitespace_delta_is_not_a_delta`;
+`test_register_has_no_noted_state`."
+
+`harness/flush_loop.py` is those contracts and nothing else -- no judge, no
+panel, no rotation, no network, no process. What it enforces rather than
+documents:
+
+- **Rule 0.** A pass is admitted only when its information set carries a
+  semantic delta: a new or changed evidence record, a changed target digest, a
+  new angle id or a new instrument id. Formatting churn -- line endings,
+  trailing whitespace, blank lines -- canonicalizes to the same digest and the
+  pass is refused by name (`PassRefused`), because two passes over one
+  information set is one pass counted twice. Leading indentation is kept: in
+  code and quoted blocks it is structure, not churn.
+- **The gap register has no "noted" state.** A finding leaves only as
+  `closed` (a landed cure *and* the read that re-scored the changed artifact;
+  either one missing is refused) or `decision_ready` (a packet and the named
+  owner act). `register.note(...)` exists solely so the attempt gets one loud
+  answer.
+- **Materiality and the tail.** A finding counts when it moves an axis, blocks
+  a user-visible behavior, violates an invariant or changes a ship decision;
+  everything else sits in a per-bucket tail and promotes at five in one bucket.
+- **Ledger events.** One JSON line per move, fsynced, and a corrupt line fails
+  closed instead of being skipped.
+
+Tests: `tests/test_flush_loop.py`, 12 tests including the three acceptance
+names verbatim. `python -m unittest tests.test_flush_loop` -> `Ran 12 tests`,
+`OK`. Ruff clean on both files.
+
+Scope discipline: FLUSH-1 (core loop, Jev-only rotation, CLI), FLUSH-2 (panel
+and deterministic rotation, oscillation breaker, calibration pinning) and
+FLUSH-3 (cold run, MCP, canary gate) are not started -- this slice builds the
+layer they call, and a loop added now would be an untested claim about
+saturation, which is the thing the loop exists to prevent.
