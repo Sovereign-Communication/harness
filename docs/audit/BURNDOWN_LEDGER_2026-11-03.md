@@ -614,3 +614,47 @@ two of its five checks are left to be supplied rather than invented.
 
 Nothing entered a canon. The Lucas Gate v2 and the Jev house method are left
 unchanged, as the directive requires.
+
+## 2026-11-05 - queue launcher: a claimed item reaches the real launch gate
+
+The queue bus and watcher landed earlier at `90a1f81`, but `harness queue
+watch --authorized` built its watcher with **no launcher**, so a claimed item
+was recorded as `claimed; no launcher configured, so nothing was started` and
+never reached the driver. Order (b)'s requirement -- an item that would trigger
+a launch goes through the real launch path and stays subject to the existing
+launch gate -- was therefore unmet at the CLI surface even though the module's
+own invariants held.
+
+`launch_item()` now supplies the launcher. An item asks for a launch only by
+carrying `{"launch_app": <declared name>}` in its payload; anything else is
+claimed for the lane and starts nothing. When a launch is requested the
+launcher builds the driver from settings (`driver_from_settings`, so the audit
+chain is the configured one), composes `HARNESS_NL_CONTROL` onto
+`launch_app_enabled` with the same host mapping #270 uses, and executes the
+action through `Executor` -- which means write authority, the launch switch,
+the code-owned allowlist and per-action consent all apply unchanged. A closed
+gate or an unlisted app is a refusal, not a quiet no-op: the launcher raises
+and the watcher records the item `blocked` in the gate's own words. A refusal
+that arrives as `ExecutionResult(ok=False)` is raised too, so the launcher can
+never report a launch that did not happen.
+
+Evidence, real path, this host 2026-11-05:
+
+- gate unset: `queue status` on an empty root -> `empty (no repos)`, exit 0;
+  `queue watch` without `--authorized` -> `supervised_hold ...`, exit 3, item
+  still `queued`.
+- `--authorized` with the launch gate closed -> `claimed: launch failed: action
+  'launch_app' names executor 'launch_app', which is not registered ...`, item
+  `blocked`, zero spawns.
+- `--authorized`, gate on, unlisted app -> `launch refused for 'calc': ... not
+  in the declared launch allowlist; declared: ['freebuff', 'notepad']`, item
+  `blocked`, zero spawns.
+- gate on, allowlisted app, OS hand-off substituted at `subprocess.Popen` ->
+  `launched notepad: started`, item `running` owned by `laptop-watcher`,
+  attempt 1, argv `['cmd', '/c', 'start', '', 'notepad.exe']`, `shell=False`,
+  events `queued -> claimed -> running`.
+
+Tests: `tests/test_queue_launcher.py` (5) alongside the unchanged
+`tests/test_queue_bus.py` (23). The design of record is still assumption row
+A5 -- the four invariants named in the dispatch, owner confirmation due
+2026-11-08 -- and this slice adds no invariant beyond them.

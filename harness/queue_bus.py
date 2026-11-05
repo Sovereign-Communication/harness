@@ -514,6 +514,54 @@ class Watcher:
         return outcomes
 
 
+def launch_item(settings=None, environ=None):
+    """The launcher ``harness queue watch`` supplies: the real driver, gated.
+
+    An item asks to start a program by carrying ``{"launch_app": <name>}`` in
+    its payload. Nothing else about the item is interpreted here: the queue
+    owns the state machine, the driver owns what may be launched and whether
+    the gate is open.
+
+    The driver's gates apply unchanged and in its own order -- write authority
+    for a mutating action, the launch switch (``DRIVER_LAUNCH_APP``, which the
+    host maps from ``HARNESS_NL_CONTROL``), the code-owned allowlist, and
+    per-action consent. A closed gate is a refusal from the driver rather than
+    a quiet no-op, so the watcher records the item ``blocked`` in the gate's
+    own words instead of reporting success for something it did not do.
+
+    ``driver_core`` is imported inside the launcher, not here: the queue stays
+    startable on a machine with no provider key, and the driver loads only
+    when an item actually asks for a launch.
+    """
+    def launch(item):
+        payload = item.payload or {}
+        app_name = payload.get("launch_app")
+        if not app_name:
+            return "no launch requested; claimed for the lane"
+        from driver_core.config import load_settings
+        from driver_core.driver import driver_from_settings
+        from driver_core.executor import Consent
+        from .server import nl_control_enabled
+
+        resolved = load_settings() if settings is None else settings
+        resolved = resolved.with_overrides(
+            launch_app_enabled=(resolved.launch_app_enabled
+                                or nl_control_enabled(environ)))
+        driver = driver_from_settings(resolved)
+        params = {"app_name": str(app_name)}
+        result = driver.executor.execute(
+            "launch_app", params, consent=Consent(True, "launch_app", params))
+        # A refusal arrives as a result, not an exception. Reporting it as a
+        # launch is the one thing this launcher must never do: the watcher
+        # would record a started program that never started.
+        if not getattr(result, "ok", False):
+            detail = getattr(result, "detail", "") or str(result)
+            raise QueueError(f"launch refused for {app_name!r}: {detail}")
+        return f"launched {app_name}: {getattr(result, 'detail', '') or 'started'}"
+
+    return launch
+
+
 def run_cli(args):
     """``harness queue {status|enqueue|watch}`` -- exit code, no provider key.
 
@@ -582,7 +630,7 @@ def run_cli(args):
                                creator="operator", payload=payload)
             print(f"enqueued {item.repo}/{item.id} as {item.state}")
             return 0
-        watcher = Watcher(bus, interval=opts.interval)
+        watcher = Watcher(bus, launcher=launch_item(), interval=opts.interval)
         outcomes = watcher.run(steps=opts.steps,
                                authorized=opts.authorized)
         for outcome in outcomes:
