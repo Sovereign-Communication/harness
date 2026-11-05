@@ -2132,6 +2132,104 @@ def _cmd_overlay(opts, settings):
 # unreachable here, so the table has no default arm; every handler takes
 # (opts, settings), so a signature drift fails loudly at dispatch instead of
 # silently mis-binding arguments.
+def _cmd_flush(opts, settings):
+    """Saturation (flush) loop over a campaign file (FLUSH-1).
+
+    The loop makes no network and no judge call of its own: the campaign file
+    carries the Jev instrument's recorded verdicts, one per aspect per pass, so
+    a run is a replay whose every step the ledger can be re-read against. A
+    campaign that names an aspect with no verdict is refused rather than
+    scored at zero, and the stop rule is reported as met or unmet with the
+    reasons -- never printed as "saturated" because the passes ran out.
+
+    Live judging arrives with FLUSH-2's instrument rotation; this surface
+    exists so the loop's state is inspectable and reproducible today.
+    """
+    from .flush_loop import AspectVerdict, EventLedger, FlushError, FlushLoop
+
+    campaign_path = Path(opts.campaign)
+    if not campaign_path.is_file():
+        raise FlushError(f"campaign file not found: {campaign_path}")
+    try:
+        campaign = json.loads(campaign_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise FlushError(f"{campaign_path} is not valid JSON: {exc}") from exc
+    if not isinstance(campaign, dict):
+        raise FlushError(f"{campaign_path} must contain a JSON object")
+    base = campaign_path.parent
+
+    def _target_text(spec):
+        text = str(spec or "")
+        candidate = base / text
+        if text and candidate.is_file():
+            return candidate.read_text(encoding="utf-8")
+        return text
+
+    def _records(specs):
+        resolved = []
+        for spec in specs or []:
+            if not isinstance(spec, dict) or not spec.get("id"):
+                raise FlushError("every record needs an id")
+            if "content" in spec:
+                resolved.append((str(spec["id"]), str(spec["content"])))
+                continue
+            path = base / str(spec.get("path") or "")
+            if not path.is_file():
+                raise FlushError(
+                    f"record {spec['id']!r} names no readable path: {path}")
+            resolved.append((str(spec["id"]),
+                             path.read_text(encoding="utf-8")))
+        return resolved
+
+    state = {"pass": {}}
+
+    def judge(*, aspect, angle, target, records):
+        verdicts = state["pass"].get("verdicts") or {}
+        if aspect not in verdicts:
+            raise FlushError(
+                f"the campaign names no verdict for aspect {aspect!r}; the "
+                f"loop does not invent scores")
+        spec = verdicts[aspect]
+        return AspectVerdict(
+            aspect=aspect,
+            scores=dict(spec.get("scores") or {}),
+            findings=tuple(spec.get("findings") or ()),
+            missing_record=str(spec.get("missing_record") or ""),
+            basis=str(spec.get("basis") or ""))
+
+    ledger_path = opts.ledger or f"{campaign_path}.events.jsonl"
+    loop = FlushLoop(ledger=EventLedger(ledger_path), judge=judge,
+                     campaign=str(campaign.get("campaign") or campaign_path.stem))
+    target = _target_text(campaign.get("target"))
+    for spec in campaign.get("passes") or []:
+        if not isinstance(spec, dict):
+            raise FlushError("every pass must be an object")
+        state["pass"] = spec
+        outcome = loop.run_pass(
+            target=target, records=_records(spec.get("records")),
+            angles=spec.get("angles") or (), aspects=spec.get("aspects") or (),
+            instruments=tuple(spec.get("instruments") or ("jev",)))
+        if spec.get("cold_run"):
+            loop.mark_cold_run(basis=str(spec["cold_run"]))
+        if outcome.info_requests:
+            eprint(f"[flush] pass {outcome.number} stalled on "
+                   + ", ".join(f"{r.aspect} needs {r.missing_record}"
+                               for r in outcome.info_requests))
+
+    dossier = campaign.get("dossier")
+    stopped = None
+    if campaign.get("stop"):
+        stopped = loop.mark_stopped(dossier) if dossier else None
+        if dossier is None:
+            raise FlushError("a campaign that claims a stop needs a dossier")
+    ready, reasons = loop.stop_ready(dossier)
+    result = {"campaign": loop.campaign, "ledger": ledger_path,
+              "stop_ready": ready, "stop_reasons": list(reasons),
+              "stopped": stopped is not None, **loop.describe()}
+    _emit(result, opts.out, force_json=getattr(opts, "json", False))
+    return result
+
+
 _DISPATCH = {
     "doctor": _cmd_doctor,
     "ask": _cmd_ask,
@@ -2172,6 +2270,7 @@ _DISPATCH = {
     "jev-calibration": _cmd_jev_calibration,
     "refine": _cmd_refine,
     "assess": _cmd_assess,
+    "flush": _cmd_flush,
 }
 
 

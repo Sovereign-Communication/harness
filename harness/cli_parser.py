@@ -900,5 +900,18 @@ def build_parser():
     prf.add_argument("--json", action="store_true", help="emit raw JSON output only")
     _add_output_flags(prf)
 
+    pfl = sub.add_parser(
+        "flush",
+        help="Saturation (flush) loop: replay a campaign's Jev verdicts, "
+             "write the event ledger, and report the stop rule honestly")
+    pfl.add_argument("--campaign", required=True,
+                     help="campaign JSON: target, passes (angles, records, "
+                          "aspects, verdicts), dossier, optional stop")
+    pfl.add_argument("--ledger", default=None,
+                     help="event ledger path (default: <campaign>.events.jsonl)")
+    pfl.add_argument("--json", action="store_true",
+                     help="emit raw JSON only (no banner)")
+    _add_output_flags(pfl)
+
     return ap
 
