@@ -337,6 +337,27 @@ class LoopInfoRequestTests(unittest.TestCase):
         self.assertEqual([event["event"] for event in self.ledger.read()],
                          ["pass_admitted", "pass_refused"])
 
+    def test_a_pass_without_an_aspect_is_refused(self):
+        loop = FlushLoop(ledger=self.ledger, judge=self._judge, campaign="c1")
+        with self.assertRaises(FlushError) as raised:
+            loop.run_pass(target="t", records=self.records,
+                          angles=["flaw-hunt"], aspects=[])
+        self.assertIn("at least one aspect", str(raised.exception))
+        self.assertEqual(self.calls, [],
+                         "an empty aspect list must not reach the judge")
+        self.assertEqual(self.ledger.read(), [])
+
+    def test_flush_one_refuses_a_non_jev_instrument(self):
+        loop = FlushLoop(ledger=self.ledger, judge=self._judge, campaign="c1")
+        with self.assertRaises(FlushError) as raised:
+            loop.run_pass(target="t", records=self.records,
+                          angles=["flaw-hunt"], aspects=["scale"],
+                          instruments=["panel"])
+        self.assertIn("FLUSH-1", str(raised.exception))
+        self.assertEqual(self.calls, [],
+                         "FLUSH-1 cannot spend a Jev call as a panel call")
+        self.assertEqual(self.ledger.read(), [])
+
     def test_a_duplicate_aspect_is_a_repeated_call_not_new_work(self):
         loop = FlushLoop(ledger=self.ledger, judge=self._judge, campaign="c1")
         outcome = loop.run_pass(target="t", records=self.records,

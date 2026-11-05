@@ -559,6 +559,14 @@ class FlushLoop:
         instruments = tuple(dict.fromkeys(str(i) for i in instruments))
         if not angles:
             raise FlushError("a pass needs at least one angle to read through")
+        if not aspects:
+            raise FlushError("a pass needs at least one aspect to judge")
+        if set(instruments) != {JEV_INSTRUMENT}:
+            raise FlushError(
+                "FLUSH-1 judges with exactly one instrument, "
+                f"{JEV_INSTRUMENT!r}; declared {list(instruments)!r}. The "
+                "different-family panel and deterministic checks arrive "
+                "with FLUSH-2")
         try:
             identity, delta = begin_pass(self.previous, records=records,
                                          angles=angles,
