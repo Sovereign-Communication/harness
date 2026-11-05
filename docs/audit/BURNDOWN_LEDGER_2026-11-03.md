@@ -699,3 +699,33 @@ and deterministic rotation, oscillation breaker, calibration pinning) and
 FLUSH-3 (cold run, MCP, canary gate) are not started -- this slice builds the
 layer they call, and a loop added now would be an untested claim about
 saturation, which is the thing the loop exists to prevent.
+
+## 2026-11-05 (second pass) - FLUSH-0 landed; the second main red re-read
+
+Reads this pass:
+
+- FLUSH-0 on this lane: `7c2f094`, `python -m unittest discover -s tests -t .`
+  -> `Ran 5644 tests in 366.741s`, `OK (skipped=73)`, exit 0 (local battery,
+  this host, 2026-11-05). 5632 before, 12 new.
+- Main's `audit` leg carries a SECOND red the first pass folded into the
+  snapshot cause. Its log line is
+  `D10 FAIL CONTRIBUTING current -> stale: []; uncovered: ['meta']`
+  (`/actions/runs/41576644039/jobs/125721807595`, read 2026-11-05): the
+  `harness/meta.py` map row is missing on main. The cure is already on this
+  lane, `47869e8` ("...; cover meta in the map"), and `sd_contributing()`
+  reads `1.0 CONTRIBUTING covers every public module` here. D12's failure is
+  still downstream of the aged-snapshot test alone.
+- The same rule then caught this pass's own module: adding `harness/flush_loop.py`
+  made D10 read `uncovered: ['flush_loop']`. A new module without a map row is
+  exactly the defect D10 exists to catch, so the slice was not finished until
+  the row landed (`7a0b45b`).
+- A7 re-confirmed on this host, not assumed: the local audit run
+  (`python audits/self/audit.py`, py3.14) exits 0 with `R13 pass`,
+  `D10 pass`, and `D12 skip (fail-open)` whose note is
+  `ERROR: harness/__init__.py:11 was not executed; recorded lines: []` --
+  zero harness lines recorded under `trace`, the py3.14 behaviour A7 names.
+  D12 is therefore a recorded limitation here, never a local pass; the merge
+  gate for it is the rail.
+- Nothing in this pass touches branch protection, and no CI-green claim is
+  made: on `7c2f094` the hosted check-runs are 13 failure / 2 skipped with
+  `steps=[0]` (billing lock), read 2026-11-05T12:38:32Z.
