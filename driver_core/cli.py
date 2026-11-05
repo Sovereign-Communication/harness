@@ -154,6 +154,9 @@ def cmd_verify(args, driver):
         audit = payload["audit"]
         print(f"audit: {'VERIFIED' if audit['ok'] else 'BROKEN'} "
               f"({audit['records']} records) -- {audit['detail']}")
+        print(f"  store      : {audit['store']} "
+              f"({audit['store_scope']} local audit store)")
+        print(f"  chain head : {audit['head'] or 'unavailable'}")
         budget = payload["budget"]
         print(f"spend: ${budget['spent_usd']:.6f} of "
               f"${budget['ceiling_usd']:.6f} "

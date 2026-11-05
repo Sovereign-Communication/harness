@@ -232,6 +232,14 @@ harness driver verify        # audit-chain verdict + spend snapshot
 harness driver step TARGET --schema cli --raw   # the full envelope as JSON
 ```
 
+`verify` is scoped to driver-core's own audit store. The response names the
+absolute `audit.store` (or `<memory>` for an in-memory test log), labels it
+`store_scope: driver-core`, and reports the chain head hash in `audit.head`.
+A run from an empty cwd still verifies the per-user default store under
+`LOCALAPPDATA`/`XDG_STATE_HOME` unless `DRIVER_AUDIT_PATH` names another file;
+the output always names that store. This is **not** the Harness autonomy
+ledger, so a green `driver-core verify` is not harness evidence.
+
 `harness driver step` exits `0` when the step completed, `1` when the driver
 refused with a named reason (a decision, **not** a failure of the command),
 `2` for malformed arguments (nothing sent), and `4` when the service was

@@ -39,6 +39,11 @@ from .osal import audit_path_lock
 #: a magic empty string, so the linkage rule is uniform at every position.
 GENESIS = "driver-core/audit/v1"
 
+#: The owner label a verification report carries. Driver-core has its own
+#: audit store; this keeps a verify result from being read as evidence from
+#: the Harness autonomy ledger or any other project's chain.
+AUDIT_STORE_SCOPE = "driver-core"
+
 #: The record kinds this log can hold, in the order one step produces them.
 #:
 #: These are the log's vocabulary, and the producers below import them rather
@@ -277,16 +282,37 @@ class AuditLog:
             previous = record["hash"]
         return ChainVerdict(True, len(records), "chain verified")
 
+    @property
+    def store(self):
+        """The absolute store path named in a verification report.
+
+        A relative ``DRIVER_AUDIT_PATH`` is resolved against the caller's
+        cwd, so the report cannot be mistaken for a different local store
+        after a run from an empty directory. An in-memory log has no path and
+        is named explicitly instead of looking like an on-disk chain.
+        """
+        return os.path.abspath(self.path) if self.path else "<memory>"
+
     def verify(self):
         """Re-hash one locked snapshot; return a verdict, never drift claims."""
         with self._lock, audit_path_lock(self.path):
+            store = self.store
             try:
                 records = self._read_all_unlocked()
             except AuditError as exc:
                 index = (exc.record_index
                          if exc.record_index is not None else 0)
-                return ChainVerdict(False, index, str(exc))
-            return self._verify_records(records)
+                return ChainVerdict(False, index, str(exc), store=store,
+                                    head=None)
+            verdict = self._verify_records(records)
+            verdict.store = store
+            verdict.head = (records[-1]["hash"] if records else GENESIS)
+            if not verdict.ok:
+                # A broken chain has no trusted head. Reporting the last
+                # parsed hash would make tampering look like a shorter but
+                # still identifiable chain.
+                verdict.head = None
+            return verdict
 
 
 class AuditError(Exception):
@@ -347,15 +373,24 @@ def lint_tool_descriptions(schemas):
 
 
 class ChainVerdict:
-    __slots__ = ("ok", "records", "detail")
+    __slots__ = ("ok", "records", "detail", "store", "head")
 
-    def __init__(self, ok, records, detail):
+    def __init__(self, ok, records, detail, *, store="", head=None):
         self.ok = ok
         self.records = records
         self.detail = detail
+        self.store = store
+        self.head = head
 
     def to_dict(self):
-        return {"ok": self.ok, "records": self.records, "detail": self.detail}
+        return {
+            "ok": self.ok,
+            "records": self.records,
+            "detail": self.detail,
+            "store": self.store,
+            "store_scope": AUDIT_STORE_SCOPE,
+            "head": self.head,
+        }
 
     def __bool__(self):
         return self.ok
