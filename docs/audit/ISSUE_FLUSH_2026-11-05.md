@@ -21,7 +21,7 @@ Totals: 80 open issues | landed on lane=23 | landed-partial=4 | owner-only=9 | s
 
 | # | Issue | Disposition | Basis | Read |
 |---|---|---|---|---|
-| 270 | [driver] Add launch_app action to vocabulary | landed on lane (unmerged) | cure f2e7194 in lane ancestry; acceptance bullets present; focused suite | R1,R2,R3(test_launch_app) |
+| 270 | [driver] Add launch_app action to vocabulary | landed on lane (unmerged); driven at the OS 2026-11-05 | cure f2e7194 in lane ancestry; acceptance bullets present; focused suite, and the queue-driven launch refused by default and started a real Notepad when the host flag was set (see the ledger's seventh pass, `e2f7fc9`) | R1,R2,R3(test_launch_app), driven CLI runs 2026-11-05T15:39-15:44Z |
 | 271 | [driver] NL planner: natural language to action plan | still-open | deferred with #273 by the recorded S4 re-scope; no code on lane | R1,R2 |
 | 272 | [driver] Vision verification for computer control | landed-partial: code landed, S3 calibration open | fd653f4 + 25 hermetic tests; live corpus and freeze not claimed | R1,R2,R3(test_vision_verify) |
 | 273 | [driver] GUI wiring: /driver/nl endpoint + confirmation card | still-open | blocked on the operator launch pack and frozen protocol; no launch-plan path | R1,R2 |
@@ -111,7 +111,7 @@ These are not GitHub issues; they are the rows the tracker (#295) and the dispat
 | (a) MAIN-TO-GREEN: six red legs on main `5eb9c363` | landed on lane: one shared root cause identified; cure present | the five hermetic legs die on the snapshot-freshness test (cure `ad98937`); the audit leg's D12 abort is downstream of that same `SystemExit`; no second cause found | R2, R3(test_economics_cli 24 OK), `gh run view 41576644039 --log-failed` 2026-11-05 |
 | (a) verification rail | blocked on owner (SR-1, SR-2) | hosted Actions answers every job with `steps=0` and the billing-lock annotation; the CircleCI port mapping is recorded and pinned, the config is deliberately unwritten until the VCS connection exists | R4, `GET /branches/main/protection` 2026-11-05 (11 contexts, strict, enforce_admins) |
 | (b) S1 seams (#292, #300) | landed on lane | driver_core 3.5.0 sync `76fb1cf`, check_batch `832a059`; the dispatch's 49-seam reading predates the sync | R2, R3(driver_core 450 OK, conformance 26 OK) |
-| (b) S2 #270 launch_app behind HARNESS_NL_CONTROL | landed on lane, default off | issue row 270 | R1, R2, R3 |
+| (b) S2 #270 launch_app behind HARNESS_NL_CONTROL | landed on lane and verified by a driven launch, default off | issue row 270; three supervised queue drives on 2026-11-05 quoted in the ledger: defaults refused (write gate), write-open with the flag off refused naming `DRIVER_LAUNCH_APP`/`HARNESS_NL_CONTROL`, flag on launched `Notepad.exe` PID 27112 and the item went `running`. The drive also found and cured a refused launch reporting exit 0 (`e2f7fc9`) | R1, R2, R3, driven CLI runs 2026-11-05T15:39-15:44Z, full battery 5676 OK on `e2f7fc9` |
 | (b) queue bus + laptop watcher | landed on lane `90a1f81` | per-repo state machine, supervised watcher, driven end to end | R3(test_queue_bus 23 OK), driven CLI run 2026-11-05 |
 | (b) S3 #272 gate pack calibration (8 fields, bar 95) | blocked on owner (SR-3) | code and pack landed (`fd653f4`); the corpus needs install screenshots plus a live key, neither on this host | R2, R3(test_vision_verify), register A6 |
 | (b) TM1 / TM2 / TM3 | blocked on owner (SR-4) | supervised ladder needs the owner present per launch; nothing has been run, and no run is claimed | tracker state, register A5 |
