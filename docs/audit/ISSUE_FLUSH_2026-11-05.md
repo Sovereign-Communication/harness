@@ -1,16 +1,17 @@
 # Issue flush report - 2026-11-05 (order c)
 
-Generated from a primary read at 2026-11-05T10:23:02Z; the issue list was re-read at 2026-11-05T10:23:03Z before writing and held 80 open issues (pull requests excluded).
+Generated from a primary read at 2026-11-05T11:10:11Z; the issue list was re-read at 2026-11-05T11:10:12Z before writing and held 80 open issues (pull requests excluded).
 
 ## Reads this report rests on
 
 | Code | Method | Time (UTC, 2026-11-05) | What it establishes |
 |---|---|---|---|
-| R1 | `gh api repos/Treystu/harness/issues?state=open&per_page=100 --paginate` | 2026-11-05T10:23:02Z | the set of open issues, their titles and state |
+| R1 | `gh api repos/Treystu/harness/issues?state=open&per_page=100 --paginate` | 2026-11-05T11:10:11Z | the set of open issues, their titles and state |
 | R2 | `git log --all --format='%H %s'` then `git merge-base --is-ancestor <sha> HEAD` per cited commit | 10:14-10:17 | whether a cure is really in `lane/burndown` ancestry (a commit on another branch is not a cure) |
 | R3 | focused `python -m unittest` runs listed per row | 10:19-10:22 | the cure's own tests actually execute green on this head |
 | R4 | `gh api repos/Treystu/harness/commits/<head>/check-runs` and `.../actions/runs/<id>/jobs` | 10:16 | CI state: every job `steps=0` with the billing-lock annotation |
 | R5 | file and code reads (`git show --stat`, direct file reads) | 10:20-10:22 | artifacts that exist in the tree, independent of commit subjects |
+| R6 | independent conformance re-read: `gh api .../contents/<path>?ref=<head>`, `.../compare/<sha>...<head>`, `.../git/trees/<head>?recursive=1` | 10:42 | a second reader, not the generator, re-derives the population and checks each cited commit and artifact against the pushed head |
 
 Every row below carries the read codes it actually used. A row whose basis is only R1+R2 has not been shown to have a cure; it is recorded as still open rather than guessed at.
 
@@ -40,7 +41,7 @@ Totals: 80 open issues | landed on lane=23 | landed-partial=4 | owner-only=9 | s
 | 295 | [burndown] TRACKER: full completion burndown — all remaining work, waved and ordered | tracker (stays open) | the lane's tracker by design; closes when no lane item remains | R1 |
 | 299 | fix(server): cap POST body size before reading — return 413 over the limit | still-open | server.py carries a 413 for the pairing body only; no general POST cap found | R1,R5(harness/server.py) |
 | 300 | fix(driver_core): check_batch docstring overstates the irreversible-mix guarantee it enforces | landed on lane (unmerged) | cure 832a059 in lane ancestry; check_batch refuses irreversible mixes | R1,R2,R3(driver_core 450) |
-| 301 | ci: driver_core is outside the ruff scope — dead import (F401) sits unseen on main | landed on lane (unmerged) | the #301 cure reached only the unlanded branch codex/301-driver-core-ruff-scope-20261026 (b5f92fd), so ci.yml linted scripts but not driver_core; cured in this pass, lane head lints driver_core and ruff is clean | R1,R2,R3(ruff),R5(ci.yml) |
+| 301 | ci: driver_core is outside the ruff scope — dead import (F401) sits unseen on main | landed on lane (unmerged) | the #301 cure reached only the unlanded branch codex/301-driver-core-ruff-scope-20261026 (b5f92fd, not in lane ancestry), so ci.yml linted scripts but not driver_core; cured in this pass as 75375ae in lane ancestry, lane head lints driver_core and ruff is clean | R1,R2,R3(ruff),R5(ci.yml) |
 | 302 | harden(apply): screen refusal/non-code model output at intake; stop crediting model health fo... | still-open | no lane commit; apply intake screening not implemented | R1,R2 |
 | 303 | fix(site-check): non-http(s) schemes in prose prompts bypass the scheme gate via extractor no... | still-open | no verified scheme-gate artifact this pass | R1,R2 |
 | 304 | feat(economics): include Fireworks in automatic cheapest-capable routing with dynamic price c... | landed on lane (unmerged) | Fireworks cheapest-capable routing present; route suite green | R1,R3(test_economics_fireworks_route) |
@@ -76,7 +77,7 @@ Totals: 80 open issues | landed on lane=23 | landed-partial=4 | owner-only=9 | s
 | 414 | [mcp] Verify installed MCP runtime identity via real-client check (audit: NOT VERIFIED) | still-open | installed MCP runtime identity not verified; no lane commit | R1,R2 |
 | 415 | [gui] Live model/Jev semantic approvals via GUI (audit: NOT RUN) | still-open | live GUI semantic approvals not run; no lane commit | R1,R2 |
 | 416 | [docs] GUI first-use acceptance doc + serve/auth doc corrections | still-open | no lane commit | R1,R2 |
-| 417 | [driver-core] Verify must identify which audit store/chain it verified | landed on lane (unmerged) | cure 0f9716e in lane ancestry; verify names store, scope and chain head | R1,R2,R3(test_issue417) |
+| 417 | [driver-core] Verify must identify which audit store/chain it verified | landed on lane (unmerged) | cure 0f9716e in lane ancestry; verify names store, scope and chain head | R1,R2,R3(tests/test_issue417_verify_identity.py) |
 | 418 | [desktop] Preserve and recover long-running requests after restarts | still-open | no lane commit | R1,R2 |
 | 419 | [desktop] Separate local server health from backend and request status | still-open | no lane commit | R1,R2 |
 | 420 | [site] Use the TypeSafe System One contract for route judgments | still-open | no lane commit | R1,R2 |
@@ -85,10 +86,10 @@ Totals: 80 open issues | landed on lane=23 | landed-partial=4 | owner-only=9 | s
 | 424 | [docs] Align System One feature claims with shipped status | owner-only | canon feature claims are the owner's to align; parked | R1,R2 |
 | 425 | [driver-core] Refuse append when an existing audit chain is invalid | landed on lane (unmerged) | cure 21bfe18 in lane ancestry; append refuses an invalid chain | R1,R2,R3(driver_core 450) |
 | 426 | [security] Enforce public-network policy for browser evidence rendering | landed on lane (unmerged) | cure present and re-verified at 0234946 in lane ancestry; egress proxy guards | R1,R2,R3(test_site_evidence) |
-| 427 | [mission] Surface malformed receipt and Jev-evaluation records | landed on lane (unmerged) | cure 7a234f0 in lane ancestry; malformed receipt surfaced | R1,R2,R3(test_issue427) |
+| 427 | [mission] Surface malformed receipt and Jev-evaluation records | landed on lane (unmerged) | cure 7a234f0 in lane ancestry; malformed receipt surfaced | R1,R2,R3(tests/test_issue427_mission_integrity.py) |
 | 428 | [economics] Reject negative endpoint override and cache prices | landed on lane (unmerged) | cure 5a8bd77 in lane ancestry; negative override refused, prices cached | R1,R2,R3(test_economics_fireworks_source) |
-| 429 | [audit] Refuse or recover truncated JEV judgment state before append | landed on lane (unmerged) | cure a43b8a0 in lane ancestry; truncated judgment refused or recovered | R1,R2,R3(test_issue429) |
-| 430 | [lifecycle] Stop repeated retries after validated restart or consent refusal | landed on lane (unmerged) | cure d1710c6 in lane ancestry; restart refusal recorded once | R1,R2,R3(test_issue430) |
+| 429 | [audit] Refuse or recover truncated JEV judgment state before append | landed on lane (unmerged) | cure a43b8a0 in lane ancestry; truncated judgment refused or recovered | R1,R2,R3(tests/test_issue429_judgment_state.py) |
+| 430 | [lifecycle] Stop repeated retries after validated restart or consent refusal | landed on lane (unmerged) | cure d1710c6 in lane ancestry; restart refusal recorded once | R1,R2,R3(tests/test_issue430_restart_refusal.py) |
 | 432 | [proposal] Voice workstream for Harness: reusable transcription core (PROPOSAL ONLY - deferra... | owner-only | proposal only; deferral decision pending | R1,R2 |
 | 433 | [gate] Lucas Gate v2 in the driving-agent loop is not on main (runner unlanded, profile absen... | owner-only | semantic acceptance of Lucas Gate v2 is owner-reserved; parked | R1,R2 |
 | 434 | [verification] Overlay-style verification (run a suite against a composed tree) has no named ... | landed on lane (unmerged) | cures e7e4131/dc5b4bb/92986a2 in lane ancestry; overlay verification surface | R1,R2,R3(test_overlay) |
@@ -127,6 +128,16 @@ These are not GitHub issues; they are the rows the tracker (#295) and the dispat
 4. **The canon marks `REFINE-LOOP` complete while #291 (its Phase 0 pilot execution) is open at 0/20.** The canon is explicit that `complete` covers the #240 scaffold and that the civil cycle itself was not part of it. Resolution: #291 stays open; no canon change is proposed here, and the disagreement is named rather than smoothed.
 5. **`#290`'s cited cure commit is not in lane ancestry, though its artifact is.** `617e6c6` is absent from `lane/burndown`, but `docs/audit-triage.md` is present with the runbook content. Resolution: the row is dispositioned on the artifact read, and the missing commit is stated instead of being papered over by the citation.
 6. **Checked and found consistent (no disagreement):** the ledger's claim that `#446`'s cure is `6a4988d` with refresh path `a8c6be5` (both in lane ancestry); its `Open at triage: 80 / closed this pass: 0` (still 80 open, still 0 closed by the lane); and the previous status comment's `#417 6 OK` (6 OK again this pass).
+
+## Independent conformance re-read (R6, 2026-11-05T10:42Z, head 7831920)
+
+A separate verifier - written for this check, not the generator that produced the table - read this report from the pushed head through the contents API, re-derived the open-issue population from the issues API, checked every cited commit's ancestry through the compare API (32 distinct SHAs) and every cited artifact through the tree API (22 tokens). It reported six disagreements; each is classified here and resolved, and the numbers were not moved to match the prose.
+
+1. **Four rows cited a module shorthand that does not resolve as a path** (`#417`, `#427`, `#429`, `#430`: `test_issue417` and so on). The artifacts exist as `tests/test_issue417_verify_identity.py`, `tests/test_issue427_mission_integrity.py`, `tests/test_issue429_judgment_state.py` and `tests/test_issue430_restart_refusal.py`. Resolution: those Read cells now carry the full path, so a reader can check them without guessing. The dispositions do not change - the artifacts were present all along.
+2. **`#301` cited only the unlanded commit and not its own cure.** The row named `b5f92fd` but not `75375ae`, the commit that actually cured it on this lane. Resolution: the row now cites the cure and labels `b5f92fd` as not in lane ancestry, which is what the compare API says.
+3. **`#290` and `#301` deliberately cite a commit outside lane ancestry.** That is counter-evidence, not a cure claim: `617e6c6` is declared absent and the row rests on the artifact `docs/audit-triage.md` (3,983 bytes at this head, read via the contents API); `b5f92fd` is declared absent while the cure is `75375ae`. The verifier's first rule - every cited SHA must be an ancestor - was too strict. It is corrected to exempt a SHA the row explicitly declares unlanded, while still requiring a landed row to rest on an ancestor commit or a verified artifact. This is a rule correction, not a lowered bar: no row gained or lost a disposition through it.
+
+Recomputation after the corrections: population 80/80 with no missing or extra row; counts unchanged at 23 landed on lane, 4 landed-partial, 9 owner-only, 43 still-open, 1 tracker; every cited cure resolves to an ancestor of the head; every cited artifact resolves in the tree.
 
 ## What this report does not claim
 
