@@ -868,7 +868,8 @@ def register_input_backend(platform, backend):
     if not callable(backend):
         raise OsalError(
             f"an input backend must be callable, got {type(backend).__name__}")
-    _INPUT_BACKENDS[platform] = backend
+    with _INPUT_CAPABILITY_LOCK:
+        _INPUT_BACKENDS[platform] = backend
     return backend
 
 
@@ -880,12 +881,14 @@ def disable_input_backend(platform=None):
     refusal path is reachable by policy rather than only by omission.
     """
     platform = platform or platform_name()
-    return _INPUT_BACKENDS.pop(platform, None)
+    with _INPUT_CAPABILITY_LOCK:
+        return _INPUT_BACKENDS.pop(platform, None)
 
 
 def input_backends():
     """Which platforms currently have a backend. For ``/health``."""
-    return dict(_INPUT_BACKENDS)
+    with _INPUT_CAPABILITY_LOCK:
+        return dict(_INPUT_BACKENDS)
 
 
 # ---- reaching the network -----------------------------------------------
