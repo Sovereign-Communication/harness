@@ -21,6 +21,35 @@ from driver_core.config import load_settings
 from harness.queue_bus import QueueBus, Watcher, launch_item
 
 
+class QueueWatchExitCodeTests(unittest.TestCase):
+    """`harness queue watch` exit codes: a refused launch is not success."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = str(Path(self._tmp.name) / "queue")
+
+    def _run(self, item_id, payload=None):
+        bus = QueueBus(self.root)
+        bus.enqueue("harness", item_id, "a lane item", payload=payload)
+        closed = {"DRIVER_ALLOW_WRITE": "", "HARNESS_NL_CONTROL": "",
+                  "DRIVER_LAUNCH_APP": ""}
+        with mock.patch.dict("os.environ", closed, clear=False):
+            return qb.run_cli(["watch", "--root", self.root, "--steps", "1",
+                               "--authorized"])
+
+    def test_a_refused_launch_exits_one(self):
+        # Defaults: write authority off, so the launch cannot be performed.
+        self.assertEqual(self._run("launch", {"launch_app": "notepad"}), 1)
+        item = QueueBus(self.root).item("harness", "launch")
+        self.assertEqual(item.state, qb.BLOCKED)
+
+    def test_an_item_that_asks_for_no_launch_exits_zero(self):
+        self.assertEqual(self._run("plain"), 0)
+        self.assertEqual(QueueBus(self.root).item("harness", "plain").state,
+                         qb.RUNNING)
+
+
 class _Process:
     pid = 9001
 
@@ -67,7 +96,9 @@ class LauncherTests(unittest.TestCase):
                          payload={"launch_app": "notepad"})
         outcome = self._watcher(self._settings(launch=False), {}).step(
             authorized=True)
-        self.assertEqual(outcome.action, Watcher.CLAIMED)
+        # A refused launch is its own outcome: the item is `blocked`, and a
+        # caller must not read it as a claim that started something.
+        self.assertEqual(outcome.action, Watcher.BLOCKED)
         self.assertIn("launch failed", outcome.detail)
         self.assertEqual(self.spawns, [])
         item = self.bus.item("harness", "launch-item")

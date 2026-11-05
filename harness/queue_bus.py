@@ -450,6 +450,10 @@ class Watcher:
     DORMANT = "dormant"
     SUPERVISED_HOLD = "supervised_hold"
     CLAIMED = "claimed"
+    #: A claim that tried to launch and was refused. The item's own state is
+    #: already ``blocked``; naming the outcome separately is what keeps a
+    #: script from reading a refused launch as a started one.
+    BLOCKED = "blocked"
 
     def __init__(self, bus, launcher=None, *, interval=15.0):
         self.bus = bus
@@ -493,7 +497,7 @@ class Watcher:
             except Exception as exc:  # noqa: BLE001 - any launch failure blocks
                 self.bus.finish(repo, item.id, self.owner, BLOCKED,
                                 reason=f"launch failed: {exc}")
-                return WatchOutcome(self.CLAIMED, repo=repo, item_id=item.id,
+                return WatchOutcome(self.BLOCKED, repo=repo, item_id=item.id,
                                     detail=f"launch failed: {exc}")
             return WatchOutcome(self.CLAIMED, repo=repo, item_id=item.id,
                                 detail=detail)
@@ -635,6 +639,11 @@ def run_cli(args):
                                authorized=opts.authorized)
         for outcome in outcomes:
             print(f"{outcome.action}: {outcome.detail}")
+        if any(outcome.action == Watcher.BLOCKED for outcome in outcomes):
+            # A refused launch is an error, not a completed claim: the item is
+            # `blocked` in the queue and the process that asked for it must
+            # not read exit 0 as "something started".
+            return 1
         if any(outcome.action == Watcher.SUPERVISED_HOLD
                for outcome in outcomes):
             return 3

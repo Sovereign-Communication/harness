@@ -918,3 +918,84 @@ Executed on `65a8dac` (local, this host, 2026-11-05):
   (5672 on the pre-D13 head).
 - Hosted check-runs on this head remain `steps=0` under the billing lock
   (SR-1): no CI claim, every check above is local execution.
+
+## 2026-11-05 (seventh pass) - S2 #270 driven: the launch gate proven at the OS
+
+Primary read of this plan first, not of a status comment: the rows above record
+S1 closed at `9d6fac1` (vision-extractor arity, then
+`_INPUT_CAPABILITY_LOCK`), `#292` closed at `39695db` (pin 3.5.0 in
+`driver_core/UPSTREAM.json`, `scripts/check_driver_core_drift.py`, CI wiring,
+11 drift tests), `#300` closed at `832a059` (`check_batch`), and `#272`
+implemented at `fd653f4` with its corpus still blocked (SR-3). So the highest
+open item in recorded order was S2 `#270`, and this pass drove it rather than
+asserted it.
+
+**Closure re-read on `827a4b6`** (local, 2026-11-05T15:36Z):
+`python -m unittest tests.test_driver_core.test_vendoring_seams
+tests.test_driver_core.test_launch_app tests.test_driver_core.test_vision_verify
+tests.test_nl_control_flag tests.test_driver_core_drift` ->
+`Ran 63 tests`, `OK`. The assumption register was re-read the same session:
+A1-A7 carry verify-by dates of 2026-11-06 or later, so **no row is overdue** on
+2026-11-05 and no row is a blocker today.
+
+**The driven launch.** The real path is the queue's own launcher, not a unit
+double: `harness queue enqueue --payload '{"launch_app": "notepad"}'` then
+`harness queue watch --steps 1 --authorized`, which builds
+`launch_item()` -> `load_settings()` -> `driver_from_settings()` ->
+`driver.executor.execute("launch_app", {"app_name": "notepad"},
+consent=Consent(True, ...))` -> `driver_core.osal.launch_app` -> a real process.
+`--authorized` is the supervised-launch flag; no calibration was frozen. Three
+supervised drives, each quoted as observed (this host, 2026-11-05T15:39-15:44Z,
+`tasklist /FI "IMAGENAME eq notepad.exe"` read before and after every case):
+
+1. **Defaults (nothing set).** `claimed: launch failed: action 'launch_app'
+   names executor 'launch_app', which is not registered; registered:
+   ['no_action', 'observe', 'read_value', 'run_probe']. Actions with a side
+   effect are not registered because DRIVER_ALLOW_WRITE is off; nothing in this
+   build can perform them.` Item `state=blocked`; no `notepad.exe`.
+2. **`DRIVER_ALLOW_WRITE=1`, NL flag off.** The refusal moves to the second
+   gate and names it: `... Application launching is not registered because
+   DRIVER_LAUNCH_APP is off (the Harness host maps HARNESS_NL_CONTROL onto it);
+   write authority alone does not enable it.` Item `state=blocked`; no
+   `notepad.exe`. This is `#270`'s default-off requirement, observed rather than
+   inferred: with write authority open, the launch capability is still absent
+   and the operator is told which switch is closed.
+3. **`DRIVER_ALLOW_WRITE=1 HARNESS_NL_CONTROL=1`.** `claimed: launched notepad:
+   started`; item `state=running`; `tasklist` then showed `Notepad.exe 27112
+   Console 2 124,740 K`. The process was closed by its own PID
+   (`taskkill /PID 27112 /F` -> `SUCCESS`, and a follow-up `tasklist` filter
+   reported `No tasks are running which match the specified criteria`), and the
+   next pass touched nothing else.
+
+So the host flag does exactly one thing: it opens the driver's launch switch.
+Off, the vocabulary refuses and nothing starts; on, the allowlisted program
+starts and the queue records it running.
+
+**The defect the drive found, and its cure.** A refused launch was recorded
+`blocked` in the item but *returned* from `Watcher.step` as `CLAIMED`, so
+`harness queue watch` printed `claimed: launch failed: ...` and exited **0** --
+the queue's own docstring promises `1 for a refusal or error`, and a script
+reading the exit code would take a launch that never happened for a started
+one. `Watcher.BLOCKED` now names that outcome (`harness/queue_bus.py`), the CLI
+returns 1 for it, and the re-drive on the new head shows `blocked: launch
+failed: ...` with `watch_exit=1` for the refused item and `claimed: no launch
+requested; claimed for the lane` with `plain_item_exit=0` for an item that asks
+for no launch. The one test that had pinned `CLAIMED` on a refusal was corrected
+with the reason inline, and `QueueWatchExitCodeTests` pins both exit codes.
+
+Verification on the slice head (local, this host, 2026-11-05T18:12Z):
+
+- `python -m unittest tests.test_queue_launcher tests.test_queue_bus` ->
+  `Ran 28 tests`, `OK`.
+- Full battery: `Ran 5676 tests in 374.131s`, `OK (skipped=73)`, exit 0
+  (5674 on the pre-slice head; the two new exit-code tests are the delta).
+- `python -m ruff check harness audits tests` -> `All checks passed!`.
+- Hosted check-runs remain unusable under the billing lock (SR-1), so no CI
+  claim is made for this head; every result above is local execution.
+
+Still open in `#270`'s neighbourhood, recorded rather than silently carried:
+`tasklist` cannot distinguish a window that opened from one that failed to
+paint, so the launch proof is "the process exists", not "the app is usable";
+`#272`'s corpus needs a real installed FreeBuff screenshot set (SR-3) and the TM
+ladder needs the owner's supervised receipts (SR-4), so launches stay supervised
+and calibration stays unfrozen.
