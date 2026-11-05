@@ -437,3 +437,55 @@ this is a disposition, not a pass.
 
 Re-checked once this session: `tools/harness-verify` absent, no
 `route-contract` reference, no `generality` specimen; H1/H2 stay parked.
+
+## 2026-11-05 - main 5eb9c363 leg-by-leg read, the rail, and the assumption register
+
+Primary reads this pass (2026-11-05, this host):
+
+- base main is `5eb9c363` (`git fetch origin main` + `git log`); its check-runs
+  (`GET /commits/5eb9c363/check-runs`) are 6 failure / 8 success / 1 skipped of
+  15. The six red legs: `audit`; `hermetic suite` on macos-latest-3.11,
+  ubuntu-22.04-3.9, ubuntu-latest-3.11, ubuntu-latest-3.13 and
+  windows-latest-3.11. `changed-file typecheck (pyright)` is the skip.
+- All six red legs have ONE cause, and the `audit` leg is downstream rather
+  than independent (`gh run view 41576644039 --log-failed`): the five hermetic
+  legs fail only on `tests/test_economics_cli.py:226`
+  `test_check_fresh_emits_tier_snapshot_freshness` -> `_cmd_economics` ->
+  `harness/cli.py:1094 sys.exit(2)` because the shipped snapshot aged out
+  (`SystemExit: 2`). The audit leg logs
+  `[FATAL] D12: D12 cannot obtain current-tree coverage (traced battery exited 1)`
+  and `ABORTED: battery failed under trace; no baseline written` with the same
+  `SystemExit` in that trace. Curing the test therefore clears D12 as well; no
+  second code cause is hiding behind it.
+- Cure is already on this lane: `ad98937` (#446) takes the test off the wall
+  clock with a just-captured fixture snapshot and `7627e5a`/`6a4988d` wire the
+  refresh writer the freshness message advertises. Verified locally this pass:
+  `python -m unittest tests.test_economics_cli` -> 24 tests OK.
+- The Actions rail is dark, not merely slow (`GET
+  /commits/0f9716e/check-runs` + `/actions/runs/42001069443/jobs`): 15 checks
+  created, every job `steps=0`, `started_at == completed_at` to the second, and
+  the annotation reads "The job was not started because your account is locked
+  due to a billing issue." Main's 2026-11-03 run 41576644039 did execute, so
+  the lock is current, not historical. Hosted Actions cannot verify any head
+  until the owner clears it; the local battery is the interim rail and the
+  CircleCI port is the durable one.
+- Branch protection was NOT relaxed and is intact (`GET
+  /branches/main/protection`): 11 required contexts (Checkout hygiene, audit,
+  the five hermetic legs, the three installed-package legs, package),
+  `strict: true`, `enforce_admins: true`. A port that changes these contexts is
+  a protection change and stays owner-reserved.
+
+### Assumption register (R5: assumption, owner, verify-by, method)
+
+| # | Assumption | Owner | Verify by | Method |
+|---|---|---|---|---|
+| A1 | The six red legs on main clear with the #446 cure, with no second cause behind them | lane | 2026-11-08 | check-runs on a fresh main head after the merge on the Actions rail, or the CircleCI rail on main |
+| A2 | Hosted Actions stays unusable until the owner clears the billing lock | Treystu | 2026-11-07 | steps count + annotation on a fresh lane run (API); a job that executes voids this row |
+| A3 | The CircleCI VCS connection is pending the owner's act, so a ported config stays inert until then | Treystu | 2026-11-10 | CircleCI pipeline list after the connection is reported |
+| A4 | The 11 required contexts above are the merge bar and are unchanged by the port | Treystu | 2026-11-06 | `/branches/main/protection` read before and after any port landing |
+| A5 | The queue-bus design of record is the four invariants named in the dispatch (per-repo queue folders; queued -> claimed -> running -> checkpointed -> done\|blocked\|parked; watcher dormant on an empty queue; launches supervised until calibration freeze) | Treystu | 2026-11-08 | owner confirmation or the out-of-repo design record; the detail is not in this repo |
+| A6 | The S3 calibration corpus needs screenshots from an installed FreeBuff plus a live key, neither present on this host | lane | 2026-11-08 | presence check for the screenshot corpus and a keyed driver health read |
+| A7 | D12 stays unmeasurable on this host (py3.14 records zero harness lines under trace; py3.11 cannot finish the traced battery inside its cap) | lane | 2026-11-10 | a D12 run that writes a baseline locally; until then it is a recorded limitation, never a pass |
+
+No row above is overdue at this date. An overdue row is a blocker in the lane
+status; none of them blocks work this pass.
