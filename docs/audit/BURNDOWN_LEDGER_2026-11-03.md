@@ -598,3 +598,19 @@ counts drift from the report's table or if any row loses its read.
 
 No CI-green claim appears in either document: the rail is billing-locked, so
 this head has no check-run evidence and none is asserted.
+
+## 2026-11-05 - order (d) drafts filed (drafts only, no canon change)
+
+`docs/audit/INSTRUMENT_AMENDMENTS_2026-11-05.md` carries the four drafts the
+dissemination directive assigned to this lane: the v7 verification extension
+(all external state, `(read: method, timestamp)`) with the non-code finish rule
+(R1 sheet plus R7 non-author verdict); the v7 audit debt resolved as **re-audit
+on first-run specimens** rather than a re-issue, with four named specimens from
+this lane and the explicit statement that the audit itself was NOT run for want
+of a judge-capable run (no score is recorded); the Assessment Gate conformance
+amendment written against `docs/JEV_GATE_POLICY_V1.md` as it exists here; and
+the Prompt Accuracy Gate extension, whose canonical text is not in this tree, so
+two of its five checks are left to be supplied rather than invented.
+
+Nothing entered a canon. The Lucas Gate v2 and the Jev house method are left
+unchanged, as the directive requires.
