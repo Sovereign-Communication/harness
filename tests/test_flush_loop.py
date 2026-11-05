@@ -23,6 +23,11 @@ from unittest import mock
 from harness.flush_loop import (
     CLOSED,
     DECISION_READY,
+    DETERMINISTIC_INSTRUMENT,
+    FLUSH_TWO_INSTRUMENTS,
+    JEV_INSTRUMENT,
+    OPEN,
+    PANEL_INSTRUMENT,
     AspectVerdict,
     EventLedger,
     EvidenceRecord,
@@ -484,6 +489,229 @@ class FlushCliTests(unittest.TestCase):
                 with redirect_stdout(io.StringIO()):
                     _cmd_flush(opts, mock.Mock())
             self.assertIn("does not invent scores", str(raised.exception))
+
+
+class InstrumentRotationTests(unittest.TestCase):
+    """FLUSH-2 instruments are distinct calls, not aliases of Jev."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.ledger = EventLedger(Path(self._tmp.name) / "events.jsonl")
+        self.records = [EvidenceRecord("ev-1", "the pack")]
+
+    def _judge(self, name, calls):
+        def judge(*, aspect, angle, target, records):
+            calls.append(name)
+            return AspectVerdict(
+                aspect=aspect, basis="dossier:ev-1@v1",
+                scores={name: 90})
+        return judge
+
+    def test_panel_and_deterministic_rotate_with_the_instrument_identity(self):
+        calls = []
+        loop = FlushLoop(
+            ledger=self.ledger,
+            judges={JEV_INSTRUMENT: self._judge("jev", calls),
+                    PANEL_INSTRUMENT: self._judge("panel", calls),
+                    DETERMINISTIC_INSTRUMENT: self._judge(
+                        "deterministic", calls)},
+            supported_instruments=FLUSH_TWO_INSTRUMENTS,
+            campaign="rotation")
+        outcome = loop.run_pass(
+            target="t", records=self.records, angles=["flaw-hunt"],
+            aspects=["scale"],
+            instruments=[JEV_INSTRUMENT, PANEL_INSTRUMENT,
+                         DETERMINISTIC_INSTRUMENT])
+        self.assertEqual(calls, ["jev", "panel", "deterministic"])
+        self.assertTrue(outcome.expansion)
+        self.assertEqual(outcome.describe()["verdicts"], 3)
+        self.assertEqual(set(loop.scores),
+                         {"jev", "panel", "deterministic"})
+        event = self.ledger.read()[0]
+        self.assertEqual(event["event"], "pass_admitted")
+        self.assertEqual(set(event["instruments"]),
+                         {JEV_INSTRUMENT, PANEL_INSTRUMENT,
+                          DETERMINISTIC_INSTRUMENT})
+
+    def test_default_loop_refuses_panel_before_the_judge(self):
+        calls = []
+        loop = FlushLoop(ledger=self.ledger,
+                         judge=self._judge("jev", calls))
+        with self.assertRaises(FlushError) as raised:
+            loop.run_pass(
+                target="t", records=self.records,
+                angles=["flaw-hunt"], aspects=["scale"],
+                instruments=[PANEL_INSTRUMENT])
+        self.assertIn("FLUSH-1", str(raised.exception))
+        self.assertEqual(calls, [])
+        self.assertEqual(self.ledger.read(), [])
+
+
+class OscillationTests(unittest.TestCase):
+    """A repeated cure/regression edge becomes one combined packet."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.ledger = EventLedger(Path(self._tmp.name) / "events.jsonl")
+
+    def _loop(self):
+        def judge(*, aspect, angle, target, records):
+            return AspectVerdict(
+                aspect=aspect, basis="dossier:ev-1@v1",
+                findings=(({"id": "gap-1", "summary": "the same gap",
+                             "materiality": "violates_invariant"}),))
+        return FlushLoop(ledger=self.ledger, judge=judge, campaign="osc")
+
+    def _pass(self, loop, number):
+        return loop.run_pass(
+            target="t",
+            records=[EvidenceRecord(f"ev-{number}", f"information {number}")],
+            angles=["flaw-hunt"], aspects=["scale"])
+
+    def test_oscillation_cycle_escalates_to_combined_packet(self):
+        loop = self._loop()
+        first = self._pass(loop, 1)
+        self.assertIsNone(first.escalation)
+        loop.close_finding("gap-1", cure="cure-1", read="read-1",
+                           aspect="scale")
+        second = self._pass(loop, 2)
+        self.assertIsNone(second.escalation)
+        self.assertEqual(second.regressions, ("gap-1",))
+        loop.close_finding("gap-1", cure="cure-2", read="read-2",
+                           aspect="scale")
+        third = self._pass(loop, 3)
+        self.assertIsNotNone(third.escalation)
+        self.assertEqual(third.escalation["kind"], "combined_cure_packet")
+        self.assertEqual(third.escalation["cycle"], ["gap-1"])
+        self.assertEqual(third.escalation["cures"], {"gap-1": "cure-2"})
+        self.assertEqual(third.regressions, ("gap-1",))
+        self.assertFalse(third.clean)
+        events = [event for event in self.ledger.read()
+                  if event["event"] == "oscillation_escalated"]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["packet"]["cycle"], ["gap-1"])
+        ready, reasons = loop.stop_ready(
+            {"axes": {"completeness": 96},
+             "basis": "dossier:ev-1@v1"})
+        self.assertFalse(ready)
+        self.assertTrue(any("oscillation" in reason for reason in reasons),
+                        reasons)
+
+
+class CalibrationTests(unittest.TestCase):
+    """A judge-version change resets scores, never findings."""
+
+    def test_version_change_rebaselines_scores_not_findings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = EventLedger(Path(tmp) / "events.jsonl")
+
+            def judge(*, aspect, angle, target, records):
+                return AspectVerdict(
+                    aspect=aspect, basis="dossier:ev-1@v1",
+                    scores={"completeness": 96},
+                    findings=(({"id": "gap-1", "summary": "a gap",
+                                 "materiality": "violates_invariant"}),))
+
+            loop = FlushLoop(ledger=ledger, judge=judge,
+                             judge_version="jev-1", campaign="cal")
+            loop.run_pass(
+                target="t",
+                records=[EvidenceRecord("ev-1", "information")],
+                angles=["flaw-hunt"], aspects=["scale"])
+            self.assertEqual(loop.scores, {"completeness": 96.0})
+            event = loop.pin_judge_version(
+                "jev-2", control_scores={"completeness": 70})
+            self.assertEqual(loop.judge_version, "jev-2")
+            self.assertEqual(loop.scores, {"completeness": 70.0})
+            self.assertEqual(event["event"], "calibration_rebaselined")
+            self.assertEqual(event["from"], "jev-1")
+            self.assertEqual(event["to"], "jev-2")
+            self.assertEqual(event["scores_before"], {"completeness": 96.0})
+            finding = loop.register.get("gap-1")
+            self.assertEqual(finding.state, OPEN)
+            self.assertIn("gap-1",
+                          [item.id for item in loop.register.open_findings()])
+
+
+class FlushTwoCliTests(unittest.TestCase):
+    """The executable surface for FLUSH-2 rotation and escalation."""
+
+    def _run(self, spec, *args):
+        from harness.cli import _cmd_flush
+        from harness.cli_parser import build_parser
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = Path(tmp) / "campaign.json"
+            campaign.write_text(json.dumps(spec), encoding="utf-8")
+            opts = build_parser().parse_args(
+                ["flush", "--campaign", str(campaign), "--json", *args])
+            with redirect_stdout(io.StringIO()):
+                result = _cmd_flush(opts, mock.Mock())
+            ledger = Path(str(campaign) + ".events.jsonl")
+            events = [json.loads(line) for line in
+                      ledger.read_text(encoding="utf-8").splitlines()]
+            return result, events
+
+    def _rotation_spec(self):
+        return {
+            "campaign": "rotation",
+            "target": "t",
+            "passes": [{
+                "angles": ["flaw-hunt"], "aspects": ["scale"],
+                "instruments": ["jev", "panel", "deterministic"],
+                "records": [{"id": "ev-1", "content": "the pack"}],
+                "verdicts": {"scale": {
+                    "basis": "dossier:ev-1@v1",
+                    "scores": {"completeness": 96}}},
+                "instrument_verdicts": {
+                    "panel": {"scale": {
+                        "basis": "dossier:ev-1@v1",
+                        "scores": {"grounding": 90}}},
+                    "deterministic": {"scale": {
+                        "basis": "dossier:ev-1@v1",
+                        "scores": {"risk_honesty": 95}}}},
+            }],
+        }
+
+    def test_flush_cli_rotates_panel_and_deterministic_instruments(self):
+        result, events = self._run(
+            self._rotation_spec(), "--extended-instruments")
+        self.assertEqual(result["passes"][0]["verdicts"], 3)
+        self.assertEqual(set(result["scores"]),
+                         {"completeness", "grounding", "risk_honesty"})
+        self.assertEqual(set(events[0]["instruments"]),
+                         {"jev", "panel", "deterministic"})
+
+    def test_flush_cli_escalates_an_oscillation_cycle(self):
+        passes = []
+        for number in (1, 2, 3):
+            spec = {
+                "angles": ["flaw-hunt"], "aspects": ["scale"],
+                "records": [{"id": f"ev-{number}",
+                             "content": f"information {number}"}],
+                "verdicts": {"scale": {
+                    "basis": "dossier:ev-1@v1",
+                    "findings": [{
+                        "id": "gap-1", "summary": "the same gap",
+                        "materiality": "violates_invariant"}]}},
+            }
+            if number < 3:
+                spec["close"] = [{
+                    "finding": "gap-1", "cure": f"cure-{number}",
+                    "read": f"read-{number}", "aspect": "scale"}]
+            passes.append(spec)
+        result, events = self._run({
+            "campaign": "osc", "target": "t", "passes": passes})
+        self.assertEqual(len(result["escalations"]), 1)
+        self.assertEqual(result["passes"][-1]["escalation"]["kind"],
+                         "combined_cure_packet")
+        self.assertEqual(result["passes"][-1]["escalation"]["cycle"],
+                         ["gap-1"])
+        escalations = [event for event in events
+                       if event["event"] == "oscillation_escalated"]
+        self.assertEqual(len(escalations), 1)
+        self.assertEqual(escalations[0]["packet"]["cycle"], ["gap-1"])
 
 
 if __name__ == "__main__":

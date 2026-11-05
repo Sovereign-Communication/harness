@@ -340,6 +340,25 @@ class GapRegister:
     def tail_count(self, bucket):
         return len(self.tail.get(bucket, []))
 
+    def find(self, finding_id):
+        """The main-register finding, or ``None`` for an unknown/tail id."""
+        return self.findings.get(finding_id)
+
+    def known(self, finding_id):
+        """Whether the id is in the main register or the tail."""
+        return finding_id in self.findings or any(
+            finding_id in ids for ids in self.tail.values())
+
+    def reopen(self, finding_id):
+        """Reopen a closed finding as a regression, preserving its history."""
+        finding = self.get(finding_id)
+        if finding.state != CLOSED:
+            raise GapRegisterError(
+                f"finding {finding_id!r} is not closed and cannot be "
+                f"reopened as a regression (state {finding.state!r})")
+        finding.state = OPEN
+        return finding
+
 
 class EventLedger:
     """Append-only record of every register move, one JSON line per event.
@@ -390,6 +409,8 @@ def record_pass(ledger, *, identity, delta, campaign=""):
         "identity": identity.digest,
         "delta": list(delta),
         "records": len(identity.records),
+        "angles": list(identity.angles),
+        "instruments": list(identity.instruments),
     }
     ledger.append(event)
     return event
@@ -419,6 +440,15 @@ ANGLES = ("flaw-hunt", "red-team", "missing-evidence", "production-failure")
 #: FLUSH-1 speaks to one instrument: Jev diagnostics. FLUSH-2 adds the
 #: different-family panel and the deterministic checks, FLUSH-3 the cold run.
 JEV_INSTRUMENT = "jev"
+PANEL_INSTRUMENT = "panel"
+DETERMINISTIC_INSTRUMENT = "deterministic"
+
+#: FLUSH-1's declared instrument set is one member. An extended loop must opt
+#: into the FLUSH-2 instruments explicitly; the default path keeps the
+#: FLUSH-1 refusal intact.
+FLUSH_ONE_INSTRUMENTS = (JEV_INSTRUMENT,)
+FLUSH_TWO_INSTRUMENTS = (JEV_INSTRUMENT, PANEL_INSTRUMENT,
+                         DETERMINISTIC_INSTRUMENT)
 
 #: The stop bar, verbatim from the commission: combined >= 95, every axis >= 85,
 #: no axis below 60.
@@ -475,6 +505,70 @@ class InfoRequest:
         return {"aspect": self.aspect, "missing_record": self.missing_record}
 
 
+class OscillationBreaker:
+    """Track cure -> regression cycles and escalate a repeated cycle once.
+
+    A regression is the same finding returning after a cure. The sequence is
+    kept per aspect; a cycle is a repeated suffix of length at most three, so
+    ``A, B, A, B`` escalates as ``A, B`` after its second occurrence. The
+    escalation is one combined packet naming every cure in the cycle: curing
+    one member in isolation is how an oscillation is mistaken for progress.
+    """
+
+    def __init__(self, max_cycle=3):
+        self.max_cycle = int(max_cycle)
+        self.regressions = {}
+        self.cures = {}
+        self.packets = []
+        self._seen = set()
+
+    def record_cure(self, finding_id, cure):
+        finding_id = str(finding_id).strip()
+        cure = str(cure).strip()
+        if not finding_id:
+            raise FlushError("an oscillation cure needs a finding id")
+        if not cure:
+            raise FlushError(
+                f"finding {finding_id!r} cannot enter the oscillation graph "
+                f"without a landed cure")
+        self.cures[finding_id] = cure
+        return finding_id
+
+    def record_regression(self, finding_id, *, aspect):
+        """Return a combined packet when this regression closes a cycle."""
+        finding_id = str(finding_id).strip()
+        aspect = str(aspect or "unbucketed")
+        if finding_id not in self.cures:
+            raise FlushError(
+                f"finding {finding_id!r} regressed without a recorded cure; "
+                f"the oscillation graph has no edge to follow")
+        sequence = self.regressions.setdefault(aspect, [])
+        sequence.append(finding_id)
+        limit = min(self.max_cycle, len(sequence) // 2)
+        for length in range(1, limit + 1):
+            cycle = tuple(sequence[-length:])
+            if tuple(sequence[-2 * length:-length]) != cycle:
+                continue
+            key = (aspect, cycle)
+            if key in self._seen:
+                return None
+            self._seen.add(key)
+            packet = {
+                "kind": "combined_cure_packet",
+                "aspect": aspect,
+                "cycle": list(cycle),
+                "seen": 2,
+                "cures": {member: self.cures.get(member, "")
+                          for member in cycle},
+                "instruction": (
+                    "cure the cycle as one packet; do not re-cure a member "
+                    "in isolation and call it progress"),
+            }
+            self.packets.append(packet)
+            return packet
+        return None
+
+
 @dataclass
 class PassOutcome:
     """What one pass did: its delta, its verdicts, and whether it was clean."""
@@ -488,6 +582,8 @@ class PassOutcome:
     info_requests: tuple = ()
     verdicts: tuple = ()
     repeated_calls: tuple = ()
+    regressions: tuple = ()
+    escalation: dict = None
 
     def describe(self):
         return {
@@ -499,6 +595,9 @@ class PassOutcome:
             "material_findings": list(self.material_findings),
             "info_requests": [r.describe() for r in self.info_requests],
             "repeated_calls": list(self.repeated_calls),
+            "regressions": list(self.regressions),
+            "escalation": self.escalation,
+            "verdicts": len(self.verdicts),
         }
 
 
@@ -522,21 +621,49 @@ def record_stop(ledger, *, campaign="", streak, basis, combined):
     return event
 
 
+def record_oscillation(ledger, *, packet, campaign=""):
+    """Log one combined cure packet for a detected oscillation cycle."""
+    event = {
+        "event": "oscillation_escalated",
+        "campaign": campaign,
+        "kind": packet.get("kind", "combined_cure_packet"),
+        "aspect": packet.get("aspect", ""),
+        "cycle": list(packet.get("cycle") or ()),
+        "cures": dict(packet.get("cures") or {}),
+        "packet": dict(packet),
+    }
+    ledger.append(event)
+    return event
+
+
 class FlushLoop:
     """A campaign: passes over one target, judged by injected instruments.
 
-    The judge is a callable ``judge(aspect=..., angle=..., target=...,
-    records=...) -> AspectVerdict``. It is never called for a pass Rule 0
-    refused, and never twice for the same aspect, angle and information set --
-    a repeated call is how a loop spends money learning nothing, so it marks
-    the pass not clean instead of counting as fresh evidence.
+    The default loop is FLUSH-1: exactly one instrument (Jev), so the FLUSH-1
+    refusal still holds. A caller that owns the FLUSH-2 adapters opts into the
+    panel and deterministic instruments explicitly. Every verdict is keyed by
+    aspect, angle and instrument; a repeated call is marked rather than
+    counted as fresh evidence.
     """
 
-    def __init__(self, *, ledger, judge, register=None, campaign="",
-                 bar=STOP_COMBINED, axis_floor=AXIS_FLOOR,
-                 absolute_floor=ABSOLUTE_FLOOR):
+    def __init__(self, *, ledger, judge=None, judges=None, register=None,
+                 campaign="", bar=STOP_COMBINED, axis_floor=AXIS_FLOOR,
+                 absolute_floor=ABSOLUTE_FLOOR,
+                 supported_instruments=FLUSH_ONE_INSTRUMENTS,
+                 judge_version=None):
         self.ledger = ledger
-        self.judge = judge
+        self.judges = {str(key): value
+                       for key, value in (judges or {}).items()}
+        if judge is not None:
+            self.judges.setdefault(JEV_INSTRUMENT, judge)
+        if not self.judges:
+            raise FlushError(
+                "a flush loop needs at least one instrument judge")
+        self.supported_instruments = tuple(dict.fromkeys(
+            str(instrument) for instrument in supported_instruments))
+        if not self.supported_instruments:
+            raise FlushError(
+                "a flush loop needs at least one supported instrument")
         self.register = register if register is not None else GapRegister()
         self.campaign = campaign
         self.bar = float(bar)
@@ -550,23 +677,44 @@ class FlushLoop:
         self._calls = set()
         self._angles_seen = set()
         self._instruments_seen = set()
+        self.oscillation = OscillationBreaker()
+        self.escalations = []
+        self.judge_version = None
+        self.scores = {}
+        self.score_history = []
+        if judge_version is not None:
+            self.pin_judge_version(judge_version)
 
     # -- one pass ---------------------------------------------------------
     def run_pass(self, *, target, records, angles, aspects,
-                 instruments=(JEV_INSTRUMENT,)):
+                 instruments=(JEV_INSTRUMENT,), judge_version=None):
         """Admit, judge and record one pass. Refusal raises ``PassRefused``."""
-        angles = tuple(dict.fromkeys(str(a) for a in angles))
+        angles = tuple(dict.fromkeys(str(angle) for angle in angles))
         instruments = tuple(dict.fromkeys(str(i) for i in instruments))
         if not angles:
             raise FlushError("a pass needs at least one angle to read through")
         if not aspects:
             raise FlushError("a pass needs at least one aspect to judge")
-        if set(instruments) != {JEV_INSTRUMENT}:
+        if not instruments:
             raise FlushError(
-                "FLUSH-1 judges with exactly one instrument, "
-                f"{JEV_INSTRUMENT!r}; declared {list(instruments)!r}. The "
-                "different-family panel and deterministic checks arrive "
-                "with FLUSH-2")
+                "a pass needs at least one instrument to judge")
+        unknown = set(instruments) - set(self.supported_instruments)
+        if unknown:
+            if set(self.supported_instruments) == {JEV_INSTRUMENT}:
+                raise FlushError(
+                    "FLUSH-1 judges with exactly one instrument, "
+                    f"{JEV_INSTRUMENT!r}; declared {list(instruments)!r}. "
+                    "The different-family panel and deterministic checks "
+                    "arrive with FLUSH-2")
+            raise FlushError(
+                f"unsupported instrument(s) {sorted(unknown)!r}; declared "
+                f"{list(self.supported_instruments)!r}")
+        missing = [instrument for instrument in instruments
+                   if instrument not in self.judges]
+        if missing:
+            raise FlushError(
+                f"no judge registered for instrument(s) {missing!r}; "
+                "refusing before the pass is admitted")
         try:
             identity, delta = begin_pass(self.previous, records=records,
                                          angles=angles,
@@ -577,6 +725,8 @@ class FlushLoop:
             # stays visible in the record.
             record_refusal(self.ledger, reason=str(exc), campaign=self.campaign)
             raise
+        if judge_version is not None:
+            self.pin_judge_version(judge_version)
         record_pass(self.ledger, identity=identity, delta=delta,
                     campaign=self.campaign)
         self.previous = identity
@@ -587,39 +737,79 @@ class FlushLoop:
         expansion = bool(new_angles or new_instruments)
 
         material, info, verdicts, repeated = [], [], [], []
+        regressions = []
+        escalation = None
         for aspect in aspects:
             for angle in angles:
-                key = (str(aspect), angle, identity.digest)
-                if key in self._calls:
-                    repeated.append(f"{aspect}/{angle}")
-                    continue
-                self._calls.add(key)
-                verdict = self.judge(aspect=aspect, angle=angle,
-                                     target=target, records=records)
-                if not isinstance(verdict, AspectVerdict):
-                    raise FlushError(
-                        "the judge must return AspectVerdict, not "
-                        f"{type(verdict).__name__}")
-                if verdict.aspect != str(aspect):
-                    raise FlushError(
-                        f"verdict is for {verdict.aspect!r} but aspect "
-                        f"{aspect!r} was asked")
-                verdicts.append(verdict)
-                if verdict.missing_record.strip():
-                    request = InfoRequest(aspect=str(aspect),
-                                          missing_record=verdict.missing_record)
-                    record_info_request(self.ledger, aspect=request.aspect,
-                                        missing_record=request.missing_record,
+                for instrument in instruments:
+                    key = (str(aspect), angle, instrument, identity.digest)
+                    if key in self._calls:
+                        repeated.append(
+                            _call_label(aspect, angle, instrument))
+                        continue
+                    self._calls.add(key)
+                    verdict = self.judges[instrument](
+                        aspect=aspect, angle=angle, target=target,
+                        records=records)
+                    if not isinstance(verdict, AspectVerdict):
+                        raise FlushError(
+                            "the judge must return AspectVerdict, not "
+                            f"{type(verdict).__name__}")
+                    if verdict.aspect != str(aspect):
+                        raise FlushError(
+                            f"verdict is for {verdict.aspect!r} but aspect "
+                            f"{aspect!r} was asked")
+                    verdicts.append(verdict)
+                    for axis, value in verdict.scores.items():
+                        self.scores[str(axis)] = float(value)
+                    if verdict.missing_record.strip():
+                        request = InfoRequest(
+                            aspect=str(aspect),
+                            missing_record=verdict.missing_record)
+                        record_info_request(
+                            self.ledger, aspect=request.aspect,
+                            missing_record=request.missing_record,
+                            campaign=self.campaign)
+                        info.append(request)
+                        continue
+                    for raw in verdict.findings:
+                        finding, reason = _as_finding(raw)
+                        existing = self.register.find(finding.id)
+                        if existing is not None:
+                            if existing.state == CLOSED:
+                                if not str(existing.cure).strip():
+                                    raise FlushError(
+                                        f"finding {existing.id!r} is closed "
+                                        f"without a cure; the register cannot "
+                                        f"form an oscillation edge")
+                                self.oscillation.record_cure(
+                                    existing.id, existing.cure)
+                                self.register.reopen(existing.id)
+                                regressions.append(existing.id)
+                                packet = self.oscillation.record_regression(
+                                    existing.id, aspect=str(aspect))
+                                if packet is not None:
+                                    self.escalations.append(packet)
+                                    record_oscillation(
+                                        self.ledger, packet=packet,
                                         campaign=self.campaign)
-                    info.append(request)
-                    continue
-                for raw in verdict.findings:
-                    finding, reason = _as_finding(raw)
-                    self.register.add(finding, materiality=reason)
-                    if reason is not None:
-                        material.append(finding.id)
+                                    escalation = packet
+                                    break
+                            continue
+                        if self.register.known(finding.id):
+                            continue
+                        self.register.add(finding, materiality=reason)
+                        if reason is not None:
+                            material.append(finding.id)
+                    if escalation is not None:
+                        break
+                if escalation is not None:
+                    break
+            if escalation is not None:
+                break
 
-        clean = expansion and not material and not info and not repeated
+        clean = (expansion and not material and not info and not repeated
+                 and not regressions)
         self.clean_expansion_streak = (
             self.clean_expansion_streak + 1 if clean else 0)
         outcome = PassOutcome(
@@ -627,9 +817,48 @@ class FlushLoop:
             expansion=expansion, clean=clean,
             material_findings=tuple(material),
             info_requests=tuple(info), verdicts=tuple(verdicts),
-            repeated_calls=tuple(repeated))
+            repeated_calls=tuple(repeated), regressions=tuple(regressions),
+            escalation=escalation)
         self.passes.append(outcome)
         return outcome
+
+    def close_finding(self, finding_id, *, cure, read, aspect=""):
+        """Close a finding and record the cure in the oscillation graph."""
+        finding = self.register.close(finding_id, cure=cure, read=read)
+        self.oscillation.record_cure(finding.id, cure)
+        return finding
+
+    def pin_judge_version(self, version, *, control_scores=None):
+        """Pin a judge version; a change rebaselines scores, not findings."""
+        version = str(version).strip()
+        if not version:
+            raise FlushError("a calibration pin needs a judge version")
+        scores = {}
+        if control_scores is not None:
+            scores = {str(axis): float(value)
+                      for axis, value in dict(control_scores).items()}
+        if self.judge_version == version:
+            return None
+        previous = self.judge_version
+        if previous is None:
+            self.judge_version = version
+            if control_scores is not None:
+                self.scores = scores
+            return None
+        before = dict(self.scores)
+        self.judge_version = version
+        self.scores = scores
+        event = {
+            "event": "calibration_rebaselined",
+            "campaign": self.campaign,
+            "from": previous,
+            "to": version,
+            "scores_before": before,
+            "scores_after": dict(scores),
+        }
+        self.score_history.append(event)
+        self.ledger.append(event)
+        return event
 
     # -- the stop rule ----------------------------------------------------
     def mark_cold_run(self, *, basis):
@@ -680,6 +909,10 @@ class FlushLoop:
                 f"pass(es); {CLEAN_EXPANSION_STREAK} are required")
         if self.cold_run_pass != self.passes[-1].number:
             reasons.append("the final pass includes no cold run")
+        if self.escalations:
+            reasons.append(
+                f"{len(self.escalations)} oscillation cycle(s) escalated; "
+                "the combined packet awaits a cure")
         if self.register.open_findings():
             reasons.append(
                 f"{len(self.register.open_findings())} finding(s) are still "
@@ -710,6 +943,11 @@ class FlushLoop:
             "passes": [p.describe() for p in self.passes],
             "clean_expansion_streak": self.clean_expansion_streak,
             "cold_run_pass": self.cold_run_pass,
+            "judge_version": self.judge_version,
+            "scores": dict(self.scores),
+            "score_history": list(self.score_history),
+            "escalations": list(self.escalations),
+            "oscillation_packets": list(self.oscillation.packets),
             "open_findings": [f.id for f in self.register.open_findings()],
             "tail": {bucket: len(ids)
                      for bucket, ids in self.register.tail.items()},
@@ -728,3 +966,10 @@ def _as_finding(raw):
                       summary=str(raw.get("summary", "")),
                       bucket=str(raw.get("bucket", "")))
     return finding, reason
+
+
+def _call_label(aspect, angle, instrument):
+    """Keep the FLUSH-1 repeated-call label stable for the Jev path."""
+    if instrument == JEV_INSTRUMENT:
+        return f"{aspect}/{angle}"
+    return f"{aspect}/{angle}/{instrument}"

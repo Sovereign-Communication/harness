@@ -65,7 +65,9 @@ from .routing_table import (
 )
 from .spend import discover_free_models
 from .filesafety import VERIFY_TIMEOUT, validate_target_file, validate_verify_command
-from .flush_loop import AspectVerdict, EventLedger, FlushError, FlushLoop
+from .flush_loop import (AspectVerdict, EventLedger, FLUSH_ONE_INSTRUMENTS,
+                         FLUSH_TWO_INSTRUMENTS, FlushError, FlushLoop,
+                         JEV_INSTRUMENT)
 from .gate_runner import (GATES, GATE_ORDER, STAGE_GATE_TIMEOUT, gate_help,
                           run_gate)
 from .paths import REPO_ROOT
@@ -2143,8 +2145,9 @@ def _cmd_flush(opts, settings):
     scored at zero, and the stop rule is reported as met or unmet with the
     reasons -- never printed as "saturated" because the passes ran out.
 
-    Live judging arrives with FLUSH-2's instrument rotation; this surface
-    exists so the loop's state is inspectable and reproducible today.
+    The default surface replays Jev only. ``--extended-instruments`` opts
+    into the FLUSH-2 panel and deterministic rotation; an extended campaign
+    carries ``instrument_verdicts`` for those instruments.
     """
     campaign_path = Path(opts.campaign)
     if not campaign_path.is_file():
@@ -2199,43 +2202,103 @@ def _cmd_flush(opts, settings):
         return resolved
 
     state = {"pass": {}}
+    supported = (FLUSH_TWO_INSTRUMENTS
+                 if getattr(opts, "extended_instruments", False)
+                 else FLUSH_ONE_INSTRUMENTS)
 
-    def judge(*, aspect, angle, target, records):
-        verdicts = state["pass"].get("verdicts") or {}
-        if aspect not in verdicts:
+    def _verdict_spec(instrument, aspect):
+        if instrument == JEV_INSTRUMENT:
+            verdicts = state["pass"].get("verdicts") or {}
+        else:
+            nested = state["pass"].get("instrument_verdicts") or {}
+            verdicts = nested.get(instrument) or {}
+        return verdicts.get(aspect)
+
+    def _make_judge(instrument):
+        def judge(*, aspect, angle, target, records):
+            spec = _verdict_spec(instrument, aspect)
+            if spec is None:
+                raise FlushError(
+                    f"the campaign names no verdict for instrument "
+                    f"{instrument!r} aspect {aspect!r}; the loop does not "
+                    f"invent scores")
+            return AspectVerdict(
+                aspect=aspect,
+                scores=dict(spec.get("scores") or {}),
+                findings=tuple(spec.get("findings") or ()),
+                missing_record=str(spec.get("missing_record") or ""),
+                basis=str(spec.get("basis") or ""))
+        return judge
+
+    judges = {instrument: _make_judge(instrument)
+              for instrument in supported}
+
+    def _validate_pass(spec):
+        instruments = tuple(dict.fromkeys(
+            str(i) for i in (spec.get("instruments")
+                             or (JEV_INSTRUMENT,))))
+        unknown = set(instruments) - set(supported)
+        if unknown:
+            if set(supported) == {JEV_INSTRUMENT}:
+                raise FlushError(
+                    "FLUSH-1 judges with exactly one instrument, "
+                    f"{JEV_INSTRUMENT!r}; declared {list(instruments)!r}. "
+                    "Pass --extended-instruments for the FLUSH-2 rotation")
             raise FlushError(
-                f"the campaign names no verdict for aspect {aspect!r}; the "
-                f"loop does not invent scores")
-        spec = verdicts[aspect]
-        return AspectVerdict(
-            aspect=aspect,
-            scores=dict(spec.get("scores") or {}),
-            findings=tuple(spec.get("findings") or ()),
-            missing_record=str(spec.get("missing_record") or ""),
-            basis=str(spec.get("basis") or ""))
+                f"unsupported instrument(s) {sorted(unknown)!r}; declared "
+                f"{list(supported)!r}")
+        aspects = tuple(spec.get("aspects") or ())
+        for instrument in instruments:
+            for aspect in aspects:
+                if _verdict_spec(instrument, aspect) is None:
+                    raise FlushError(
+                        f"the campaign names no verdict for instrument "
+                        f"{instrument!r} aspect {aspect!r}; the loop does "
+                        f"not invent scores")
+        closes = spec.get("close") or []
+        if not isinstance(closes, list):
+            raise FlushError("a pass 'close' entry must be a list")
+        for close in closes:
+            if (not isinstance(close, dict) or not close.get("finding")
+                    or not close.get("cure") or not close.get("read")):
+                raise FlushError(
+                    "every close needs finding, cure and read")
+        return instruments, closes
 
     ledger_path = opts.ledger or f"{campaign_path}.events.jsonl"
-    loop = FlushLoop(ledger=EventLedger(ledger_path), judge=judge,
-                     campaign=str(campaign.get("campaign") or campaign_path.stem))
+    loop = FlushLoop(
+        ledger=EventLedger(ledger_path), judges=judges,
+        supported_instruments=supported,
+        campaign=str(campaign.get("campaign") or campaign_path.stem),
+        judge_version=campaign.get("judge_version"))
     target = _target_text(campaign.get("target"))
     for spec in campaign.get("passes") or []:
         if not isinstance(spec, dict):
             raise FlushError("every pass must be an object")
         state["pass"] = spec
+        instruments, closes = _validate_pass(spec)
         outcome = loop.run_pass(
             target=target, records=_records(spec.get("records")),
-            angles=spec.get("angles") or (), aspects=spec.get("aspects") or (),
-            instruments=tuple(spec.get("instruments") or ("jev",)))
+            angles=spec.get("angles") or (),
+            aspects=spec.get("aspects") or (), instruments=instruments,
+            judge_version=spec.get("judge_version"))
         if spec.get("cold_run"):
             loop.mark_cold_run(basis=str(spec["cold_run"]))
         if outcome.info_requests:
             eprint(f"[flush] pass {outcome.number} stalled on "
                    + ", ".join(f"{r.aspect} needs {r.missing_record}"
                                for r in outcome.info_requests))
+        if outcome.escalation is not None:
+            break
+        for close in closes:
+            loop.close_finding(
+                str(close["finding"]), cure=str(close["cure"]),
+                read=str(close["read"]),
+                aspect=str(close.get("aspect") or ""))
 
     dossier = campaign.get("dossier")
     stopped = None
-    if campaign.get("stop"):
+    if campaign.get("stop") and not loop.escalations:
         stopped = loop.mark_stopped(dossier) if dossier else None
         if dossier is None:
             raise FlushError("a campaign that claims a stop needs a dossier")
