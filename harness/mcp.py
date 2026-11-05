@@ -41,6 +41,7 @@ from .config import HARD_MAX_COST, HARD_TASK_MAX_COST
 from .waist import compose_arguments
 from .waist import compose_plan
 from .errors import HarnessError, ToolCancelled
+from .flush_loop import run_campaign_file, run_canary_suite_file
 from . import osal
 from .executor import DEFAULT_PLAN_WORKERS, PlanExecutor
 from .mcp_lanes import LANES, lane_for
@@ -1196,6 +1197,41 @@ class McpServer:
                 min_confidence=confidence, persist=persist)
             return {"status": "frozen" if frozen["persisted"] else "preview",
                     "freeze": frozen}
+        if name == "flush_run":
+            raw_campaign = validate_text(args.get("campaign"), "campaign", 4096)
+            raw_suite = validate_text(args.get("canary_suite"), "canary_suite", 4096)
+            if bool(raw_campaign) == bool(raw_suite):
+                raise HarnessError(
+                    "flush_run needs exactly one of campaign or canary_suite")
+            allow_write = validate_mcp_bool(args.get("allow_write", False),
+                                            "allow_write")
+            if not (self.allow_write or allow_write):
+                self._refuse(
+                    "mcp flush write without allow_write",
+                    "flush_run appends its event ledger; re-send with "
+                    "allow_write=true or configure allow_write=True explicitly")
+            root = self._workspace_for(args.get("root"))
+            raw_ledger = validate_text(args.get("ledger"), "ledger", 4096)
+            ledger_path = None
+            if raw_ledger:
+                ledger_path = str(self._file_for(
+                    raw_ledger, workspace=root, must_exist=False))
+            if raw_suite:
+                suite_path = self._file_for(
+                    raw_suite, workspace=root, must_exist=True)
+                if ledger_path is None:
+                    ledger_path = f"{suite_path}.canary.events.jsonl"
+                return run_canary_suite_file(
+                    str(suite_path), ledger_path=ledger_path)
+            campaign_path = self._file_for(
+                raw_campaign, workspace=root, must_exist=True)
+            return run_campaign_file(
+                str(campaign_path), ledger_path=ledger_path,
+                extended_instruments=validate_mcp_bool(
+                    args.get("extended_instruments", False),
+                    "extended_instruments"),
+                cold_run=validate_mcp_bool(
+                    args.get("cold_run", False), "cold_run"))
         if name == "ledger_status":
             limit = validate_mcp_limit(args.get("limit"))
             ok, bad_seq = self.ledger.verify()

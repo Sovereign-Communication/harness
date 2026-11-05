@@ -22,6 +22,7 @@ from unittest import mock
 
 from harness.flush_loop import (
     CLOSED,
+    COLD_INSTRUMENT,
     DECISION_READY,
     DETERMINISTIC_INSTRUMENT,
     FLUSH_TWO_INSTRUMENTS,
@@ -29,6 +30,9 @@ from harness.flush_loop import (
     OPEN,
     PANEL_INSTRUMENT,
     AspectVerdict,
+    CanaryCase,
+    run_campaign_file,
+    run_canary_gate,
     EventLedger,
     EvidenceRecord,
     Finding,
@@ -712,6 +716,190 @@ class FlushTwoCliTests(unittest.TestCase):
                        if event["event"] == "oscillation_escalated"]
         self.assertEqual(len(escalations), 1)
         self.assertEqual(escalations[0]["packet"]["cycle"], ["gap-1"])
+
+
+class ColdRunTests(unittest.TestCase):
+    """FLUSH-3's cold run starts from a clean ledger and a fresh pass."""
+
+    def test_cold_instrument_completes_from_a_clean_ledger(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = Path(tmp) / "cold.json"
+            campaign.write_text(json.dumps({
+                "campaign": "cold",
+                "target": "the cold target",
+                "passes": [{
+                    "angles": ["flaw-hunt"], "aspects": ["scale"],
+                    "instruments": [COLD_INSTRUMENT],
+                    "records": [{"id": "ev-1", "content": "the pack"}],
+                    "instrument_verdicts": {COLD_INSTRUMENT: {
+                        "scale": {"basis": "cold:reader-B@v1",
+                                  "scores": {"completeness": 96}}}},
+                }],
+            }), encoding="utf-8")
+            result = run_campaign_file(
+                campaign, cold_run=True, extended_instruments=True)
+            self.assertTrue(result["cold_run"]["clean_state"])
+            self.assertEqual(result["cold_run"]["pass"], 1)
+            self.assertEqual(result["cold_run"]["basis"],
+                             "cold:reader-B@v1")
+            self.assertTrue(Path(str(campaign) + ".cold.events.jsonl").is_file())
+            with self.assertRaises(FlushError):
+                run_campaign_file(
+                    campaign, cold_run=True, extended_instruments=True)
+
+
+class CanaryGateTests(unittest.TestCase):
+    """The planted-defect gate is a gate, not a report."""
+
+    def _cases(self):
+        return (
+            CanaryCase(id="canary-1", target="target one",
+                       planted=("defect-1",)),
+            CanaryCase(id="canary-2", target="target two",
+                       planted=("defect-2", "defect-3")),
+        )
+
+    def test_canary_loop_finds_all_planted_defects(self):
+        detected = {
+            "canary-1": ("defect-1",),
+            "canary-2": ("defect-2", "defect-3"),
+        }
+
+        def judge(*, aspect, angle, target, records):
+            return AspectVerdict(
+                aspect=aspect, basis=f"canary:{target}@v1",
+                findings=tuple({"id": defect, "summary": defect,
+                                "materiality": "blocks_user_visible"}
+                               for defect in detected[str(target)]))
+
+        report = run_canary_gate(
+            self._cases(), judge,
+            held_out=["canary-1", "canary-2"], rotation=1)
+        self.assertTrue(report["passed"], report)
+        self.assertEqual(report["score"], 1.0)
+        self.assertEqual(len(report["cases"]), 2)
+        self.assertEqual(report["rotation"], 1)
+
+    def test_canary_gate_fails_closed_when_a_planted_defect_is_missed(self):
+        def judge(*, aspect, angle, target, records):
+            if str(target) == "canary-2":
+                return AspectVerdict(
+                    aspect=aspect, basis=f"canary:{target}@v1",
+                    findings=(({"id": "defect-2", "summary": "seen",
+                                 "materiality": "blocks_user_visible"}),))
+            return AspectVerdict(
+                aspect=aspect, basis=f"canary:{target}@v1",
+                findings=(({"id": "defect-1", "summary": "seen",
+                             "materiality": "blocks_user_visible"}),))
+
+        report = run_canary_gate(self._cases(), judge,
+                                 held_out=["canary-2"])
+        self.assertFalse(report["passed"])
+        missed = [case for case in report["cases"]
+                  if case["id"] == "canary-2"][0]
+        self.assertEqual(missed["missed"], ["defect-3"])
+
+    def test_canary_gate_fails_closed_when_the_judge_errors(self):
+        def judge(*, aspect, angle, target, records):
+            raise RuntimeError("detector crashed")
+
+        report = run_canary_gate(self._cases(), judge)
+        self.assertFalse(report["passed"])
+        self.assertTrue(all(case["error"] for case in report["cases"]))
+
+    def test_flush_canary_cli_passes_and_fails_closed(self):
+        from harness.cli import _cmd_flush_canary
+        from harness.cli_parser import build_parser
+        with tempfile.TemporaryDirectory() as tmp:
+            suite = Path(tmp) / "suite.json"
+            suite.write_text(json.dumps({
+                "campaign": "canary-cli",
+                "canaries": [{
+                    "id": "canary-1", "target": "target one",
+                    "planted": ["defect-1"],
+                    "basis": "canary:canary-1@v1",
+                    "findings": [{"id": "defect-1", "summary": "seen",
+                                  "materiality": "blocks_user_visible"}],
+                }],
+                "held_out": ["canary-1"],
+            }), encoding="utf-8")
+            opts = build_parser().parse_args(
+                ["flush-canary", "--suite", str(suite), "--json"])
+            with redirect_stdout(io.StringIO()):
+                result = _cmd_flush_canary(opts, mock.Mock())
+            self.assertTrue(result["passed"])
+            self.assertEqual(result["score"], 1.0)
+
+            suite.write_text(json.dumps({
+                "campaign": "canary-cli",
+                "canaries": [{
+                    "id": "canary-1", "target": "target one",
+                    "planted": ["defect-1"],
+                    "basis": "canary:canary-1@v1",
+                    "findings": [],
+                }],
+                "held_out": ["canary-1"],
+            }), encoding="utf-8")
+            opts = build_parser().parse_args(
+                ["flush-canary", "--suite", str(suite), "--json"])
+            with self.assertRaises(SystemExit):
+                with redirect_stdout(io.StringIO()):
+                    _cmd_flush_canary(opts, mock.Mock())
+
+
+class FlushSurfaceParityTests(unittest.TestCase):
+    """CLI and MCP replay one campaign through one owner."""
+
+    def test_mcp_and_cli_read_same_campaign_state(self):
+        from harness.cli import _cmd_flush
+        from harness.cli_parser import build_parser
+        from tests.test_mcp import _serve, make_server
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "root"
+            root.mkdir()
+            campaign = root / "campaign.json"
+            campaign.write_text(json.dumps({
+                "campaign": "parity",
+                "target": "the parity target",
+                "passes": [
+                    {"angles": ["flaw-hunt"], "aspects": ["scale"],
+                     "records": [{"id": "ev-1", "content": "one"}],
+                     "verdicts": {"scale": {
+                         "basis": "dossier:ev-1@v1",
+                         "scores": {"completeness": 96}}}},
+                    {"angles": ["flaw-hunt", "red-team"],
+                     "aspects": ["scale"],
+                     "records": [{"id": "ev-1", "content": "one"}],
+                     "verdicts": {"scale": {
+                         "basis": "dossier:ev-1@v1",
+                         "scores": {"grounding": 96}}}},
+                ],
+                "dossier": {"axes": {"completeness": 96,
+                                     "grounding": 96},
+                            "basis": "dossier:ev-1@v1"},
+            }), encoding="utf-8")
+            cli_ledger = root / "cli.events.jsonl"
+            opts = build_parser().parse_args([
+                "flush", "--campaign", str(campaign),
+                "--ledger", str(cli_ledger), "--json"])
+            with redirect_stdout(io.StringIO()):
+                cli_result = _cmd_flush(opts, mock.Mock())
+
+            _, server = make_server(allowed_roots=[str(root)])
+            frame = json.dumps({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "flush_run", "arguments": {
+                    "campaign": str(campaign),
+                    "ledger": str(root / "mcp.events.jsonl"),
+                    "root": str(root), "allow_write": True}}}) + "\n"
+            frames = _serve(server, frame)
+            self.assertEqual(len(frames), 1, frames)
+            self.assertNotIn("error", frames[0], frames[0])
+            mcp_result = frames[0]["result"]["structuredContent"]
+            for key in ("campaign", "passes", "stop_ready", "stop_reasons",
+                        "clean_expansion_streak", "scores", "judge_version"):
+                self.assertEqual(mcp_result[key], cli_result[key], key)
 
 
 if __name__ == "__main__":

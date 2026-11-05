@@ -720,5 +720,26 @@ TOOL_SCHEMAS = [
         }},
         "annotations": {"readOnlyHint": True, "openWorldHint": True},
     },
+    {
+        "name": "flush_run",
+        "title": "Run a saturation (flush) campaign or canary gate",
+        "description": (
+            "When: a saturation campaign or planted-defect canary suite must "
+            "be replayed. "
+            "In: exactly one of campaign or canary_suite, plus optional "
+            "ledger, extended_instruments, cold_run, root, and allow_write. "
+            "Out: the same campaign state the CLI reports, or the fail-closed "
+            "canary gate verdict; no code is written."),
+        "inputSchema": {"type": "object", "properties": {
+            "campaign": {"type": "string", "description": "Campaign JSON path inside an allowed root"},
+            "canary_suite": {"type": "string", "description": "Canary suite JSON path inside an allowed root"},
+            "ledger": {"type": "string", "description": "Optional event ledger path inside an allowed root"},
+            "extended_instruments": {"type": "boolean", "default": False, "description": "Allow the FLUSH-2/3 panel, deterministic, and cold instruments"},
+            "cold_run": {"type": "boolean", "default": False, "description": "Require a clean ledger and a cold run in the final pass"},
+            "root": {"type": "string", "description": "Selected workspace inside configured MCP allowed roots"},
+            "allow_write": {"type": "boolean", "description": "Explicit permission to append the event ledger"},
+        }},
+        "annotations": {"openWorldHint": True},
+    },
 ]
 

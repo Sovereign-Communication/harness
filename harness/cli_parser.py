@@ -910,11 +910,27 @@ def build_parser():
     pfl.add_argument("--ledger", default=None,
                      help="event ledger path (default: <campaign>.events.jsonl)")
     pfl.add_argument("--extended-instruments", action="store_true",
-                     help="allow panel and deterministic instruments "
-                          "(FLUSH-2 rotation); default is Jev-only")
+                     help="allow panel, deterministic and cold instruments "
+                          "(FLUSH-2/3 rotation); default is Jev-only")
+    pfl.add_argument("--cold-run", action="store_true",
+                     help="require a clean ledger and a cold run in the final "
+                          "pass (FLUSH-3)")
     pfl.add_argument("--json", action="store_true",
                      help="emit raw JSON only (no banner)")
     _add_output_flags(pfl)
+
+    pfc = sub.add_parser(
+        "flush-canary",
+        help="Planted-defect canary gate: fail closed unless every held-out "
+             "defect is found")
+    pfc.add_argument("--suite", required=True,
+                     help="canary suite JSON: canaries, planted ids, findings, "
+                          "held_out, rotation")
+    pfc.add_argument("--ledger", default=None,
+                     help="gate ledger path (default: <suite>.canary.events.jsonl)")
+    pfc.add_argument("--json", action="store_true",
+                     help="emit raw JSON only (no banner)")
+    _add_output_flags(pfc)
 
     return ap
 

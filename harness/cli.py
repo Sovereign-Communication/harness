@@ -65,9 +65,7 @@ from .routing_table import (
 )
 from .spend import discover_free_models
 from .filesafety import VERIFY_TIMEOUT, validate_target_file, validate_verify_command
-from .flush_loop import (AspectVerdict, EventLedger, FLUSH_ONE_INSTRUMENTS,
-                         FLUSH_TWO_INSTRUMENTS, FlushError, FlushLoop,
-                         JEV_INSTRUMENT)
+from .flush_loop import run_campaign_file, run_canary_suite_file
 from .gate_runner import (GATES, GATE_ORDER, STAGE_GATE_TIMEOUT, gate_help,
                           run_gate)
 from .paths import REPO_ROOT
@@ -2136,177 +2134,26 @@ def _cmd_overlay(opts, settings):
 # (opts, settings), so a signature drift fails loudly at dispatch instead of
 # silently mis-binding arguments.
 def _cmd_flush(opts, settings):
-    """Saturation (flush) loop over a campaign file (FLUSH-1).
+    """Saturation (flush) loop over a campaign file (FLUSH-1/2/3).
 
-    The loop makes no network and no judge call of its own: the campaign file
-    carries the Jev instrument's recorded verdicts, one per aspect per pass, so
-    a run is a replay whose every step the ledger can be re-read against. A
-    campaign that names an aspect with no verdict is refused rather than
-    scored at zero, and the stop rule is reported as met or unmet with the
-    reasons -- never printed as "saturated" because the passes ran out.
-
-    The default surface replays Jev only. ``--extended-instruments`` opts
-    into the FLUSH-2 panel and deterministic rotation; an extended campaign
-    carries ``instrument_verdicts`` for those instruments.
+    The campaign runner is shared with MCP's flush_run; this face validates
+    the CLI options and emits the same result shape the MCP tool returns.
     """
-    campaign_path = Path(opts.campaign)
-    if not campaign_path.is_file():
-        raise FlushError(f"campaign file not found: {campaign_path}")
-    try:
-        campaign = json.loads(campaign_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise FlushError(f"{campaign_path} is not valid JSON: {exc}") from exc
-    if not isinstance(campaign, dict):
-        raise FlushError(f"{campaign_path} must contain a JSON object")
-    base = campaign_path.parent
-    repo_root = Path(__file__).resolve().parent.parent
-
-    def _resolve(text):
-        """A campaign path is relative to its file, then to the repo root.
-
-        A campaign kept beside its fixtures resolves portably; one that names
-        repo files (`harness/...`, `docs/...`) resolves the same from any
-        working directory, which is what an operator expects when the campaign
-        lives in a scratch folder.
-        """
-        if not text:
-            return None
-        for candidate in (base / text, Path.cwd() / text, repo_root / text):
-            if candidate.is_file():
-                return candidate
-        return None
-
-    def _target_text(spec):
-        text = str(spec or "")
-        candidate = _resolve(text)
-        if candidate is not None:
-            return candidate.read_text(encoding="utf-8")
-        return text
-
-    def _records(specs):
-        resolved = []
-        for spec in specs or []:
-            if not isinstance(spec, dict) or not spec.get("id"):
-                raise FlushError("every record needs an id")
-            if "content" in spec:
-                resolved.append((str(spec["id"]), str(spec["content"])))
-                continue
-            named = str(spec.get("path") or "")
-            path = _resolve(named)
-            if path is None:
-                raise FlushError(
-                    f"record {spec['id']!r} names no readable path: {named} "
-                    f"(tried {base / named} and the repo root)")
-            resolved.append((str(spec["id"]),
-                             path.read_text(encoding="utf-8")))
-        return resolved
-
-    state = {"pass": {}}
-    supported = (FLUSH_TWO_INSTRUMENTS
-                 if getattr(opts, "extended_instruments", False)
-                 else FLUSH_ONE_INSTRUMENTS)
-
-    def _verdict_spec(instrument, aspect):
-        if instrument == JEV_INSTRUMENT:
-            verdicts = state["pass"].get("verdicts") or {}
-        else:
-            nested = state["pass"].get("instrument_verdicts") or {}
-            verdicts = nested.get(instrument) or {}
-        return verdicts.get(aspect)
-
-    def _make_judge(instrument):
-        def judge(*, aspect, angle, target, records):
-            spec = _verdict_spec(instrument, aspect)
-            if spec is None:
-                raise FlushError(
-                    f"the campaign names no verdict for instrument "
-                    f"{instrument!r} aspect {aspect!r}; the loop does not "
-                    f"invent scores")
-            return AspectVerdict(
-                aspect=aspect,
-                scores=dict(spec.get("scores") or {}),
-                findings=tuple(spec.get("findings") or ()),
-                missing_record=str(spec.get("missing_record") or ""),
-                basis=str(spec.get("basis") or ""))
-        return judge
-
-    judges = {instrument: _make_judge(instrument)
-              for instrument in supported}
-
-    def _validate_pass(spec):
-        instruments = tuple(dict.fromkeys(
-            str(i) for i in (spec.get("instruments")
-                             or (JEV_INSTRUMENT,))))
-        unknown = set(instruments) - set(supported)
-        if unknown:
-            if set(supported) == {JEV_INSTRUMENT}:
-                raise FlushError(
-                    "FLUSH-1 judges with exactly one instrument, "
-                    f"{JEV_INSTRUMENT!r}; declared {list(instruments)!r}. "
-                    "Pass --extended-instruments for the FLUSH-2 rotation")
-            raise FlushError(
-                f"unsupported instrument(s) {sorted(unknown)!r}; declared "
-                f"{list(supported)!r}")
-        aspects = tuple(spec.get("aspects") or ())
-        for instrument in instruments:
-            for aspect in aspects:
-                if _verdict_spec(instrument, aspect) is None:
-                    raise FlushError(
-                        f"the campaign names no verdict for instrument "
-                        f"{instrument!r} aspect {aspect!r}; the loop does "
-                        f"not invent scores")
-        closes = spec.get("close") or []
-        if not isinstance(closes, list):
-            raise FlushError("a pass 'close' entry must be a list")
-        for close in closes:
-            if (not isinstance(close, dict) or not close.get("finding")
-                    or not close.get("cure") or not close.get("read")):
-                raise FlushError(
-                    "every close needs finding, cure and read")
-        return instruments, closes
-
-    ledger_path = opts.ledger or f"{campaign_path}.events.jsonl"
-    loop = FlushLoop(
-        ledger=EventLedger(ledger_path), judges=judges,
-        supported_instruments=supported,
-        campaign=str(campaign.get("campaign") or campaign_path.stem),
-        judge_version=campaign.get("judge_version"))
-    target = _target_text(campaign.get("target"))
-    for spec in campaign.get("passes") or []:
-        if not isinstance(spec, dict):
-            raise FlushError("every pass must be an object")
-        state["pass"] = spec
-        instruments, closes = _validate_pass(spec)
-        outcome = loop.run_pass(
-            target=target, records=_records(spec.get("records")),
-            angles=spec.get("angles") or (),
-            aspects=spec.get("aspects") or (), instruments=instruments,
-            judge_version=spec.get("judge_version"))
-        if spec.get("cold_run"):
-            loop.mark_cold_run(basis=str(spec["cold_run"]))
-        if outcome.info_requests:
-            eprint(f"[flush] pass {outcome.number} stalled on "
-                   + ", ".join(f"{r.aspect} needs {r.missing_record}"
-                               for r in outcome.info_requests))
-        if outcome.escalation is not None:
-            break
-        for close in closes:
-            loop.close_finding(
-                str(close["finding"]), cure=str(close["cure"]),
-                read=str(close["read"]),
-                aspect=str(close.get("aspect") or ""))
-
-    dossier = campaign.get("dossier")
-    stopped = None
-    if campaign.get("stop") and not loop.escalations:
-        stopped = loop.mark_stopped(dossier) if dossier else None
-        if dossier is None:
-            raise FlushError("a campaign that claims a stop needs a dossier")
-    ready, reasons = loop.stop_ready(dossier)
-    result = {"campaign": loop.campaign, "ledger": ledger_path,
-              "stop_ready": ready, "stop_reasons": list(reasons),
-              "stopped": stopped is not None, **loop.describe()}
+    result = run_campaign_file(
+        opts.campaign, ledger_path=opts.ledger,
+        extended_instruments=getattr(opts, "extended_instruments", False),
+        cold_run=getattr(opts, "cold_run", False))
     _emit(result, opts.out, force_json=getattr(opts, "json", False))
+    return result
+
+
+def _cmd_flush_canary(opts, settings):
+    """Run the planted-defect canary gate and fail closed when it misses."""
+    ledger = opts.ledger or f"{opts.suite}.canary.events.jsonl"
+    result = run_canary_suite_file(opts.suite, ledger_path=ledger)
+    _emit(result, opts.out, force_json=getattr(opts, "json", False))
+    if not result["passed"]:
+        raise SystemExit(1)
     return result
 
 
@@ -2351,6 +2198,7 @@ _DISPATCH = {
     "refine": _cmd_refine,
     "assess": _cmd_assess,
     "flush": _cmd_flush,
+    "flush-canary": _cmd_flush_canary,
 }
 
 

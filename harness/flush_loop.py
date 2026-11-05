@@ -24,7 +24,10 @@ anything. ``harness flush`` (FLUSH-1) is the caller.
 import hashlib
 import json
 import os
+import sys
+import tempfile
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from .errors import HarnessError
 
@@ -449,6 +452,10 @@ DETERMINISTIC_INSTRUMENT = "deterministic"
 FLUSH_ONE_INSTRUMENTS = (JEV_INSTRUMENT,)
 FLUSH_TWO_INSTRUMENTS = (JEV_INSTRUMENT, PANEL_INSTRUMENT,
                          DETERMINISTIC_INSTRUMENT)
+COLD_INSTRUMENT = "cold"
+FLUSH_THREE_INSTRUMENTS = FLUSH_TWO_INSTRUMENTS + (COLD_INSTRUMENT,)
+CANARY_INSTRUMENT = "canary"
+FLUSH_CANARY_INSTRUMENTS = (CANARY_INSTRUMENT,)
 
 #: The stop bar, verbatim from the commission: combined >= 95, every axis >= 85,
 #: no axis below 60.
@@ -739,6 +746,7 @@ class FlushLoop:
         material, info, verdicts, repeated = [], [], [], []
         regressions = []
         escalation = None
+        cold_basis = ""
         for aspect in aspects:
             for angle in angles:
                 for instrument in instruments:
@@ -760,6 +768,10 @@ class FlushLoop:
                             f"verdict is for {verdict.aspect!r} but aspect "
                             f"{aspect!r} was asked")
                     verdicts.append(verdict)
+                    if (instrument == COLD_INSTRUMENT
+                            and not verdict.missing_record.strip()
+                            and not cold_basis):
+                        cold_basis = verdict.basis
                     for axis, value in verdict.scores.items():
                         self.scores[str(axis)] = float(value)
                     if verdict.missing_record.strip():
@@ -820,6 +832,11 @@ class FlushLoop:
             repeated_calls=tuple(repeated), regressions=tuple(regressions),
             escalation=escalation)
         self.passes.append(outcome)
+        if cold_basis:
+            # A cold instrument that actually answered is the cold run for
+            # this pass. The manual marker remains for FLUSH-1/2 campaigns.
+            self.cold_run_pass = outcome.number
+            self.cold_run_basis = cold_basis
         return outcome
 
     def close_finding(self, finding_id, *, cure, read, aspect=""):
@@ -952,6 +969,341 @@ class FlushLoop:
             "tail": {bucket: len(ids)
                      for bucket, ids in self.register.tail.items()},
         }
+
+
+@dataclass(frozen=True)
+class CanaryCase:
+    """One planted defect the canary gate must find.
+
+    ``planted`` is the set of defect ids the target actually contains.
+    ``findings`` is the recorded detector output for the CLI/MCP replay path;
+    an injected judge can supply fresh findings instead.
+    """
+
+    id: str
+    target: str
+    planted: tuple
+    aspect: str = "canary"
+    angle: str = "flaw-hunt"
+    findings: tuple = ()
+    basis: str = ""
+
+    def __post_init__(self):
+        case_id = str(self.id).strip()
+        if not case_id:
+            raise FlushError("a canary needs an id")
+        if not str(self.target).strip():
+            raise FlushError(f"canary {case_id!r} has no target content")
+        planted = tuple(str(item).strip() for item in self.planted)
+        if not planted or any(not item for item in planted):
+            raise FlushError(
+                f"canary {case_id!r} must plant at least one defect id")
+        object.__setattr__(self, "id", case_id)
+        object.__setattr__(self, "planted", planted)
+        object.__setattr__(self, "findings", tuple(self.findings))
+        object.__setattr__(
+            self, "basis", str(self.basis or f"canary:{case_id}@v1"))
+
+
+def run_canary_gate(cases, judge, *, held_out=None, rotation=0, ledger=None,
+                    campaign="canary"):
+    """Run every canary and fail closed unless every planted defect is found.
+
+    Canaries rotate deterministically by ``rotation``. The score is measured
+    on ``held_out`` (all cases when omitted); the pass verdict is stricter and
+    requires every executed case to be clean. A judge error, a missing
+    planted id, an empty suite, or an unknown held-out id is a gate failure,
+    never an admitted result.
+    """
+    cases = tuple(cases)
+    ids = [case.id for case in cases]
+    if len(ids) != len(set(ids)):
+        raise FlushError("canary ids must be unique")
+    if not cases:
+        return {"gate": "flush_canary", "campaign": campaign,
+                "passed": False, "score": 0.0, "held_out": [],
+                "rotation": int(rotation), "cases": [], "ledger": "",
+                "reason": "no canary cases"}
+    scored_ids = set(str(item) for item in
+                     (ids if held_out is None else held_out))
+    unknown = scored_ids - set(ids)
+    if unknown:
+        raise FlushError(
+            f"held-out canary id(s) not in the suite: {sorted(unknown)!r}")
+    rotation = int(rotation) % len(cases)
+    ordered = cases[rotation:] + cases[:rotation]
+
+    temporary = None
+    if ledger is None:
+        temporary = tempfile.TemporaryDirectory()
+        active = EventLedger(Path(temporary.name) / "canary.events.jsonl")
+        ledger_label = ""
+    elif isinstance(ledger, EventLedger):
+        active = ledger
+        ledger_label = str(getattr(ledger, "path", ""))
+    else:
+        active = EventLedger(str(ledger))
+        ledger_label = str(ledger)
+
+    results = []
+    for case in ordered:
+        found = set()
+        error = ""
+        try:
+            loop = FlushLoop(
+                ledger=active, judges={CANARY_INSTRUMENT: judge},
+                supported_instruments=FLUSH_CANARY_INSTRUMENTS,
+                campaign=f"{campaign}:{case.id}")
+            outcome = loop.run_pass(
+                target=case.id,
+                records=[EvidenceRecord(case.id, case.target)],
+                angles=[case.angle], aspects=[case.aspect],
+                instruments=[CANARY_INSTRUMENT])
+            for verdict in outcome.verdicts:
+                for raw in verdict.findings:
+                    finding, _reason = _as_finding(raw)
+                    found.add(finding.id)
+        except Exception as exc:  # the gate fails closed on any judge error
+            error = f"{type(exc).__name__}: {exc}"
+        planted = set(case.planted)
+        missed = sorted(planted - found)
+        passed = bool(planted) and not missed and not error
+        results.append({"id": case.id, "passed": passed,
+                        "found": sorted(planted & found),
+                        "missed": missed, "error": error})
+
+    scored = [result for result in results
+              if result["id"] in scored_ids]
+    total = sum(len(case.planted) for case in cases
+                if case.id in scored_ids)
+    hit = sum(len(result["found"]) for result in scored)
+    report = {
+        "gate": "flush_canary",
+        "campaign": campaign,
+        "passed": bool(scored) and all(result["passed"]
+                                        for result in results),
+        "score": round(hit / total, 4) if total else 0.0,
+        "held_out": sorted(scored_ids),
+        "rotation": rotation,
+        "cases": results,
+        "ledger": ledger_label,
+    }
+    if temporary is not None:
+        temporary.cleanup()
+    return report
+
+
+def run_canary_suite_file(suite_path, *, ledger_path=None):
+    """Replay a canary suite file through the same gate the tests exercise."""
+    path = Path(suite_path)
+    if not path.is_file():
+        raise FlushError(f"canary suite not found: {path}")
+    try:
+        suite = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise FlushError(f"{path} is not valid JSON: {exc}") from exc
+    if not isinstance(suite, dict):
+        raise FlushError(f"{path} must contain a JSON object")
+    cases = []
+    for raw in suite.get("canaries") or []:
+        if not isinstance(raw, dict):
+            raise FlushError("every canary must be an object")
+        cases.append(CanaryCase(
+            id=str(raw.get("id") or ""),
+            target=str(raw.get("target") or ""),
+            planted=tuple(raw.get("planted") or ()),
+            aspect=str(raw.get("aspect") or "canary"),
+            angle=str(raw.get("angle") or "flaw-hunt"),
+            findings=tuple(raw.get("findings") or ()),
+            basis=str(raw.get("basis") or "")))
+    by_id = {case.id: case for case in cases}
+
+    def judge(*, aspect, angle, target, records):
+        case = by_id.get(str(target))
+        if case is None:
+            raise FlushError(f"no canary case for target {target!r}")
+        return AspectVerdict(aspect=aspect, basis=case.basis,
+                             findings=case.findings)
+
+    return run_canary_gate(
+        cases, judge, held_out=suite.get("held_out"),
+        rotation=int(suite.get("rotation") or 0), ledger=ledger_path,
+        campaign=str(suite.get("campaign") or path.stem))
+
+
+def run_campaign_file(campaign_path, *, ledger_path=None,
+                      extended_instruments=False, cold_run=False):
+    """Replay a campaign file. The CLI and MCP both call this one owner."""
+    campaign_path = Path(campaign_path)
+    if not campaign_path.is_file():
+        raise FlushError(f"campaign file not found: {campaign_path}")
+    try:
+        campaign = json.loads(campaign_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise FlushError(f"{campaign_path} is not valid JSON: {exc}") from exc
+    if not isinstance(campaign, dict):
+        raise FlushError(f"{campaign_path} must contain a JSON object")
+    base = campaign_path.parent
+    repo_root = Path(__file__).resolve().parent.parent
+
+    def _resolve(text):
+        if not text:
+            return None
+        for candidate in (base / text, Path.cwd() / text, repo_root / text):
+            if candidate.is_file():
+                return candidate
+        return None
+
+    def _target_text(spec):
+        text = str(spec or "")
+        candidate = _resolve(text)
+        if candidate is not None:
+            return candidate.read_text(encoding="utf-8")
+        return text
+
+    def _records(specs):
+        resolved = []
+        for spec in specs or []:
+            if not isinstance(spec, dict) or not spec.get("id"):
+                raise FlushError("every record needs an id")
+            if "content" in spec:
+                resolved.append((str(spec["id"]), str(spec["content"])))
+                continue
+            named = str(spec.get("path") or "")
+            path = _resolve(named)
+            if path is None:
+                raise FlushError(
+                    f"record {spec['id']!r} names no readable path: {named} "
+                    f"(tried {base / named} and the repo root)")
+            resolved.append((str(spec["id"]),
+                             path.read_text(encoding="utf-8")))
+        return resolved
+
+    state = {"pass": {}}
+    supported = (FLUSH_THREE_INSTRUMENTS if extended_instruments
+                 else FLUSH_ONE_INSTRUMENTS)
+
+    def _verdict_spec(instrument, aspect):
+        if instrument == JEV_INSTRUMENT:
+            verdicts = state["pass"].get("verdicts") or {}
+        else:
+            nested = state["pass"].get("instrument_verdicts") or {}
+            verdicts = nested.get(instrument) or {}
+        return verdicts.get(aspect)
+
+    def _make_judge(instrument):
+        def judge(*, aspect, angle, target, records):
+            spec = _verdict_spec(instrument, aspect)
+            if spec is None:
+                raise FlushError(
+                    f"the campaign names no verdict for instrument "
+                    f"{instrument!r} aspect {aspect!r}; the loop does not "
+                    f"invent scores")
+            return AspectVerdict(
+                aspect=aspect,
+                scores=dict(spec.get("scores") or {}),
+                findings=tuple(spec.get("findings") or ()),
+                missing_record=str(spec.get("missing_record") or ""),
+                basis=str(spec.get("basis") or ""))
+        return judge
+
+    judges = {instrument: _make_judge(instrument)
+              for instrument in supported}
+
+    def _validate_pass(spec):
+        instruments = tuple(dict.fromkeys(
+            str(i) for i in (spec.get("instruments")
+                             or (JEV_INSTRUMENT,))))
+        unknown = set(instruments) - set(supported)
+        if unknown:
+            if set(supported) == {JEV_INSTRUMENT}:
+                raise FlushError(
+                    "FLUSH-1 judges with exactly one instrument, "
+                    f"{JEV_INSTRUMENT!r}; declared {list(instruments)!r}. "
+                    "Pass --extended-instruments for the FLUSH-2/3 rotation")
+            raise FlushError(
+                f"unsupported instrument(s) {sorted(unknown)!r}; declared "
+                f"{list(supported)!r}")
+        aspects = tuple(spec.get("aspects") or ())
+        for instrument in instruments:
+            for aspect in aspects:
+                if _verdict_spec(instrument, aspect) is None:
+                    raise FlushError(
+                        f"the campaign names no verdict for instrument "
+                        f"{instrument!r} aspect {aspect!r}; the loop does "
+                        f"not invent scores")
+        closes = spec.get("close") or []
+        if not isinstance(closes, list):
+            raise FlushError("a pass 'close' entry must be a list")
+        for close in closes:
+            if (not isinstance(close, dict) or not close.get("finding")
+                    or not close.get("cure") or not close.get("read")):
+                raise FlushError("every close needs finding, cure and read")
+        return instruments, closes
+
+    chosen_ledger = ledger_path or (
+        f"{campaign_path}.cold.events.jsonl" if cold_run
+        else f"{campaign_path}.events.jsonl")
+    if cold_run and Path(chosen_ledger).exists():
+        raise FlushError(
+            f"a cold run needs a clean ledger; {chosen_ledger} already exists")
+    loop = FlushLoop(
+        ledger=EventLedger(chosen_ledger), judges=judges,
+        supported_instruments=supported,
+        campaign=str(campaign.get("campaign") or campaign_path.stem),
+        judge_version=campaign.get("judge_version"))
+    target = _target_text(campaign.get("target"))
+    for spec in campaign.get("passes") or []:
+        if not isinstance(spec, dict):
+            raise FlushError("every pass must be an object")
+        state["pass"] = spec
+        instruments, closes = _validate_pass(spec)
+        outcome = loop.run_pass(
+            target=target, records=_records(spec.get("records")),
+            angles=spec.get("angles") or (),
+            aspects=spec.get("aspects") or (), instruments=instruments,
+            judge_version=spec.get("judge_version"))
+        if spec.get("cold_run"):
+            loop.mark_cold_run(basis=str(spec["cold_run"]))
+        if outcome.info_requests:
+            sys.stderr.write("[flush] pass {} stalled on {}\n".format(
+                outcome.number,
+                ", ".join(f"{r.aspect} needs {r.missing_record}"
+                          for r in outcome.info_requests)))
+        if outcome.escalation is not None:
+            break
+        for close in closes:
+            loop.close_finding(
+                str(close["finding"]), cure=str(close["cure"]),
+                read=str(close["read"]),
+                aspect=str(close.get("aspect") or ""))
+
+    if cold_run:
+        if not loop.passes:
+            raise FlushError("a cold run needs at least one admitted pass")
+        if loop.cold_run_pass != loop.passes[-1].number:
+            raise FlushError(
+                "the cold run did not complete in the final pass; add a "
+                "cold_run basis or the cold instrument to that pass")
+
+    dossier = campaign.get("dossier")
+    stopped = None
+    if campaign.get("stop") and not loop.escalations:
+        stopped = loop.mark_stopped(dossier) if dossier else None
+        if dossier is None:
+            raise FlushError("a campaign that claims a stop needs a dossier")
+    ready, reasons = loop.stop_ready(dossier)
+    result = {"campaign": loop.campaign, "ledger": str(chosen_ledger),
+              "stop_ready": ready, "stop_reasons": list(reasons),
+              "stopped": stopped is not None, **loop.describe()}
+    if cold_run:
+        result["cold_run"] = {
+            "clean_state": True,
+            "ledger": str(chosen_ledger),
+            "pass": loop.cold_run_pass,
+            "basis": loop.cold_run_basis,
+        }
+    return result
 
 
 def _as_finding(raw):

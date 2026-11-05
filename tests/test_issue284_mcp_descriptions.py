@@ -12,7 +12,7 @@ class McpDescriptionFormulaTests(unittest.TestCase):
     def test_every_registered_tool_states_when_in_and_out(self):
         checked = lint_tool_descriptions(TOOL_SCHEMAS)
         self.assertEqual(checked, len(TOOL_SCHEMAS))
-        self.assertEqual(len(TOOL_SCHEMAS), 32)
+        self.assertEqual(len(TOOL_SCHEMAS), 33)
         for schema in TOOL_SCHEMAS:
             text = " ".join(schema["description"].split())
             self.assertTrue(text.startswith("When:"), schema["name"])

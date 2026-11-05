@@ -598,7 +598,7 @@ Tools (`tools/list` order): `ask`, `site_check`, `panel_verify`, `apply_edit`, `
 `issue_sort`, `source_audit`, `route_query`, `mission_status`, `continue_work`, `script_run`, `log_judgment`,
 `lucas_gate_v2`, `jev_phase`, `jev_freeze`, `dogfood`, `generate_brief`, `driver_step`, `driver_health`, `driver_vocabulary`,
 `driver_verify`, `host_provision_probe`, `host_provision_plan`, `repo_cards`, `jev_calibration`,
-`economics_report`.
+`economics_report`, `flush_run`.
 `economics_report` reports tier snapshot freshness, seat-share diversity, per-lane/per-tier cost metering, and bounded pool-rotation proposals (EV-1..EV-5).
 `lucas_gate_v2` validates a caller-produced typed scorecard without making semantic judgments or calling a model. See [docs/lucas-gate-v2.md](https://github.com/Sovereign-Communication/harness/blob/main/docs/lucas-gate-v2.md) for private-profile handling and N/A categories.
 `script_run` executes one Python script through the governed runner in `harness/script.py`: consent is the

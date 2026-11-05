@@ -1291,7 +1291,8 @@ class LaneSchedulingTests(unittest.TestCase):
              "host_provision_plan": "spendy",
              "repo_cards": "observe",
              "jev_calibration": "observe",
-             "economics_report": "observe"})
+             "economics_report": "observe",
+             "flush_run": "mutation"})
 
 
 class SourceAuditMcpTests(unittest.TestCase):
