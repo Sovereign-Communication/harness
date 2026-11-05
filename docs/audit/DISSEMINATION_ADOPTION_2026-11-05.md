@@ -62,7 +62,7 @@ input. Nothing here is adopted on an intention.
 
 ## 5. Adopter-facing links (all committed on `lane/burndown`)
 
-- Issue flush report: [`docs/audit/ISSUE_FLUSH_2026-11-05.md`](ISSUE_FLUSH_2026-11-05.md) — refreshed in this pass (`ac2f054`)
+- Issue flush report: [`docs/audit/ISSUE_FLUSH_2026-11-05.md`](ISSUE_FLUSH_2026-11-05.md) — refreshed in the ninth pass; its landing commit is named in the ledger's ninth-pass section
 - Plan of record and register: [`docs/audit/BURNDOWN_LEDGER_2026-11-03.md`](BURNDOWN_LEDGER_2026-11-03.md)
 - CI rail contract: [`docs/circleci-port.md`](../circleci-port.md)
 - Instrument amendment drafts: [`docs/audit/INSTRUMENT_AMENDMENTS_2026-11-05.md`](INSTRUMENT_AMENDMENTS_2026-11-05.md)

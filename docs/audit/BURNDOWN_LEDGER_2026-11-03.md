@@ -999,3 +999,43 @@ paint, so the launch proof is "the process exists", not "the app is usable";
 `#272`'s corpus needs a real installed FreeBuff screenshot set (SR-3) and the TM
 ladder needs the owner's supervised receipts (SR-4), so launches stay supervised
 and calibration stays unfrozen.
+
+## 2026-11-05 (ninth pass) - order (c): the flush rebuilt from the issues themselves
+
+Order (c) asked for a flush verified from the things themselves, not from this
+lane's prior comments. The report was rebuilt at `f608b46` from these reads
+(all 2026-11-05, this host): `gh api
+"repos/Treystu/harness/issues?state=all&per_page=100" --paginate` at 18:21:38Z
+(144 issues returned, 80 open, 64 closed); one `gh api
+.../issues/<n>/comments?per_page=100 --paginate` read per row at 18:22-18:30Z;
+`git cat-file -e <sha>^{commit}` plus `git merge-base --is-ancestor <sha> HEAD`
+for every cited SHA at 18:24-18:26Z on head `d0f74a6`; focused suites at
+18:27:10Z (driver_core 455 OK skipped=1, launch_app 15, vision_verify 25,
+vendoring seams 5, drift 11, queue_bus 23, queue_launcher 7, fireworks route 28,
+dissemination page 10).
+
+What the primary read changed in the report:
+
+- Every row now carries the issue's ask, the disposition, the artifact by branch
+  and commit SHA, the proof, and the live state with a close recommendation.
+  Totals: 21 landed on lane, 2 landed on main (merged), 4 landed-partial,
+  9 owner-only, 43 still-open, 1 tracker, 80 rows, 0 closed.
+- **#290 and #304 were labelled lane work that `main` had already merged.**
+  `963b6db` (the audit-triage runbook) and `dfdd419` (Fireworks routing and its
+  route suite) are both ancestors of `origin/main`, so those two rows moved to
+  *landed on main (merged)* and now recommend closing them. The lane gains no
+  credit for work it did not do.
+- **#270 is recorded as driven, not merely landed** (the seventh pass's three
+  supervised queue drives), and #292/#300 carry their executed suites with the
+  counts above.
+- The adoption page's counts, its remedies table and its "not adopted" list were
+  corrected to match: FLUSH-0..FLUSH-3 are no longer "no code", S2 is no longer
+  "only landed", and remedy R7 is recorded as *partially* adopted with a new
+  **SR-5** naming the missing non-author verdict on the code deliverables.
+- `tests/test_dissemination_adoption.py` was rewritten for the new seven-column
+  contract: it now also fails if a row lacks an artifact, a proof read or a
+  state, or if a landed row does not cite `lane/burndown` and a commit.
+
+Nothing was closed: every row reads `open` and closure is a merge. #449 was not
+merged, branch protection was not touched, launches stayed supervised and
+calibration was not frozen.
