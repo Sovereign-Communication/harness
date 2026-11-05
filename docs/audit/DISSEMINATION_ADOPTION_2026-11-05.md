@@ -60,6 +60,13 @@ input. Nothing here is adopted on an intention.
 | R1 — deliverables are checked against their plan | adopted | `docs/circleci-port.md` is pinned to `ci.yml` by `tests/test_circleci_port_mapping.py`; the queue launcher and watcher are pinned by `tests/test_queue_bus.py` and `tests/test_queue_launcher.py`; this page is pinned to the flush report by `tests/test_dissemination_adoption.py` |
 | R7 — a non-author verdict, not the producer's log | partially adopted | one independent conformance re-read of the flush report exists (R6 in that report, head `7831920`). No non-author verdict covers the queue launcher or the vision pack, so those stay producer-graded. **STEERING REQUEST SR-5:** a second reader for those deliverables |
 
+The four remedies above are the ones this page's first version recorded as
+assigned to the lane. Their source - the 2026-11-04 hackathon execution audit -
+is **not in this repository**, so this page cannot re-enumerate the audit's
+numbering from the thing itself; it inherits the selection rather than deriving
+it. **STEERING REQUEST SR-6:** the audit document, so the remedy list can be
+checked exhaustively instead of inherited.
+
 ## 5. Adopter-facing links (all committed on `lane/burndown`)
 
 - Issue flush report: [`docs/audit/ISSUE_FLUSH_2026-11-05.md`](ISSUE_FLUSH_2026-11-05.md) — refreshed in the ninth pass; its landing commit is named in the ledger's ninth-pass section
