@@ -874,3 +874,47 @@ retrospective file, so
 
 Takeover stays supervised; the assignment-bound unattended grant still waits
 on the ready-to-test milestone and is not asserted here.
+## 2026-11-05 (fifth pass) - FLUSH-3 accepted, and the gate it was missing
+
+FLUSH-3 landed at `0ba31ee` from another session; this pass is the non-author
+conformance read against the commission's row -- cold-run instrument, MCP
+surface, planted-defect canaries -- plus the one thing that row requires and
+the tree did not have.
+
+What the code does, read rather than assumed:
+
+- The cold run is an **instrument**, not a claim: a pass that lists
+  `cold-run` marks its own pass as the campaign's cold run, and the basis it
+  records comes only from that instrument's verdict (`flush_loop.py:770-775`),
+  so a Jev verdict cannot stand in as the cold reader's name.
+- `flush_run` exists on the MCP surface and serves **both** faces: a campaign
+  replay and a canary-suite gate, with allowed-root and `allow_write` gating
+  around them (schema at `mcp_schemas.py:724`).
+- `run_canary_gate` fails closed on a judge error, a missing planted id, an
+  empty suite and an unknown held-out id; it scores the held-out set and
+  requires every executed case clean. Rotation is deterministic
+  (`rotation=N`), so the canary order changes between runs while a run stays
+  reproducible.
+- The acceptance names are present and pass: `test_canary_loop_finds_all_planted_defects`,
+  `test_mcp_and_cli_read_same_campaign_state`.
+
+The gap this pass closed (`65a8dac`): **no canary suite shipped**, so the gate
+could only ever run from unit tests -- a CI gate in name. Now
+`packs/flush_canary_suite.json` carries eight planted defects (a claim with no
+read, a delta-free pass, a tail flood never promoted, a panel counted as Jev,
+an unattributed cold run, a "noted" disposition, a one-pass stop, and evidence
+laundering), three of them held out from the score, and audit rule **D13**
+runs that file through the same gate the CLI and MCP serve. Tampering a
+held-out case both fails the gate and moves the score below 1.0, pinned by
+`test_a_suite_that_drops_a_planted_defect_fails_closed`.
+
+Executed on `65a8dac` (local, this host, 2026-11-05):
+
+- `python -m unittest tests.test_flush_loop` -> `Ran 42 tests`, `OK`.
+- `python -m ruff check harness audits tests` -> `All checks passed!`.
+- `sd_flush_canaries()` -> `1.0 shipped canary suite passes as a gate; score
+  1.00 on 3 held-out case(s)`.
+- Full battery: `Ran 5674 tests in 397.002s`, `OK (skipped=73)`, exit 0
+  (5672 on the pre-D13 head).
+- Hosted check-runs on this head remain `steps=0` under the billing lock
+  (SR-1): no CI claim, every check above is local execution.
