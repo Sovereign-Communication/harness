@@ -835,3 +835,42 @@ Evidence:
 Drift recorded: FLUSH-1 was already landed at `d92a73c`; this pass extended
 it rather than replaying it. FLUSH-3 (cold run, MCP, canary gate) remains
 open.
+## 2026-11-05 (fourth pass) - FLUSH-2 non-author conformance read; relaunch-takeover line
+
+A different session authored FLUSH-2 (`787bb8f`) and its evidence record
+(`65147cb`). This pass is the non-author conformance read those rules require,
+against the commission's FLUSH-2 row -- panel + deterministic rotation,
+oscillation breaker, calibration pinning -- rather than against the commit
+message:
+
+- Rotation is keyed `(aspect, angle, instrument, identity)`: the same aspect
+  under the same angle through a different instrument is new work, and the
+  same question twice is marked `repeated` instead of counted. The default
+  loop still supports one instrument and refuses others by name, so FLUSH-1's
+  refusal survives into FLUSH-2 (`test_flush_one_refuses_a_non_jev_instrument`).
+- `OscillationBreaker` refuses a regression with no recorded cure, then looks
+  for a repeated suffix of length at most three; `A, B, A, B` escalates once
+  as the combined packet `A, B`, naming both cures. A repeat detection of the
+  same aspect+cycle returns `None`, and `stop_ready()` refuses saturation
+  while an escalated cycle is unclosed.
+- `pin_judge_version` is silent on the first pin and, on a change, writes
+  `calibration_rebaselined` with scores before/after; the register is
+  untouched -- "rebaselines scores, not findings", as the row states.
+- No conformance defect found, so nothing is claimed as cured here. The
+  evidence this pass re-ran on the same head agrees with the record:
+  `tests.test_flush_loop tests.test_architecture` -> `Ran 43 tests`, `OK`;
+  full battery -> `Ran 5666 tests in 421.424s`, `OK (skipped=73)`, exit 0.
+
+### Relaunch-takeover readiness line
+
+Required by the oversight steering of 2026-11-05T12:58Z (item 7). Read from
+the ledger repo, not assumed: `GET /repos/Treystu/slow-lane-ledger/contents/harness`
+lists `ci`, `handoff.md`, `log`, `plans`, `readiness`, `reviews` and no
+retrospective file, so
+
+| Retrospective received | Spec filed | Shadow runs | Duty state |
+|---|---|---|---|
+| not received (read 2026-11-05) | not filed | 0 / 5 | GPT lane (no takeover asserted) |
+
+Takeover stays supervised; the assignment-bound unattended grant still waits
+on the ready-to-test milestone and is not asserted here.
