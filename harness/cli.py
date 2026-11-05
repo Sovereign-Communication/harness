@@ -2157,11 +2157,27 @@ def _cmd_flush(opts, settings):
     if not isinstance(campaign, dict):
         raise FlushError(f"{campaign_path} must contain a JSON object")
     base = campaign_path.parent
+    repo_root = Path(__file__).resolve().parent.parent
+
+    def _resolve(text):
+        """A campaign path is relative to its file, then to the repo root.
+
+        A campaign kept beside its fixtures resolves portably; one that names
+        repo files (`harness/...`, `docs/...`) resolves the same from any
+        working directory, which is what an operator expects when the campaign
+        lives in a scratch folder.
+        """
+        if not text:
+            return None
+        for candidate in (base / text, Path.cwd() / text, repo_root / text):
+            if candidate.is_file():
+                return candidate
+        return None
 
     def _target_text(spec):
         text = str(spec or "")
-        candidate = base / text
-        if text and candidate.is_file():
+        candidate = _resolve(text)
+        if candidate is not None:
             return candidate.read_text(encoding="utf-8")
         return text
 
@@ -2173,10 +2189,12 @@ def _cmd_flush(opts, settings):
             if "content" in spec:
                 resolved.append((str(spec["id"]), str(spec["content"])))
                 continue
-            path = base / str(spec.get("path") or "")
-            if not path.is_file():
+            named = str(spec.get("path") or "")
+            path = _resolve(named)
+            if path is None:
                 raise FlushError(
-                    f"record {spec['id']!r} names no readable path: {path}")
+                    f"record {spec['id']!r} names no readable path: {named} "
+                    f"(tried {base / named} and the repo root)")
             resolved.append((str(spec["id"]),
                              path.read_text(encoding="utf-8")))
         return resolved

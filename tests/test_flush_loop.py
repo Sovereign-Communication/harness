@@ -422,6 +422,35 @@ class FlushCliTests(unittest.TestCase):
             self.assertEqual(events[-1]["event"], "stop")
             self.assertEqual(events[-1]["streak"], 2)
 
+    def test_flush_cli_resolves_repo_relative_records(self):
+        """A campaign in a scratch folder may name repo files."""
+        from harness.cli import _cmd_flush
+        from harness.cli_parser import build_parser
+        with tempfile.TemporaryDirectory() as tmp:
+            campaign = Path(tmp) / "repo-relative.json"
+            campaign.write_text(json.dumps({
+                "campaign": "c-repo",
+                "target": "harness/flush_loop.py",
+                "passes": [
+                    {"angles": ["flaw-hunt"], "aspects": ["contracts"],
+                     "records": [{"id": "ev-1",
+                                  "path": "harness/flush_loop.py"}],
+                     "verdicts": {"contracts": {"basis": "dossier:ev-1@v1"}},
+                     "cold_run": "reader B"},
+                    {"angles": ["flaw-hunt", "red-team"],
+                     "aspects": ["contracts"],
+                     "records": [{"id": "ev-1",
+                                  "path": "harness/flush_loop.py"}],
+                     "verdicts": {"contracts": {"basis": "dossier:ev-1@v1"}},
+                     "cold_run": "reader C"}],
+                "dossier": {"axes": {"completeness": 96, "grounding": 96},
+                            "basis": "dossier:ev-1@v1"}}), encoding="utf-8")
+            opts = build_parser().parse_args(
+                ["flush", "--campaign", str(campaign), "--json"])
+            with redirect_stdout(io.StringIO()):
+                result = _cmd_flush(opts, mock.Mock())
+            self.assertTrue(result["stop_ready"], result["stop_reasons"])
+
     def test_flush_cli_refuses_an_aspect_the_campaign_does_not_score(self):
         from harness.cli import _cmd_flush
         from harness.cli_parser import build_parser
