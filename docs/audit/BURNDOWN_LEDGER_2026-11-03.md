@@ -729,3 +729,41 @@ Reads this pass:
 - Nothing in this pass touches branch protection, and no CI-green claim is
   made: on `7c2f094` the hosted check-runs are 13 failure / 2 skipped with
   `steps=[0]` (billing lock), read 2026-11-05T12:38:32Z.
+
+## 2026-11-05 (third pass) - FLUSH-1 landed; the interface edge and two loop guards
+
+FLUSH-1 was already pushed in the previous session (`17adbf4`, path fix
+`d6adf51`) and posted as landed. Re-running the full battery found a
+regression the focused slice had missed: `_cmd_flush` imported `flush_loop`
+inside the function, and `test_no_deferred_policy_imports_outside_main`
+refused the deferred policy edge. The import is now at module scope
+(`c53c914`); `tests.test_architecture` 9 OK.
+
+The loop was also re-read for FLUSH-1's own scope. Two ways to manufacture
+a clean pass existed: an empty `aspects` list reached no judge but still
+counted as an expansion, and any instrument id (for example `panel`) counted
+as a new rotation although FLUSH-1 is Jev-only. Both refusals now happen
+before the judge or the ledger (`d85540b`):
+
+- `test_a_pass_without_an_aspect_is_refused` - empty aspects refused, no
+  judge call, no event.
+- `test_flush_one_refuses_a_non_jev_instrument` - panel refused by name,
+  no judge call, no event.
+
+Evidence on `c53c914`:
+
+- `python -m unittest tests.test_flush_loop` -> 28 OK.
+- `python -m unittest tests.test_architecture` -> 9 OK.
+- `python -m unittest discover -s tests -t .` -> `Ran 5660 tests in
+  635.686s`, `OK (skipped=73)`, exit 0 (this host).
+- `python -m ruff check harness tests` -> All checks passed.
+- Driven CLI: `python -m harness.cli flush --campaign ... --json` ->
+  `stop_ready=true`, `stopped=true`, streak 2, cold run on pass 2, events
+  `pass_admitted, pass_admitted, stop`. A campaign declaring `["panel"]`
+  exits 1 with the FLUSH-1 refusal and writes no ledger.
+- No CI-green claim: hosted Actions remains `steps=[0]` under the billing
+  lock (SR-1); this is local execution only.
+
+The issue-flush report row now records FLUSH-0/1 as landed on lane and
+FLUSH-2/3 open. FLUSH-2 remains next; the prior pass's audit read is not
+claimed as met here.
