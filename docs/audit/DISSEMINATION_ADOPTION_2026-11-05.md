@@ -52,7 +52,7 @@ will not open the table.
 |---|---|
 | R4 — every durable external-state claim carries its read | the flush report's five read codes with timestamps; the CircleCI mapping's reproduction commands; the ledger's dated sections cite the run id and head they read |
 | R5 — assumption register with verification dates | ledger rows A1-A7; the flush report's per-row read codes |
-| R1 — deliverables are checked against their plan | `docs/circleci-port.md` pins the port mapping to `ci.yml` in `tests/test_circleci_port_mapping.py`; `docs/queue-bus` behaviour is pinned by `tests/test_queue_bus.py`; this page is pinned to the flush report |
+| R1 — deliverables are checked against their plan | `docs/circleci-port.md` pins the port mapping to `ci.yml` in `tests/test_circleci_port_mapping.py`; `harness/queue_bus.py` behaviour is pinned by `tests/test_queue_bus.py`; this page is pinned to the flush report |
 | R7 — a non-author verdict, not the producer's log | **not adopted here.** No non-author conformance read of this lane's deliverables exists yet; the reports say so rather than claiming otherwise |
 
 ## 5. Adopter-facing links (all committed on `lane/burndown`)
