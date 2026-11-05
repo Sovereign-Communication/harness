@@ -489,3 +489,54 @@ Primary reads this pass (2026-11-05, this host):
 
 No row above is overdue at this date. An overdue row is a blocker in the lane
 status; none of them blocks work this pass.
+
+## 2026-11-05 - queue bus + laptop watcher, vision driver item 4 (90a1f81)
+
+The dispatch's item 4 ("build the queue bus + laptop watcher to the gated
+design") had no code in the tree: no `queue` module, no watcher, and the S4
+note's own re-scope had recorded that the launch path had no queue contract at
+all. `harness/queue_bus.py` is now that contract, built to the four invariants
+the dispatch names and nothing beyond them.
+
+- **Per-repo queue folders.** `<root>/<repo>/{items,checkpoints,events.jsonl}`
+  plus a per-repo `.lock`; repo and item ids are validated to a single path
+  segment, so a crafted id cannot leave the queue root.
+- **The state machine.** `queued -> claimed -> running -> checkpointed ->
+  done|blocked|parked` is a table, not a convention: an unlisted move is
+  refused by name, `done` is reachable only from `checkpointed` (a pass with no
+  resume point has no evidence it got anywhere), and `done` is final so a
+  resume cannot replay a completed pass. `blocked`/`parked` are holds, not
+  verdicts; only an operator requeue returns them, recorded with the operator's
+  name, and that requeue clears the claim.
+- **Ownership.** Every move after the claim must come from the claim's owner; a
+  second watcher cannot advance another actor's item, which is what makes
+  `claimed` mean anything.
+- **Audit.** One append-only event per move (from, to, actor, reason, attempt)
+  with `fsync`, items written through `osal.atomic_write_text` under the repo
+  lock, and a corrupt event line fails closed instead of being skipped.
+- **Watcher.** Dormant on an empty queue with no event per idle poll; one item
+  per step so a stuck launch cannot swallow the queue; never writes `done`;
+  writes a failed launch as `blocked` with the error text; and refuses to claim
+  at all unless the run is explicitly `authorized`, because D3 keeps launches
+  supervised until calibration is frozen and the TM proof is complete.
+
+Surface: `harness queue status|enqueue|watch --root ...` intercepts before
+settings load (like `serve`/`desktop`/`media`/`driver`), so a laptop watcher
+starts on a machine with no provider key. Exit 0 = read or claimed, 1 =
+refused, 3 = supervised hold.
+
+Evidence, real path driven (this host, 2026-11-05): `queue status` on an empty
+root printed `empty (no repos)` and exited 0; `queue enqueue` created
+`harness/tm3-item-1` in `queued`; `queue watch` without `--authorized` printed
+the supervised hold and exited 3, leaving the item `queued`; `queue watch
+--authorized` claimed and started it (`claimed ... nothing was started`
+without a launcher) and `queue status --json` then reported `running=1` with
+`items/tm3-item-1.json` and `events.jsonl` on disk. Hermetic:
+`tests.test_queue_bus` 23 OK, `tests.test_cli` 64 OK, `ruff check harness
+tests scripts examples/oc_handoff` clean. The parser-surface pin gained
+`queue` in the early-intercept set (the assertion stays an exact equality).
+
+Not claimed: nothing here launches an application. The launcher is a
+caller-supplied hook; TM3 (one real queue item under the frozen protocol) is
+still ahead of us and still supervised. The module-map row is in
+CONTRIBUTING.md so the D10 check sees it.
