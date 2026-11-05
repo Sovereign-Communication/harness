@@ -540,3 +540,27 @@ Not claimed: nothing here launches an application. The launcher is a
 caller-supplied hook; TM3 (one real queue item under the frozen protocol) is
 still ahead of us and still supervised. The module-map row is in
 CONTRIBUTING.md so the D10 check sees it.
+
+## 2026-11-05 - CircleCI port mapping of record (d21985a, TRACK B slice 1)
+
+TRACK B says the port's config work starts now and asks for the 11-check
+mapping to be recorded. The port itself cannot be validated yet -- there is no
+CircleCI VCS connection, no `jev-gates` context, and no machine runner -- so a
+`.circleci/config.yml` written today would be an untested rail. This slice
+lands what can be verified instead, and refuses to imply the rest exists.
+
+`docs/circleci-port.md` records, from primary reads: the 11 required contexts
+(`GET /branches/main/protection`, 2026-11-05), the GitHub job id that carries
+each, the planned CircleCI job name, and the gate commands each job must run;
+the six lane-only jobs that are ported for parity but are NOT required
+contexts today (including the new py3.14 leg); the four activation
+preconditions; and the rule that switching the protection contexts is an
+owner-reserved protection change, never part of a port.
+
+`tests/test_circleci_port_mapping.py` (8 OK) pins the mapping against
+`.github/workflows/ci.yml`: a renamed job, a dropped matrix leg, or a changed
+gate command fails the suite, so the port cannot be built against a workflow
+that no longer exists. Ruff clean.
+
+Blocked on the owner (register rows A2/A3): the Actions lock and the CircleCI
+connection. Neither blocks other lane work.
