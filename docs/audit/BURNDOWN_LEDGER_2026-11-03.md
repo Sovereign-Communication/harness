@@ -767,3 +767,71 @@ Evidence on `c53c914`:
 The issue-flush report row now records FLUSH-0/1 as landed on lane and
 FLUSH-2/3 open. FLUSH-2 remains next; the prior pass's audit read is not
 claimed as met here.
+
+## 2026-11-05 (fourth pass) - FLUSH-2 landed: rotation, oscillation breaker, calibration pin
+
+FLUSH-2 is complete on `lane/burndown` at `787bb8f`, on top of the
+already-landed FLUSH-1 head `d92a73c`. The default loop is still Jev-only; the
+new instruments and the escalation path are explicit opt-ins.
+
+What the code now enforces:
+
+- **Instrument rotation by identity.** `PANEL_INSTRUMENT` and
+  `DETERMINISTIC_INSTRUMENT` join `JEV_INSTRUMENT`; `FLUSH_ONE_INSTRUMENTS`
+  remains the constructor default and `FLUSH_TWO_INSTRUMENTS` is the opt-in
+  set. `FlushLoop` accepts a `judges` mapping, keys every verdict and
+  repeated-call guard by `(aspect, angle, instrument, information digest)`,
+  and logs the sorted instrument set on each admitted pass. A declared
+  instrument with no judge, or outside `supported_instruments`, refuses
+  before `begin_pass`/`record_pass`.
+- **Oscillation breaker.** Closing a material finding records its cure; a
+  later verdict that reopens it records a regression edge. A repeated suffix
+  cycle of length 1-3 in one aspect becomes exactly one
+  `combined_cure_packet` carrying the cycle and the latest cure per member;
+  the packet is written as `oscillation_escalated`, the finding stays open,
+  and the campaign refuses to claim a stop. The CLI breaks at the escalation
+  rather than spending another pass.
+- **Calibration pinning.** `pin_judge_version` pins the judge identity; when
+  it changes, `scores` rebaselines (to supplied control scores or empty until
+  the new judge answers) and `calibration_rebaselined` records both score
+  sets. The gap register is untouched: no finding is discarded, reopened or
+  re-derived merely because the calibration changed.
+- **CLI surface.** `harness flush --extended-instruments` enables the
+  panel/deterministic rotation; `instrument_verdicts` supplies their
+  verdicts; per-pass `close` specs replay a cure and its read; per-pass
+  `judge_version` changes the pin. The default surface still rejects a
+  non-Jev instrument by name before the ledger.
+
+Evidence:
+
+- `python -m unittest tests.test_flush_loop tests.test_architecture` ->
+  `Ran 43 tests`, `OK`; the FLUSH-2 file contributes 34 tests, including
+  `test_oscillation_cycle_escalates_to_combined_packet` and
+  `test_version_change_rebaselines_scores_not_findings` by name.
+- `python -m unittest discover -s tests -t .` at `787bb8f` ->
+  `Ran 5666 tests in 460.732s`, `OK (skipped=73)`; the FLUSH-1 baseline was
+  5660, so the six new tests run and no existing test regressed.
+- Driven CLI, rotation: `harness flush --extended-instruments` exits 0 with
+  `verdicts=3`, scores `{completeness: 96.0, grounding: 90.0,
+  risk_honesty: 95.0}`, and `pass_admitted.instruments =
+  [deterministic, jev, panel]`. The same campaign without the flag exits 1
+  with the FLUSH-1 refusal and writes no ledger.
+- Driven CLI, oscillation: three passes over `gap-1` (first open, then two
+  closes/reopens) exit 0 with one escalation: `combined_cure_packet`,
+  `cycle=["gap-1"]`, `cures={"gap-1":"cure-2"}`, `seen=2`; the ledger has one
+  `oscillation_escalated` event and `stop_ready=false` names the escalating
+  packet.
+- Driven CLI, calibration: a `jev-1` pass with `completeness: 96` and an open
+  `gap-cal`, followed by a `jev-2` pass, exits 0 with
+  `judge_version=jev-2`, `scores={completeness:70.0}`, a
+  `calibration_rebaselined` event (`96.0 -> {}` before the new judge answers),
+  and `gap-cal` still open.
+- `python -m ruff check harness tests` -> All checks passed.
+- Credential/secret scan on the `787bb8f` diff -> 0 hits.
+- No CI-green claim: hosted Actions on `787bb8f` has all 15 checks at
+  `steps=0` under the owner billing lock (SR-1); this is local execution
+  only. Base `main` remains `5eb9c363`; merge is owner-reserved.
+
+Drift recorded: FLUSH-1 was already landed at `d92a73c`; this pass extended
+it rather than replaying it. FLUSH-3 (cold run, MCP, canary gate) remains
+open.
