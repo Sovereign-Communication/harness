@@ -980,7 +980,10 @@ def send_input(kind, value=None, *, target=None,
                        f"{list(INPUT_KINDS)}")
     name = platform_name()
     if backend is None or backend is USE_REGISTERED_INPUT_BACKEND:
-        backend = _INPUT_BACKENDS.get(name)
+        # The lookup is guarded; the call below is not, so a backend that
+        # blocks cannot hold the registry for every other caller.
+        with _INPUT_CAPABILITY_LOCK:
+            backend = _INPUT_BACKENDS.get(name)
     if backend is None:
         return False, (
             f"synthetic {kind} has no registered backend on {name}; "
