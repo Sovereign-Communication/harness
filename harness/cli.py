@@ -2209,6 +2209,12 @@ def main(argv=None):
         # consensus, and the action; this adapter only carries the envelope.
         from .perception_client import run_cli as _driver_cli
         return _driver_cli(args[1:])
+    if args[:1] == ["queue"]:
+        # The per-repo work queue and its laptop watcher are local state.
+        # They intercept before settings load so a watcher starts on a machine
+        # with no provider credentials -- waiting for work is not a keyed act.
+        from .queue_bus import run_cli as _queue_cli
+        return _queue_cli(args[1:])
     ap = build_parser()
     opts = ap.parse_args(args)
     import harness.output as _output

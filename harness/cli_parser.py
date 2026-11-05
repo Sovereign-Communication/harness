@@ -106,6 +106,12 @@ def build_parser():
                                   "step via driver-core (closed action "
                                   "vocabulary, consent bound to action+params)")
 
+    # The per-repo work queue and its laptop watcher (harness/queue_bus.py;
+    # parses its own subarguments). Local state only: it intercepts before
+    # settings load, so no provider key is needed to inspect or drain a queue.
+    sub.add_parser("queue", help="Per-repo work queue and supervised laptop "
+                                  "watcher (status|enqueue|watch; no key)")
+
     # The v1 assessment gate (harness/jev_assessment.py; parses its own
     # subarguments). It is a lane-workflow disposition, not the audit bar: the
     # help text says so where an operator first meets it.
