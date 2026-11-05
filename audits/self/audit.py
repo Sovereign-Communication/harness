@@ -1279,6 +1279,31 @@ def sd_contributing():
 
 # ---------------------------------------------------------------- runner
 
+def sd_flush_canaries():
+    """The shipped planted-defect canary suite must pass as a gate.
+
+    The flush loop claims to refuse a set of defects (a claim with no read, a
+    delta-free pass, a "noted" disposition, a one-pass stop, a panel counted
+    as Jev, and three more that rotate through the held-out set). This rule
+    runs `packs/flush_canary_suite.json` through the same gate the CLI and MCP
+    serve, so the claim is measured on every audit run instead of resting on
+    the unit tests alone.
+    """
+    suite = ROOT / "packs" / "flush_canary_suite.json"
+    if not suite.is_file():
+        return 0.0, f"canary suite missing: {suite}"
+    try:
+        from harness.flush_loop import run_canary_suite_file
+        result = run_canary_suite_file(str(suite))
+    except Exception as exc:  # a broken gate is a failed gate
+        return 0.0, f"canary gate errored: {type(exc).__name__}: {exc}"
+    score = float(result.get("score") or 0.0)
+    return _pass(bool(result.get("passed")) and score == 1.0,
+                 f"shipped canary suite passes as a gate; score {score:.2f} "
+                 f"on {len(result.get('held_out') or [])} held-out case(s)",
+                 f"passed={result.get('passed')} score={result.get('score')}")
+
+
 def sd_corpus_integrity():
     """The audit evidence corpus is hash-pinned: every tracked dogfood
     artifact and audit report must match audits/self/corpus_manifest.json.
@@ -1703,7 +1728,9 @@ CHECKS = {
            ("D11", "corpus integrity (SHA-256 pinned)",
             sd_corpus_integrity),
            ("D12", "changed lines suite-executed (coverage)",
-            sd_coverage_changed)],
+            sd_coverage_changed),
+           ("D13", "flush-loop canary suite passes as a gate",
+            sd_flush_canaries)],
 }
 
 DIM_NAMES = {"A": "Security", "R": "Reliability",

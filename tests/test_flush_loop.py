@@ -748,6 +748,36 @@ class ColdRunTests(unittest.TestCase):
                     campaign, cold_run=True, extended_instruments=True)
 
 
+class ShippedCanarySuiteTests(unittest.TestCase):
+    """The suite the audit gate runs, and the gate's refusal when it is tampered."""
+
+    SUITE = (Path(__file__).resolve().parent.parent
+             / "packs" / "flush_canary_suite.json")
+
+    def test_the_shipped_canary_suite_passes_as_a_gate(self):
+        from harness.flush_loop import run_canary_suite_file
+        self.assertTrue(self.SUITE.is_file(), self.SUITE)
+        result = run_canary_suite_file(str(self.SUITE))
+        self.assertTrue(result["passed"], result)
+        self.assertEqual(result["score"], 1.0)
+
+    def test_a_suite_that_drops_a_planted_defect_fails_closed(self):
+        from harness.flush_loop import run_canary_suite_file
+        suite = json.loads(self.SUITE.read_text(encoding="utf-8"))
+        # Tamper a HELD-OUT case: the score is measured on that set, so a
+        # dropped planted id must move it below 1.0 as well as fail the gate.
+        held_out = set(suite.get("held_out") or [])
+        target = next(case for case in suite["canaries"]
+                      if case["id"] in held_out)
+        target["findings"] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tampered.json"
+            path.write_text(json.dumps(suite), encoding="utf-8")
+            result = run_canary_suite_file(str(path))
+        self.assertFalse(result["passed"])
+        self.assertLess(result["score"], 1.0)
+
+
 class CanaryGateTests(unittest.TestCase):
     """The planted-defect gate is a gate, not a report."""
 
