@@ -579,3 +579,22 @@ evidence supports.
 
 Reminder for the next scope edit: this list has already lost `driver_core` once
 to an edit that added `scripts`. Both belong in it.
+
+## 2026-11-05 - order (c) delivered: issue flush + dissemination adoption
+
+`docs/audit/ISSUE_FLUSH_2026-11-05.md` dispositions all 80 open issues and the
+tracker rows the lane owes, each with the read it rests on: 23 landed on lane
+(unmerged), 4 landed-partial, 9 owner-only, 43 still-open, 1 tracker; zero
+closed, because closure needs a merge SHA. Reads are coded R1-R5 with
+timestamps, and a row with only the issue-list and ancestry reads is recorded
+as still open rather than guessed at.
+
+`docs/audit/DISSEMINATION_ADOPTION_2026-11-05.md` is the adopter-facing
+summary: register location (rows A1-A7), board rows with those counts, the
+remedies actually adopted (R4/R5/R1) and the one explicitly not adopted (R7,
+no non-author conformance read exists yet), and the list of things no artifact
+backs. `tests/test_dissemination_adoption.py` (10 OK) fails if the summary's
+counts drift from the report's table or if any row loses its read.
+
+No CI-green claim appears in either document: the rail is billing-locked, so
+this head has no check-run evidence and none is asserted.
