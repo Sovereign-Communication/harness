@@ -65,6 +65,7 @@ from .routing_table import (
 )
 from .spend import discover_free_models
 from .filesafety import VERIFY_TIMEOUT, validate_target_file, validate_verify_command
+from .flush_loop import AspectVerdict, EventLedger, FlushError, FlushLoop
 from .gate_runner import (GATES, GATE_ORDER, STAGE_GATE_TIMEOUT, gate_help,
                           run_gate)
 from .paths import REPO_ROOT
@@ -2145,8 +2146,6 @@ def _cmd_flush(opts, settings):
     Live judging arrives with FLUSH-2's instrument rotation; this surface
     exists so the loop's state is inspectable and reproducible today.
     """
-    from .flush_loop import AspectVerdict, EventLedger, FlushError, FlushLoop
-
     campaign_path = Path(opts.campaign)
     if not campaign_path.is_file():
         raise FlushError(f"campaign file not found: {campaign_path}")
