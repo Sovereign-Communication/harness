@@ -22,12 +22,20 @@ version: 2.1
 # follow-up, not a silent omission -- the lane's local gates still run
 # the suite the same way.
 #
+# v2.2 (2026-11-06): the context string is applied as the workflow
+# invocation's `name:` override -- the processed config renames the
+# job to the context string, and CircleCI posts its check-run under
+# that name. (v2 used a display_name key, which the job schema
+# rejects; v2.1 named the jobs with the context strings, which the
+# job-name pattern rejects. Both errored at config validation;
+# pipelines 5 and 6 carry the receipts.)
+#
 # v2 (2026-11-06): the required-status mirror. Branch protection on
 # main still requires the 11 Actions-era context names, and every one
 # of them must be satisfiable from this rail or PR #442 can never
 # land: the matrix legs, package, and the three installed-package legs
-# are added as jobs NAMED with the required context strings
-# (CircleCI posts check-runs under the job name). Leg
+# are added as jobs whose display names ARE the required contexts
+# (CircleCI posts check-runs under the job's display name). Leg
 # commands are the Actions originals adapted only for the executor
 # (single-OS images; the installed-package legs rebuild the wheel
 # in-job -- CircleCI has no cross-job artifact store equivalent in
@@ -140,37 +148,37 @@ jobs:
     steps:
       - hermetic_steps
 
-  hermetic suite (ubuntu-22.04, py3.9):
+  hermetic-ubuntu2204-py39:
     executor: python39
     steps:
       - hermetic_steps
 
-  hermetic suite (ubuntu-latest, py3.11):
+  hermetic-ubuntu-py311:
     executor: python
     steps:
       - hermetic_steps
 
-  hermetic suite (ubuntu-latest, py3.13):
+  hermetic-ubuntu-py313:
     executor: python313
     steps:
       - hermetic_steps
 
-  hermetic suite (ubuntu-latest, py3.14):
+  hermetic-ubuntu-py314:
     executor: python314
     steps:
       - hermetic_steps
 
-  hermetic suite (windows-latest, py3.11):
+  hermetic-windows-py311:
     executor: python
     steps:
       - hermetic_steps
 
-  hermetic suite (macos-latest, py3.11):
+  hermetic-macos-py311:
     executor: python
     steps:
       - hermetic_steps
 
-  Checkout hygiene:
+  checkout-hygiene:
     executor: python
     steps:
       - checkout
@@ -249,7 +257,7 @@ jobs:
           name: Version parity (pyproject vs harness.__version__ vs MCP)
           command: |
             pip install tomli
-            python - <<'PYEOF2'
+            python - \<<'PYEOF2'
             import subprocess, sys
             try:
                 import tomllib
@@ -308,7 +316,7 @@ jobs:
             # Running in-process against "$BIN/python" (so it is the wheel's
             # harness, not the source tree) with HttpTransport.get faked
             # exercises the handshake with genuinely no network.
-            OPENROUTER_API_KEY=sk-ci-smoke-dummy "$BIN/python" <<'PY'
+            OPENROUTER_API_KEY=sk-ci-smoke-dummy "$BIN/python" \<<'PY'
             import io
             import json
             from unittest import mock
@@ -357,17 +365,17 @@ jobs:
           paths:
             - dist
 
-  installed package (ubuntu-latest):
+  installed-ubuntu:
     executor: python
     steps:
       - installed_smoke
 
-  installed package (windows-latest):
+  installed-windows:
     executor: python
     steps:
       - installed_smoke
 
-  installed package (macos-latest):
+  installed-macos:
     executor: python
     steps:
       - installed_smoke
@@ -376,18 +384,28 @@ workflows:
   ci:
     jobs:
       - test
-      - hermetic suite (ubuntu-22.04, py3.9)
-      - hermetic suite (ubuntu-latest, py3.11)
-      - hermetic suite (ubuntu-latest, py3.13)
-      - hermetic suite (ubuntu-latest, py3.14)
-      - hermetic suite (windows-latest, py3.11)
-      - hermetic suite (macos-latest, py3.11)
-      - Checkout hygiene
+      - hermetic-ubuntu2204-py39:
+          name: "hermetic suite (ubuntu-22.04, py3.9)"
+      - hermetic-ubuntu-py311:
+          name: "hermetic suite (ubuntu-latest, py3.11)"
+      - hermetic-ubuntu-py313:
+          name: "hermetic suite (ubuntu-latest, py3.13)"
+      - hermetic-ubuntu-py314:
+          name: "hermetic suite (ubuntu-latest, py3.14)"
+      - hermetic-windows-py311:
+          name: "hermetic suite (windows-latest, py3.11)"
+      - hermetic-macos-py311:
+          name: "hermetic suite (macos-latest, py3.11)"
+      - checkout-hygiene:
+          name: "Checkout hygiene"
       - ui-playwright-smoke
       - audit:
           requires:
             - ui-playwright-smoke
       - package
-      - installed package (ubuntu-latest)
-      - installed package (windows-latest)
-      - installed package (macos-latest)
+      - installed-ubuntu:
+          name: "installed package (ubuntu-latest)"
+      - installed-windows:
+          name: "installed package (windows-latest)"
+      - installed-macos:
+          name: "installed package (macos-latest)"
