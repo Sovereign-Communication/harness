@@ -318,7 +318,10 @@ def run_verify(settings=None, *, prompt, task_id=None, cancel_check=None,
                 claim_polarity={cid.strip(): "reassurance" for cid in
                                 (reassurance_claims or "").split(",")
                                 if cid.strip()},
-                free_tier=resolved.use_free, cancel_check=cancel_check)
+                free_tier=resolved.use_free, cancel_check=cancel_check,
+                jev_primary_mode=bool(
+                    settings is not None
+                    and getattr(settings, "jev_primary_mode", False)))
     except ToolCancelled:
         return cancelled_envelope(gov, settings, include_meta=attach_meta,
                                   meta_overrides=meta_overrides)
