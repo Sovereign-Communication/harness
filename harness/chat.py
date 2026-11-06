@@ -396,6 +396,11 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
          max_price=None, provider_sort="price", meta_key=None):
     """One chat completion with the spend governor's payload guards.
 
+    Provider dispatch happens at the head: Fireworks model paths and
+    bare Muse ids route to their direct lanes (the reasoning and
+    provider-object rules below are the OpenRouter path's alone, taken
+    by every other model).
+
     Reasoning is included whenever the effort mode resolves to a value --
     including the explicit disable ("off"/"none" => {"effort": "none"}) --
     and a provider rejection triggers one retry without the reasoning key
@@ -424,6 +429,18 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
     if is_fireworks_model_path(model):
         return _chat_fireworks(transport, api_key, model, messages, max_tokens,
                                governor=governor)
+    if is_meta_model_id(model):
+        # Direct Meta lane (#447): a bare Muse id claims the Meta lane
+        # on every lane that calls chat() directly -- panel, judge,
+        # specialist, apply -- exactly as governed_completion and
+        # chat_for_route already dispatch. The api_key threaded here is
+        # the calling lane's own key (under the Muse preset,
+        # governor_for resolved the Meta key for these lanes), and
+        # _chat_meta's resolve_offer fails closed on a Muse id with no
+        # committed offer, so a Muse id never falls through to
+        # OpenRouter.
+        return _chat_meta(transport, api_key, model, messages, max_tokens,
+                          governor=governor)
     canonical_model = strip_variant_suffix(model)
     if governor:
         governor.check_byok(canonical_model)

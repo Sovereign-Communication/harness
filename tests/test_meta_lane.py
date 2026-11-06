@@ -16,13 +16,14 @@ from pathlib import Path
 from unittest import mock
 
 from harness import config, service
-from harness.chat import chat_for_route, governed_completion
+from harness.chat import chat, chat_for_route, governed_completion
 from harness.config import (META_CHAT_URL, META_PROVIDER, OPENROUTER_CHAT_URL,
                             load_settings, resolve_meta_key)
 from harness.errors import HarnessError
 from harness.fireworks import resolve_route
 from harness.ledger import AutonomyLedger
 from harness.meta import cost_estimate, resolve_offer
+from harness.session import governor_for
 from harness.spend import SpendGovernor
 
 SPARK = "muse-spark-1.3"
@@ -316,6 +317,106 @@ class GovernedCompletionTests(unittest.TestCase):
         self.assertEqual(url, META_CHAT_URL)
         self.assertEqual(key, "meta-key")
         self.assertAlmostEqual(gov.meta_spent(), out["cost"])
+
+
+class DirectChatTests(_IsolatedHome):
+    """#447: the lanes that call chat() directly (panel, judge,
+    specialist, apply) hold Muse ids under the preset but posted to
+    OpenRouter. chat() itself now dispatches a bare Muse id to the
+    Meta lane, in the lanes' own positional call shape, so no lane
+    needs its own routing code."""
+
+    def _governor(self, transport, budget=1.0):
+        return SpendGovernor(transport, "meta-key", None, 1.0,
+                             meta_budget_usd=budget)
+
+    def test_panel_shaped_call_posts_to_meta_never_openrouter(self):
+        transport = RecordingTransport(
+            _resp({"prompt_tokens": 100, "completion_tokens": 50}))
+        gov = self._governor(transport)
+        status, _ = chat(transport, "meta-key", SPARK, MESSAGES, 512,
+                         "auto", 0.4, gov)
+        self.assertEqual(status, 200)
+        self.assertEqual(len(transport.calls), 1)
+        url, key, payload = transport.calls[0]
+        self.assertEqual(url, META_CHAT_URL)
+        self.assertEqual(key, "meta-key")
+        self.assertEqual(set(payload), {"model", "messages", "max_tokens"})
+        self.assertNotIn("provider", payload)
+
+    def test_judge_shaped_call_posts_wonder_to_meta(self):
+        transport = RecordingTransport(
+            _resp({"prompt_tokens": 10, "completion_tokens": 5}))
+        gov = self._governor(transport)
+        status, _ = chat(transport, "meta-key", WONDER, MESSAGES, 256,
+                         "auto", 0.4, gov)
+        self.assertEqual(status, 200)
+        url, _, payload = transport.calls[0]
+        self.assertEqual(url, META_CHAT_URL)
+        self.assertEqual(payload["model"], WONDER)
+
+    def test_uncommitted_muse_id_fails_closed_before_any_post(self):
+        transport = RecordingTransport(_resp({}))
+        gov = self._governor(transport)
+        with self.assertRaisesRegex(HarnessError, "no committed Meta endpoint"):
+            chat(transport, "meta-key", UNCOMMITTED, MESSAGES, 256,
+                 "auto", 0.4, gov)
+        self.assertEqual(transport.calls, [])
+
+    def test_meta_budget_refuses_before_send(self):
+        transport = RecordingTransport(
+            _resp({"prompt_tokens": 10, "completion_tokens": 5}))
+        gov = self._governor(transport, budget=0.0)
+        with self.assertRaisesRegex(HarnessError,
+                                    "would exceed the local budget"):
+            chat(transport, "meta-key", SPARK, MESSAGES, 256,
+                 "auto", 0.4, gov)
+        self.assertEqual(transport.calls, [])
+
+    def test_usage_cost_is_estimated_for_lane_accounting(self):
+        # The panel books _reported_cost(resp) after chat(); the Meta
+        # lane's token-only usage must arrive with the estimated cost
+        # already filled from the committed rates.
+        transport = RecordingTransport(
+            _resp({"prompt_tokens": 100, "completion_tokens": 50}))
+        gov = self._governor(transport)
+        _, resp = chat(transport, "meta-key", SPARK, MESSAGES, 256,
+                       "auto", 0.4, gov)
+        self.assertAlmostEqual(resp["usage"]["cost"],
+                               100 * 1.25e-6 + 50 * 4.25e-6)
+        self.assertTrue(resp["usage"]["cost_estimated"])
+
+    def test_ordinary_model_still_posts_to_openrouter(self):
+        transport = RecordingTransport(
+            _resp({"prompt_tokens": 10, "completion_tokens": 5,
+                   "cost": 0.001}))
+        status, _ = chat(transport, "or-key", OR_MODEL, MESSAGES, 256)
+        self.assertEqual(status, 200)
+        url, key, _ = transport.calls[0]
+        self.assertEqual(url, OPENROUTER_CHAT_URL)
+        self.assertEqual(key, "or-key")
+
+    def test_preset_lane_end_to_end(self):
+        # Settings under the Muse preset resolve the Meta key through
+        # governor_for; a panel vote and the judge call made with that
+        # key and the preset's pinned ids both land on the Meta lane.
+        os.environ["META_API_KEY"] = "preset-key"
+        os.environ["HARNESS_MODEL_PRESET"] = "muse"
+        os.environ["HARNESS_META_BUDGET_USD"] = "2.00"
+        with redirect_stderr(io.StringIO()):
+            settings = load_settings()
+        key, gov = governor_for(settings)
+        self.assertEqual(key, "preset-key")
+        transport = RecordingTransport(
+            _resp({"prompt_tokens": 10, "completion_tokens": 5}))
+        for model in (settings.panel_pool[0], settings.judge):
+            status, _ = chat(transport, key, model, MESSAGES, 256,
+                             "auto", 0.4, gov)
+            self.assertEqual(status, 200)
+        self.assertEqual(len(transport.calls), 2)
+        for url, seen_key, _ in transport.calls:
+            self.assertEqual(url, META_CHAT_URL)
+            self.assertEqual(seen_key, "preset-key")
 
 
 class VerifyTaskIdTests(_IsolatedHome):
