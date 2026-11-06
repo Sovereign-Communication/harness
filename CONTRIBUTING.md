@@ -113,6 +113,12 @@ cli.py / mcp.py          interfaces (arg parsing, JSON-RPC; boundary
     (cli `dogfood` composes the lanes: hermetic ground gate -> live panel
     tally gate -> gated self-apply; deliberately not exposed over MCP)
     config.py  paths.py  tokens.py  output.py  errors.py
+    `harness/jev_assessment.py` five-aspect workflow assessment and flexibility
+                                rule; does not replace audit or phase gates
+    `harness/lucas_gate.py`     deterministic typed-track validator for
+                                caller-produced Lucas Gate v2 scorecards
+    `harness/source_audit.py`   opt-in resumable full-source Jev audit with
+                                Git-backed inventory and receipt aggregation
 ```
 
 - **One owner per concern.** Cost policy lives only in `spend.py`; model
@@ -224,6 +230,7 @@ cheap; losing either is not.
 | Path | Owns |
 |---|---|
 | `harness/config.py` | settings, key resolution, lane curation |
+| `harness/overlay.py` | overlay verification: compose base+overlay in a scratch tree, run one suite command |
 | `harness/paths.py` | shared per-user root for Harness-managed configuration and state |
 | `harness/spend.py` | SpendGovernor: spend ceilings, BYOK, model discovery |
 | `harness/router.py` | cheap-first routing ladder: model pools, rotation, gated escalation |
@@ -236,6 +243,8 @@ cheap; losing either is not.
 | `harness/discount_gate.py` | the price gate: a promoted model's rates are refused until a conclusive measured verdict is committed as repo evidence (`audits/self/dogfood/EV0A_DISCOUNT_SEMANTICS.json`, SHA-256-pinned by D11). Fail-closed on missing/unreadable/stale; no default, because the two readings differ by 2x |
 | `harness/fireworks.py` | `EV-7` Fireworks route, offer lookup (`resolve_offer`, `resolve_route`), and per-endpoint Standard rate cost estimation (`cost_estimate`, `compare_fireworks_vs_openrouter`); fails closed when Fireworks is disabled or model path is unconfirmed |
 | `harness/fireworks_probe.py` | `EV-8` one-shot Fireworks verification probe (`run_fireworks_probe`): marker written before any network call, refuses second run, enforces `<= $0.01` ceiling and confirmed model path, sanitizes failure bodies |
+| `harness/meta.py` | Meta direct lane: committed offers for models named by bare Meta API id (`muse-<...>`) at published list rates, and per-token cost estimation from them; a `muse-` id with no committed offer fails closed -- never routed on a guess or booked as free |
+| `harness/flush_loop.py` | `FLUSH-0`/`FLUSH-1`/`FLUSH-2` saturation (flush) loop: Rule 0 delta admission (`begin_pass` refuses a pass over an unchanged information set; formatting churn canonicalizes to the same digest), the gap register whose only exits are `closed` with a cure and its read or `decision_ready` with a packet and named owner (never `noted`), materiality with per-bucket tail promotion at five, an fsynced append-only event ledger that fails closed on a corrupt line, and `FlushLoop`: rotated-angle passes over injected judges keyed by instrument identity (Jev by default; the FLUSH-2 panel and deterministic checks opt in), the two-clean-expansion-pass stop rule with its bar (combined >= 95, every axis >= 85) and cold-run requirement, INFO REQUESTS that name the exact missing record and park only that aspect, a per-aspect cure/regression sequence that escalates a repeated cycle into one `combined_cure_packet` instead of looping, and a pinned judge version whose change rebaselines scores while leaving register findings intact. `harness flush` replays a campaign file (Jev-only by default; `--extended-instruments` enables the panel/deterministic rotation); no network call. FLUSH-3 adds the cold-run instrument |
 | `harness/apply.py` | apply engine lifecycle: construction, the public `apply_edit` entry, and batch dispatch; per-round machinery mixed in from apply_policy |
 | `harness/apply_policy.py` | the apply engine's per-round machinery (billing, edit loop, consent, rotation, deferrals, escalation) -- mixed into `ApplyEngine` verbatim |
 | `harness/batch.py` | multi-file batch orchestration: one governed session per file, shared task budget, fail-fast -- owns the LOOP, the engine owns the per-file apply |
@@ -280,6 +289,7 @@ cheap; losing either is not.
 | `harness/execution_stages.py` | planning-stage composition, stage judgments, and restart guards |
 | `harness/lifecycle_types.py` | discriminated chat/audit/auto-edit/driver/provisioning states and their cross-field invariants |
 | `harness/lifecycle.py` | the single persisted request-state owner: Jev rounds, continuation, usage liability, side-effect receipts, and terminal transitions; lane adapters do not own duplicate state |
+| `harness/restart_policy.py` | the one owner of post-refusal terminal state for a validated restart or consent refusal (#430): binds request/assignment/checkpoint, records once, never dispatches or spends, and keeps resume distinct from restart |
 | `harness/chat_policy.py` | chat intent and route policy shared by the answer lanes |
 | `harness/chat_lifecycle.py` | chat checkpoints, workspace hand-off, and continuation restoration |
 | `harness/hourglass_lifecycle.py` | multi-round chat answer generation and advisory Jev review |
@@ -303,9 +313,12 @@ cheap; losing either is not.
 | `harness/ledger_analytics.py` | read-only ledger analytics (participation_report, defer_stats calibration) -- mixed into `AutonomyLedger` verbatim |
 | `harness/trust.py` | bipolar trust (-11..+11) per host/model/author: levels AND gates -- thresholds unlock actions, safety signals drop trust fast |
 | `harness/events.py` | typed progress event stream: the ONE owner of live run telemetry (structured JSON to sinks; advisory, never control flow) |
+| `harness/meta.py` | direct Meta (Muse) lane: the committed per-token offers for the bare `muse-*` API ids and their cost estimate. A `muse-` id with no committed offer fails closed, so no pool or lane changes dispatch because this module exists |
 | `harness/mcp.py` | MCP framing, boundary normalization, engine dispatch, cooperative cancellation + per-tool deadlines (the frame loop owns the cancellation lifecycle), and response lifecycle; composes dependencies from session.py |
 | `harness/mcp_schemas.py` | MCP tool contracts as pure data (no imports, no logic; one consumer: mcp.py) |
 | `harness/mcp_lanes.py` | MCP lane-scheduling policy (mutation/spendy/observe): `LANES`, `lane_for` -- which serial worker runs each tool |
+| `harness/mcp_log.py` | file-only JSON-lines MCP tool-call log: one object per call, credential families scrubbed before serialization, and no write at all when no path is configured (the stdio transport owns stdout/stderr) |
+| `harness/queue_bus.py` | the per-repo work queue and the laptop watcher that drains it: the one owner of the item state machine `queued -> claimed -> running -> checkpointed -> done\|blocked\|parked`, an append-only event per move, ownership binding every move after the claim, a finished item that is never replayed, and supervised launches that refuse to claim without per-run authorization. Local state only -- `harness queue` intercepts before settings load, so a watcher runs with no provider key |
 | `harness/doctor.py` | `harness doctor`: bounded environment checks for interpreter, provider readiness, local services, ledger and MCP stdio; reports safe metadata and one-line fixes |
 | `harness/server.py` | `harness serve`: localhost web UI + JSON API -- the third face; dispatch calls the same engine entry points, no new policy |
 | `harness/render.py` | the ONE human-facing pretty-printer: TTY tables of result envelopes on stderr; read-only, machine JSON stays the stdout contract |
@@ -320,6 +333,7 @@ cheap; losing either is not.
 | `harness/worktree.py` | git-worktree isolation for parallel DAG stages: per-node worktree/branch, declared-write audit, topological merge, conflict fail-closed |
 | `harness/web.py` | deliberate web access for the chat lane: allowlist-only fetch (https, redirects refused) + one operator-configured search endpoint; opt-in per run, honest failures, never an SSRF surface |
 | `harness/claims.py` | structured-claims grounding: source_refs lint + claims curation from the ledger's own evidence |
+| `harness/citation_verify.py` | deterministic citation identity and claim-to-passage provenance (#422): injected DOI metadata resolution, field-by-field comparison, closed support statuses, and a strict citation-verified gate that unresolved evidence cannot pass |
 | `harness/continuation.py` | the resumable-task state contract and its verification identity |
 | `harness/spend.py` | Cost-bounded spend: the governor that makes ceilings guarantees. Live pricing catalog, key identity, BYOK learning/denylist, free-model discovery, and the HUL-B dual envelope (`working_remaining = max - spent - terminal_reserve`; attempts never eat reserve; terminal findings may). |
 | `harness/dynamic_allocation.py` | dynamic resource allocation and runtime negotiation: model-aware token budgets, adaptive window sizing, spend ceiling evaluation, evidence sizing, and model ranking |
@@ -336,6 +350,7 @@ cheap; losing either is not.
 | `harness/ui.py` | the pywebview desktop shell around the harness web UI |
 | `harness/ui_auth.py` | local UI bearer-token persistence shared by the desktop and HTTP server, with symlink refusal and atomic writes |
 | `harness/workspace.py` | explicit workspace selection and canonical path access; rejects traversal, symlink escapes, and sensitive credential paths |
+| `harness/workspace_audit.py` | read-only workspace audit lane (#448): enumerated scope/exclusions/truncation, input-cost estimate and cap preflight, and routing that never dispatches a paid request on a guess |
 | `harness/refine.py` | Propose-Probe-Compose refinement loop (`REFINE-LOOP`, issue #239): code-enforced TIER 0/1/2 safety boundaries, P0 task outcome tracking on the ledger, P1 task family taxonomy (`task_families.json`), P3 lessons library (`experience.md` with 30-day recency decay), Jev 4-dimension scoring rubric with gating rules, CycleCost 3x budget check, and Phase 0 pilot state (20 cycles, TIER 2 only, no auto-merge) |
 | `tests/` | one test module per product owner (test_spend, test_panel, test_convergence, test_specialist, test_chat, test_ledger, test_prompts, ...); shared fakes and the `_gov` helper live in `tests/_fake.py` |
 

@@ -253,10 +253,17 @@ class GateTests(unittest.TestCase):
         self.assertNotIn("click", registry)
         self.assertIn("observe", registry)
 
-    def test_the_read_only_registry_still_exists_unchanged(self):
+    def test_the_read_only_registry_is_exactly_the_observing_actions(self):
+        """Read-only by capability, not by label.
+
+        ``run_probe`` belongs here: it is declared read-only and, since
+        issue #439, it is registered without DRIVER_ALLOW_WRITE. Every
+        entry in this list must be an action that cannot change the machine
+        even when it runs to completion.
+        """
         registry = build_read_only_registry()
         self.assertEqual(sorted(registry.names()),
-                         ["no_action", "observe", "read_value"])
+                         ["no_action", "observe", "read_value", "run_probe"])
 
     def test_the_default_no_consent_grant_observes_only(self):
         self.assertTrue(NO_CONSENT_NEEDED.covers("observe", "read_only", {}))
@@ -307,6 +314,8 @@ class InputBackendTests(unittest.TestCase):
         api = WindowApi()
         backend = osal.native_input_backend(
             platform="windows", window_api=api)
+        self.assertIsNotNone(backend)
+        assert backend is not None
         ok, detail = osal.send_input(
             "focus", target="Harness smoke target", backend=backend)
         self.assertTrue(ok, detail)
@@ -334,6 +343,12 @@ class InputBackendTests(unittest.TestCase):
 
     def test_native_backend_is_unavailable_on_unsupported_platforms(self):
         self.assertIsNone(osal.native_input_backend(platform="linux"))
+
+    def test_native_backend_without_a_window_api_fails_closed(self):
+        """The opt-in path must name what is missing, not raise NameError."""
+        with self.assertRaises(RuntimeError) as caught:
+            osal.native_input_backend(platform="windows")
+        self.assertIn("injected window API", str(caught.exception))
 
     def test_a_backend_can_be_withdrawn_at_runtime(self):
         """Observe the machine, never drive it -- as a policy, not an
@@ -579,6 +594,7 @@ class PipelineOkMeansActedTests(unittest.TestCase):
         self.assertIn("no registered backend", result.detail)
         # The record still travels, so the failure is inspectable.
         self.assertIsNotNone(result.execution)
+        assert result.execution is not None
         self.assertFalse(result.execution.ok)
 
     def test_a_successful_executor_is_still_ok(self):
@@ -589,6 +605,7 @@ class PipelineOkMeansActedTests(unittest.TestCase):
         consent = Consent(True, "write_file", params=dict(params), by="test")
         result = self._step("write_file", params, consent)
         self.assertTrue(result.ok, result.detail)
+        assert result.execution is not None
         self.assertTrue(result.execution.ok)
         self.assertTrue(os.path.isfile(target))
 

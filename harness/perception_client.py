@@ -89,12 +89,13 @@ STOP_REASONS = (
     "no_capture", "insufficient_agreement", "extraction_disagreement",
     "confidence_below_threshold", "state_not_stable", "decision_not_usable",
     "no_action_recommended", "undeclared_action", "execution_refused",
+    "verification_failed",
 )
 
 #: The tiers a step can stop at, in pipeline order. ``stopped_at`` is always
 #: one of these on a refusal, so a caller can tell "we never read the screen"
 #: apart from "we read it, agreed on it, and the model declined".
-STOP_TIERS = ("capture", "agree", "decide", "execute")
+STOP_TIERS = ("capture", "agree", "decide", "execute", "verification")
 
 
 def _load_endpoint():

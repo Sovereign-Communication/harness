@@ -12,7 +12,7 @@ the vote count.
 
 from . import events as _events
 from .chat import (_chat_reservation_slots, _extract_json, _reported_cost,
-                   assess_output, chat, extract_content_and_cost)
+                   assess_output, chat_routed, extract_content_and_cost)
 from .config import MIN_CONVERGENCE_PANEL_TOKENS, MIN_SYNTHESIS_TOKENS
 from .errors import HarnessError
 from .output import eprint
@@ -443,8 +443,10 @@ def run_convergence_specialist(transport, api_key, governor, panel_results, mode
     result = {"status": "error", "model": model,
               "error": "no specialist candidate available", "cost": 0.0}
     for m_ in candidates:
-        status, resp = chat(transport, api_key, m_, [{"role": "user", "content": prompt}],
-                            max_tokens, reasoning_effort, reasoning_token_budget, governor)
+        status, resp = chat_routed(transport, api_key, m_,
+                                   [{"role": "user", "content": prompt}],
+                                   max_tokens, reasoning_effort,
+                                   reasoning_token_budget, governor)
         if status != 200:
             error_cost = _reported_cost(resp)
             if error_cost:

@@ -114,6 +114,15 @@ def _vision_pool(*args, **kwargs):
     return build_vision_pool(*args, **kwargs)
 
 
+def _described():
+    """Platform facts, supplied rather than read off the host: a hermetic
+    suite never reads whatever window happens to be focused on the machine
+    (#292). Matches the state the fake provider answers with."""
+    return ({"window_title": "report - editor",
+             "foreground_app": "editor",
+             "error_dialog_present": False}, "")
+
+
 def _ok_response(state=None, *, echo=None):
     """A provider response that also echoes the request back at us."""
     payload = {
@@ -138,9 +147,14 @@ class FakeService:
         self.responses = []
 
     def call_service(self, url, questions, *, headers=None, timeout=60,
-                     body_extra=None):
+                     body_extra=None, assets=None, images_enabled=None):
+        recorded = dict(body_extra or {})
+        if assets:
+            recorded["assets"] = assets
         self.requests.append({"url": url, "questions": questions,
-                              "headers": headers, "body": body_extra})
+                              "headers": headers, "body": recorded,
+                              "assets": assets,
+                              "images_enabled": images_enabled})
         from driver_core.transport import Response
         if not self.payloads:
             return Response(0, "transport_error", detail="fake queue empty")
@@ -194,7 +208,7 @@ class OneClientPathTests(unittest.TestCase):
             "format": "png",
             "data_base64": base64.b64encode(capture.payload).decode("ascii"),
         })
-        self.assertIn("`screen`", sent["questions"]["observation"]
+        self.assertIn("'screen'", sent["questions"]["observation"]
                       ["instructions"])
 
     def test_image_request_reserves_the_full_context_bound(self):
@@ -446,7 +460,8 @@ class OneClientPathTests(unittest.TestCase):
 
         pool = _vision_pool(_keyed(), budget=budget,
                             audit=MemoryAuditLog(), slots=2,
-                            transport_module=OneGood())
+                            transport_module=OneGood(),
+                            describer=_described)
         votes = pool.run(_capture(), SCREEN_SCHEMA)
         self.assertEqual(len(votes), 2)
         self.assertEqual(sum(1 for v in votes if v.status == "ok"), 1)
@@ -531,7 +546,8 @@ class NothingEchoesBackTests(unittest.TestCase):
         encoded = base64.b64encode(capture.payload).decode("ascii")
         service = FakeService(_ok_response(echo=encoded if echo else None))
         pool = _vision_pool(_keyed(), budget=budget, audit=audit,
-                                 slots=1, transport_module=service)
+                                 slots=1, transport_module=service,
+                                 describer=_described)
         votes = pool.run(capture, SCREEN_SCHEMA)
         return capture, service, audit, budget, votes
 
@@ -591,7 +607,8 @@ class NothingEchoesBackTests(unittest.TestCase):
         budget = Budget(1.0, step_ceiling_usd=1.0)
         service = FakeService(_ok_response(), _ok_response())
         pool = _vision_pool(_keyed(), budget=budget, audit=audit,
-                                 slots=2, transport_module=service)
+                                 slots=2, transport_module=service,
+                                 describer=_described)
         votes = pool.run(_capture(), SCREEN_SCHEMA)
         agreement = tally(votes, SCREEN_SCHEMA, quorum=2, min_agreement=1.0)
         self.assertTrue(agreement.is_usable)
@@ -660,7 +677,12 @@ class LocalHttpVisionSmokeTests(unittest.TestCase):
             settings = _keyed().with_overrides(quorum=1)
             extractor = _extractor(
                 "local-smoke", settings, budget=budget, audit=audit,
-                image_preparer=_resize_preparer)
+                image_preparer=_resize_preparer,
+                # Platform facts are merged after the model's state, so a
+                # hermetic suite supplies them instead of reading whatever
+                # window happens to be focused on the machine (#292).
+                describer=lambda: ({"window_title": "report - editor",
+                                    "foreground_app": "editor"}, ""))
             decision = FakeJev(action_answer("observe", confidence=0.99))
             driver = Driver(
                 audit=audit, settings=settings, budget=budget,
@@ -706,6 +728,29 @@ class LocalHttpVisionSmokeTests(unittest.TestCase):
                 server.server_close()
                 worker.join(timeout=2)
             self.assertFalse(worker.is_alive())
+
+    def test_the_suite_reads_no_real_foreground_window(self):
+        """The describer is an injectable seam, not a live desktop read.
+
+        ``VisionExtractor`` merges the platform facts after the model's
+        judgments, so leaving the default in place makes a test depend on
+        whatever window is focused where it runs. This guard fails if the
+        injected describer is dropped: the real ``osal.describe_screen``
+        raises here rather than returning this desktop's window.
+        """
+        with mock.patch("driver_core.extractors.vision.osal.describe_screen",
+                        side_effect=AssertionError("read a live desktop")):
+            extractor = _extractor(
+                "hermetic", _keyed(), budget=Budget(
+                    1.0, step_ceiling_usd=1.0),
+                audit=MemoryAuditLog(),
+                describer=lambda: ({"window_title": "report - editor",
+                                    "foreground_app": "editor"}, ""),
+                transport_module=FakeService(_ok_response()))
+            extraction = extractor.extract(_capture(), SCREEN_SCHEMA)
+
+        self.assertTrue(extraction.ok, extraction.reason)
+        self.assertEqual(extraction.state["window_title"], "report - editor")
 
 
 if __name__ == "__main__":

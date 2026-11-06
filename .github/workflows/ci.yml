@@ -117,6 +117,28 @@ jobs:
           fi
           echo "working tree clean; eol inventory:"
           git ls-files --eol | awk '{print $1}' | sort | uniq -c
+      - name: Vendored driver_core matches its upstream pin
+        shell: bash
+        run: python scripts/check_driver_core_drift.py --remote
+
+  driving-hygiene:
+    name: Driving hygiene (deterministic)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Demonstrate deterministic check fixtures
+        run: python -m unittest tests.test_driving_hygiene -v
+      - name: Scan PR text, diff, credentials, and issue plans
+        run: python scripts/driving_hygiene.py
 
   # PLAT-ci-matrix: the hermetic suite runs on every supported OS, and the
   # parity tests inside it are what make "same bytes everywhere" a claim
@@ -146,6 +168,8 @@ jobs:
             python-version: "3.9"
           - os: ubuntu-latest
             python-version: "3.13"
+          - os: ubuntu-latest
+            python-version: "3.14"
     steps:
       - name: Docs/site-only matrix receipt
         if: env.RUN_HERMETIC != 'true'
@@ -173,7 +197,7 @@ jobs:
             echo "Docs/site-only change: skipped lint." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          python -m ruff check harness tests examples/oc_handoff
+          python -m ruff check harness tests examples/oc_handoff scripts driver_core
       - name: Compile
         if: env.RUN_HERMETIC == 'true'
         run: python -m compileall -q harness tests examples/oc_handoff

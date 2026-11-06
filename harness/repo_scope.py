@@ -9,7 +9,7 @@ import os
 import re
 import stat
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from . import osal
 from . import tools
@@ -49,6 +49,14 @@ def discover_target_files(prompt: str, root_dir: Optional[Path] = None) -> List[
             candidates.append(rel_path)
 
     if candidates:
+        return candidates
+
+    # A whole-workspace review is not narrowed by module-name coincidences:
+    # "audit the workspace with jev" must not collapse to harness/jev.py and
+    # harness/workspace.py (issue #448). Explicit paths above still win.
+    from .simple_request import is_comprehensive_workspace_inspection_request
+
+    if is_comprehensive_workspace_inspection_request(prompt):
         return candidates
 
     # 2. Heuristic search: check if prompt mentions existing python module names
@@ -155,6 +163,81 @@ def enumerate_repo_files(root_dir: Optional[Path] = None, limit: int = 300,
 
     files.sort()
     return files if limit is None else files[:limit]
+
+
+def audit_scope(root_dir: Optional[Path] = None,
+                limit: int = 2000,
+                excluded_limit: int = 200) -> Dict[str, Any]:
+    """Enumerable read-only scope for a workspace audit (issue #448).
+
+    Names, sizes and reasons only: no file content is opened, so a credential
+    file is listed as excluded without its bytes being read. ``truncated`` is
+    True whenever a listing cap was hit -- a capped listing is never presented
+    as a complete workspace audit.
+    """
+    scope: Dict[str, Any] = {
+        "root": str(Path(root_dir).resolve()) if root_dir is not None else None,
+        "included": [], "included_count": 0, "included_chars": 0,
+        "included_chunks_estimate": 0,
+        "excluded": [], "excluded_count": 0, "truncated": False,
+    }
+    if root_dir is None:
+        return scope
+    root = Path(root_dir).resolve()
+    hard_dirs = {name.casefold() for name in _REPO_SKIP_DIRS}
+    hard_suffixes = {suffix.casefold() for suffix in _REPO_SKIP_SUFFIXES}
+    pending = [root]
+    seen_dirs = set()
+    while pending:
+        directory = pending.pop()
+        try:
+            canonical = directory.resolve(strict=True)
+            if (not osal.is_within(str(canonical), str(root))
+                    or str(canonical) in seen_dirs):
+                continue
+            seen_dirs.add(str(canonical))
+            with os.scandir(directory) as scan:
+                entries = sorted(scan, key=lambda e: (e.name.casefold(), e.name))
+        except (OSError, RuntimeError):
+            continue
+        for entry in entries:
+            path = Path(entry.path)
+            rel = str(path.relative_to(root)).replace("\\", "/")
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            reparse = bool(getattr(info, "st_file_attributes", 0) & 0x400)
+            if reparse or entry.is_symlink():
+                if len(scope["excluded"]) < excluded_limit:
+                    scope["excluded"].append({"path": rel, "reason": "link_or_reparse"})
+                scope["excluded_count"] += 1
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                if entry.name.casefold() in hard_dirs:
+                    if len(scope["excluded"]) < excluded_limit:
+                        scope["excluded"].append(
+                            {"path": rel, "reason": "skipped_directory"})
+                    scope["excluded_count"] += 1
+                    continue
+                pending.append(path)
+                continue
+            suffix = path.suffix.casefold()
+            if suffix in hard_suffixes:
+                if len(scope["excluded"]) < excluded_limit:
+                    scope["excluded"].append(
+                        {"path": rel, "reason": "skipped_suffix"})
+                scope["excluded_count"] += 1
+                continue
+            if len(scope["included"]) >= limit:
+                scope["truncated"] = True
+                continue
+            size = int(getattr(info, "st_size", 0) or 0)
+            scope["included"].append(rel)
+            scope["included_count"] += 1
+            scope["included_chars"] += size
+            scope["included_chunks_estimate"] += max(1, -(-size // 4000))
+    return scope
 
 
 def workspace_review_candidates(prompt: str, files: Sequence[str], *,

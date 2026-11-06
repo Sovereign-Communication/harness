@@ -30,6 +30,16 @@ from pathlib import Path
 #: The one prefix this package is allowed to read.
 ENV_PREFIX = "DRIVER_"
 
+#: The named provisioning step for a headless install. Read-only surfaces
+#: (health, verify, vocabulary) work without it; extraction and Jev decisions
+#: do not. Naming the variable here is what lets health say *how* to become
+#: keyed without ever reading the value back to a caller.
+KEY_ENV = ENV_PREFIX + "JEV_API_KEY"
+
+#: Where the provisioning path is documented. Kept as a relative path rather
+#: than a URL so it stays true in a clone, a wheel and a checkout alike.
+KEY_DOCS = "docs/driver.md#headless-key-provisioning"
+
 #: Variables belonging to the host application this package ships inside
 #: (Harness) and to its provider tooling. driver-core is a self-contained,
 #: segmented module -- wire-compatible with the standalone driver-core project
@@ -59,6 +69,23 @@ DEFAULT_CONFIDENCE_THRESHOLD = 0.70
 #: below the full slot count is a real choice rather than a shortcut.
 DEFAULT_QUORUM = 2
 DEFAULT_MIN_AGREEMENT = 1.0
+
+#: Applications this package may launch, declared in code -- never from the
+#: environment. Logical name -> platform -> the value that platform's
+#: launcher receives. A launch allowlist an operator can widen is not an
+#: allowlist; adding an application is a reviewed code change.
+APP_ALLOWLIST = {
+    "notepad": {
+        "windows": "notepad.exe",
+        "darwin": "TextEdit",
+        "linux": "org.gnome.TextEditor",
+    },
+    "freebuff": {
+        "windows": "FreeBuff.exe",
+        "darwin": "FreeBuff",
+        "linux": "freebuff",
+    },
+}
 
 #: The shortest token this package will accept from an operator. The REST
 #: token is the only thing standing between a loopback caller and the action
@@ -167,6 +194,30 @@ class Settings:
     #: The in-repo native input backend is a separate, explicit opt-in. It is
     #: still constrained by ``allow_write`` and per-action consent.
     native_input_enabled: bool = False
+    #: Application launching is a second, independent opt-in. Write authority
+    #: alone does not confer it: opening a program is computer control, and a
+    #: deployment that allowed file writes was not thereby asked to allow it.
+    #: The Harness host maps ``HARNESS_NL_CONTROL`` onto ``DRIVER_LAUNCH_APP``
+    #: so this package still reads only its own namespace.
+    launch_app_enabled: bool = False
+    #: Post-action visibility verification is a third independent opt-in.
+    #: It needs ``screen_enabled`` as well: the gate is pixels, and an
+    #: operator who has not admitted pixels has not admitted this.
+    vision_verify_enabled: bool = False
+
+    @property
+    def jev_images(self):
+        """The 3.4.0 name for the screen opt-in, kept for its callers."""
+        return self.screen_enabled
+
+    @property
+    def jev_frames(self):
+        """The 3.4.0 name for frame history, gated by the same opt-in."""
+        return self.screen_enabled
+
+    jev_ladder: bool = False
+
+    jev_guardrails: bool = False
 
     def __post_init__(self):
         if not self.base_url.startswith(("http://", "https://")):
@@ -195,6 +246,26 @@ class Settings:
         """Honest key state. A missing key is a name, not an empty string."""
         return bool(self.jev_api_key)
 
+    def key_provisioning(self):
+        """How a headless install becomes keyed, without echoing the key.
+
+        The 2026-10-28 oversight audit found ``keyed=false`` reported by
+        health with nothing anywhere saying what to set. A state a caller
+        cannot act on is half a report; this is the other half. The value is
+        never included -- not even truncated -- because this dict reaches
+        logs and a loopback endpoint.
+        """
+        return {
+            "state": "keyed" if self.keyed else "unkeyed",
+            "variable": KEY_ENV,
+            "docs": KEY_DOCS,
+            "detail": ("model-backed extraction and Jev decisions are "
+                       "available" if self.keyed else
+                       f"set {KEY_ENV} in the process environment to enable "
+                       "model-backed extraction and Jev decisions; health, "
+                       "verify and vocabulary are intentionally keyless"),
+        }
+
     def redacted(self):
         """The settings as they may be printed or logged.
 
@@ -220,6 +291,8 @@ class Settings:
             "dry_run": self.dry_run,
             "allow_write": self.allow_write,
             "native_input_enabled": self.native_input_enabled,
+            "launch_app_enabled": self.launch_app_enabled,
+            "vision_verify_enabled": self.vision_verify_enabled,
         }
         return data
 
@@ -242,11 +315,24 @@ def load_settings(env=None, **overrides):
     # ``.get(..., "")`` would silently collapse those two into one.
     token = validated_token(env[ENV_PREFIX + "TOKEN"], "DRIVER_TOKEN") \
         if ENV_PREFIX + "TOKEN" in env else ""
+    # The key gets the same presence rule as the token, for the same reason:
+    # an operator whose provisioning script declares DRIVER_JEV_API_KEY blank
+    # has made a mistake worth naming. Read with ``.get(..., "")`` it would
+    # silently collapse into "keyless", and the install would refuse every
+    # model-backed step for what looks like a product fault rather than a
+    # typo. Unset means keyless, and keyless is a supported state that health
+    # describes honestly -- see :meth:`Settings.key_provisioning`.
+    if KEY_ENV in env and not str(env[KEY_ENV]).strip():
+        raise ConfigError(
+            f"{KEY_ENV} was declared but is blank; either give it a real "
+            f"value or unset it to run keyless")
     settings = Settings(
         base_url=env.get(ENV_PREFIX + "BASE_URL", DEFAULT_BASE_URL).rstrip("/"),
         host=env.get(ENV_PREFIX + "HOST", DEFAULT_HOST),
         port=_env_int(env, "PORT", DEFAULT_PORT),
-        jev_api_key=env.get(ENV_PREFIX + "JEV_API_KEY", ""),
+        jev_guardrails=_env_bool(env, "JEV_GUARDRAILS", False),
+        jev_ladder=_env_bool(env, "JEV_LADDER", False),
+        jev_api_key=env.get(KEY_ENV, ""),
         token=token,
         jev_model=env.get(ENV_PREFIX + "JEV_MODEL", "jev-latest"),
         extractor_pool=pool,
@@ -267,6 +353,8 @@ def load_settings(env=None, **overrides):
         dom_url=env.get(ENV_PREFIX + "DOM_URL", ""),
         screen_enabled=_env_bool(env, "SCREEN", False),
         native_input_enabled=_env_bool(env, "NATIVE_INPUT", False),
+        launch_app_enabled=_env_bool(env, "LAUNCH_APP", False),
+        vision_verify_enabled=_env_bool(env, "VISION_VERIFY", False),
     )
     return settings.with_overrides(**overrides) if overrides else settings
 
@@ -305,3 +393,19 @@ def assert_no_foreign_reads(names):
             f"driver-core must not read foreign configuration {foreign}; it "
             f"reads only {ENV_PREFIX}* variables")
     return True
+
+
+JEV_IMAGE_MODEL = "jev-preview"
+
+
+def image_model(settings):
+    """The model an image-path request is sent to: a pin, never the alias.
+
+    An operator who names a version (or the docs' blessed ``jev-preview``)
+    has pinned their own choice and is obeyed; only the default alias is
+    replaced, because the alias is the thing that moves under you.
+    """
+    configured = (settings.jev_model or "").strip()
+    if configured and configured != "jev-latest":
+        return configured
+    return JEV_IMAGE_MODEL

@@ -9,7 +9,9 @@ are different claims:
   re-hash clean under the current code.
 * **The same run still writes the same bytes.** The scenario pins the clock
   and every ``step_id``, so what it produces is a pure function of the code,
-  and it is compared against that same chain.
+  and it is compared against ``CURRENT_CHAIN``, the chain this code writes.
+  ``GOLDEN_CHAIN`` stays the historical proof: a vocabulary addition shifts
+  probabilities and hashes, never the record format.
 
 The second is the stronger claim and the one that catches a renamed constant.
 A log can verify perfectly while meaning something new.
@@ -17,8 +19,9 @@ A log can verify perfectly while meaning something new.
 The chain is inline rather than a ``.jsonl`` file on purpose: ``.gitignore``
 refuses ``*.jsonl`` because an audit log is evidence about a machine and must
 never be committed, and carrying it here also puts any change to it in the
-diff beside the test that explains it. Regenerate with
-``python -m tests.test_audit_compat --emit``.
+diff beside the test that explains it. Re-emit the current chain with
+``python -m tests.test_driver_core.test_audit_compat --emit``,
+and name the intentional change in the ledger.
 """
 import ast
 import importlib
@@ -247,6 +250,129 @@ def golden_records():
     return [json.loads(record) for record in GOLDEN_CHAIN]
 
 
+# The chain this code writes now. It differs from GOLDEN_CHAIN only in
+# the decision records' ``probabilities``: #270 added ``launch_app`` to
+# the declared vocabulary, so the fixed run spreads the same mass over
+# 15 actions instead of 14 and the hashes that follow change with it.
+# Keeping it separate leaves GOLDEN_CHAIN doing what its docstring says
+# -- a chain recorded before the record-kind vocabulary had an owner --
+# while byte stability is still checked against a pinned real output.
+# Re-emit only when an intentional change is named in the ledger.
+CURRENT_CHAIN = (
+    (
+     "{\"at\":\"2026-01-01T00:00:00.000000+00:00\",\"detail\":\"target 'unobser"
+     "vable' is declared 'cli' and no configured source serves that clas"
+     "s; nothing was tried. Configured sources: ['none'].\",\"hash\":\"98c94"
+     "270f43a33f50f308df7fad8290836267bb9f7b504e02aee5056d59bd982\",\"kind"
+     "\":\"refusal\",\"previous\":\"driver-core/audit/v1\",\"reason\":\"no_capture"
+     "\",\"seq\":0,\"step_id\":\"step000000001\",\"stopped_at\":\"capture\"}"
+    ),
+    (
+     "{\"at\":\"2026-01-01T00:00:00.000000+00:00\",\"detail\":\"\",\"fingerprint\""
+     ":\"45475af213f2b5ea\",\"hash\":\"7218b26519ca0fffe828626465a02b2d97f46e"
+     "5423089fce1e6ecfb781f14da3\",\"kind\":\"capture\",\"ok\":true,\"previous\":"
+     "\"98c94270f43a33f50f308df7fad8290836267bb9f7b504e02aee5056d59bd982\""
+     ",\"seq\":1,\"source\":\"cli\",\"step_id\":\"step000000002\",\"target\":\"observ"
+     "ed\"}"
+    ),
+    (
+     "{\"agreed_fields\":[\"exit_code\",\"stdout\",\"stderr\"],\"answering\":2,\"as"
+     "ked\":2,\"at\":\"2026-01-01T00:00:00.000000+00:00\",\"contested_fields\":"
+     "[],\"cost\":0.0,\"extraction_id\":\"step000000002\",\"hash\":\"e9ceec17fd3e"
+     "853a7e465f37baec2c5812140ebd144da1c45854a06b9590de8c\",\"kind\":\"extr"
+     "action\",\"outcome\":\"agreed\",\"previous\":\"7218b26519ca0fffe828626465a"
+     "02b2d97f46e5423089fce1e6ecfb781f14da3\",\"schema\":\"driver-core-cli@1"
+     ".0.0\",\"seq\":2,\"step_id\":\"step000000002\",\"unanswered\":[]}"
+    ),
+    (
+     "{\"at\":\"2026-01-01T00:00:00.000000+00:00\",\"confidence\":0.1,\"cost_us"
+     "d\":4.2e-06,\"extraction\":{\"agreed_fields\":[\"exit_code\",\"stdout\",\"st"
+     "derr\"],\"answering\":2,\"asked\":2,\"contested_fields\":[],\"cost\":0.0,\"e"
+     "xtraction_id\":\"step000000002\",\"outcome\":\"agreed\",\"schema\":\"driver-"
+     "core-cli@1.0.0\",\"unanswered\":[]},\"guards\":{\"a_blocking_choice_is_r"
+     "equired\":0.2,\"state_is_stable\":0.95},\"hash\":\"8ab1ef99e8ed3559d3f67"
+     "f9cd3f5f2722238f316c72b410f6e34ada2eb771b65\",\"kind\":\"decision\",\"mo"
+     "del\":\"fake-jev\",\"native\":true,\"previous\":\"e9ceec17fd3e853a7e465f37"
+     "baec2c5812140ebd144da1c45854a06b9590de8c\",\"probabilities\":{\"call_r"
+     "ead_tool\":0.0642857142857143,\"click\":0.0642857142857143,\"delete_fi"
+     "le\":0.0642857142857143,\"focus\":0.0642857142857143,\"launch_app\":0.0"
+     "642857142857143,\"no_action\":0.0642857142857143,\"observe\":0.0642857"
+     "142857143,\"press_key\":0.0642857142857143,\"read_dom\":0.064285714285"
+     "7143,\"read_value\":0.0642857142857143,\"run_probe\":0.064285714285714"
+     "3,\"scroll\":0.0642857142857143,\"submit_irreversible\":0.064285714285"
+     "7143,\"type_text\":0.0642857142857143,\"write_file\":0.1},\"recommended"
+     "_action\":\"write_file\",\"seq\":3,\"status\":\"native\",\"step_id\":\"step000"
+     "000002\",\"usage_source\":\"actual\"}"
+    ),
+    (
+     "{\"at\":\"2026-01-01T00:00:00.000000+00:00\",\"detail\":\"confidence 0.1 "
+     "is below the 0.7 threshold\",\"hash\":\"7a0024b7e8a785fba800923539acc8"
+     "26387ed2719ce11346abc8b8a676e59f6e\",\"kind\":\"escalation\",\"previous\""
+     ":\"8ab1ef99e8ed3559d3f67f9cd3f5f2722238f316c72b410f6e34ada2eb771b65"
+     "\",\"reason\":\"confidence_below_threshold\",\"seq\":4,\"step_id\":\"step000"
+     "000002\"}"
+    ),
+    (
+     "{\"at\":\"2026-01-01T00:00:00.000000+00:00\",\"detail\":\"confidence 0.1 "
+     "is below the 0.7 threshold\",\"hash\":\"bfdc0750be67d14b369a8eb68dc8ad"
+     "cef6bf8d7dea3cbb6ef7470f842bd408bd\",\"kind\":\"refusal\",\"previous\":\"7"
+     "a0024b7e8a785fba800923539acc826387ed2719ce11346abc8b8a676e59f6e\",\""
+     "reason\":\"confidence_below_threshold\",\"seq\":5,\"step_id\":\"step000000"
+     "002\",\"stopped_at\":\"decision\"}"
+    ),
+    (
+     "{\"at\":\"2026-01-01T00:00:00.000000+00:00\",\"detail\":\"\",\"fingerprint\""
+     ":\"45475af213f2b5ea\",\"hash\":\"8de90b725c7f0d8a3115bdcb0a0ee4cff5d780"
+     "a29e3be92c07305e7cd8fd9020\",\"kind\":\"capture\",\"ok\":true,\"previous\":"
+     "\"bfdc0750be67d14b369a8eb68dc8adcef6bf8d7dea3cbb6ef7470f842bd408bd\""
+     ",\"seq\":6,\"source\":\"cli\",\"step_id\":\"step000000003\",\"target\":\"observ"
+     "ed\"}"
+    ),
+    (
+     "{\"agreed_fields\":[\"exit_code\",\"stdout\",\"stderr\"],\"answering\":2,\"as"
+     "ked\":2,\"at\":\"2026-01-01T00:00:00.000000+00:00\",\"contested_fields\":"
+     "[],\"cost\":0.0,\"extraction_id\":\"step000000003\",\"hash\":\"f92f62e84f03"
+     "c3035171945686ce1943101839e6aff5eec1a6f7c078595cb7e2\",\"kind\":\"extr"
+     "action\",\"outcome\":\"agreed\",\"previous\":\"8de90b725c7f0d8a3115bdcb0a0"
+     "ee4cff5d780a29e3be92c07305e7cd8fd9020\",\"schema\":\"driver-core-cli@1"
+     ".0.0\",\"seq\":7,\"step_id\":\"step000000003\",\"unanswered\":[]}"
+    ),
+    (
+     "{\"at\":\"2026-01-01T00:00:00.000000+00:00\",\"confidence\":0.99,\"cost_u"
+     "sd\":4.2e-06,\"extraction\":{\"agreed_fields\":[\"exit_code\",\"stdout\",\"s"
+     "tderr\"],\"answering\":2,\"asked\":2,\"contested_fields\":[],\"cost\":0.0,\""
+     "extraction_id\":\"step000000003\",\"outcome\":\"agreed\",\"schema\":\"driver"
+     "-core-cli@1.0.0\",\"unanswered\":[]},\"guards\":{\"a_blocking_choice_is_"
+     "required\":0.2,\"state_is_stable\":0.95},\"hash\":\"125dc017027f2c950d17"
+     "ecf5263b957955a38437e4f7617a9198f4a50594d35f\",\"kind\":\"decision\",\"m"
+     "odel\":\"fake-jev\",\"native\":true,\"previous\":\"f92f62e84f03c3035171945"
+     "686ce1943101839e6aff5eec1a6f7c078595cb7e2\",\"probabilities\":{\"call_"
+     "read_tool\":0.0007142857142857149,\"click\":0.0007142857142857149,\"de"
+     "lete_file\":0.0007142857142857149,\"focus\":0.0007142857142857149,\"la"
+     "unch_app\":0.0007142857142857149,\"no_action\":0.0007142857142857149,"
+     "\"observe\":0.99,\"press_key\":0.0007142857142857149,\"read_dom\":0.0007"
+     "142857142857149,\"read_value\":0.0007142857142857149,\"run_probe\":0.0"
+     "007142857142857149,\"scroll\":0.0007142857142857149,\"submit_irrevers"
+     "ible\":0.0007142857142857149,\"type_text\":0.0007142857142857149,\"wri"
+     "te_file\":0.0007142857142857149},\"recommended_action\":\"observe\",\"se"
+     "q\":8,\"status\":\"native\",\"step_id\":\"step000000003\",\"usage_source\":\"a"
+     "ctual\"}"
+    ),
+    (
+     "{\"action\":\"observe\",\"action_class\":\"read_only\",\"at\":\"2026-01-01T00"
+     ":00:00.000000+00:00\",\"consent\":null,\"detail\":\"\",\"dry_run\":false,\"h"
+     "ash\":\"22ef3dcddb1c4f204a5d01961ce9570c02fd51bd4334fe1bab7de7afadf6"
+     "95b3\",\"kind\":\"action\",\"ok\":true,\"previous\":\"125dc017027f2c950d17ec"
+     "f5263b957955a38437e4f7617a9198f4a50594d35f\",\"seq\":9,\"step_id\":\"ste"
+     "p000000003\"}"
+    ),
+)
+
+
+def current_records():
+    return [json.loads(record) for record in CURRENT_CHAIN]
+
+
 class ChainCompatibilityTests(unittest.TestCase):
     """The two compatibility claims, and the two guards on the vocabulary."""
 
@@ -278,19 +404,26 @@ class ChainCompatibilityTests(unittest.TestCase):
         self.assertTrue(
             verdict.ok, f"an existing log stopped verifying: {verdict}")
 
-    def test_the_recorded_chain_covers_every_declared_kind(self):
+    def test_the_recorded_chain_covers_every_unconditional_kind(self):
+        # ``verification`` is opt-in: the recorded scenario has the feature
+        # off, and ``test_vision_verify`` proves the feature-on path writes
+        # the kind and its escalation. Every other kind is unconditional.
         kinds = {record["kind"] for record in golden_records()}
-        self.assertEqual(kinds, self._declared_kinds())
+        self.assertEqual(kinds, self._declared_kinds() - {"verification"})
 
     def test_the_same_run_writes_the_same_bytes(self):
         """Stronger than verification: identical records, not a valid chain.
 
         Run twice so the comparison cannot pass by luck -- one run agreeing
         with the chain says nothing about the next one doing the same.
+
+        Compared against ``CURRENT_CHAIN``: #270's ``launch_app`` changes
+        the decision probabilities and every hash after them. The
+        historical chain above still proves an older log re-hashes clean.
         """
         for attempt in range(2):
             with self.subTest(run=attempt):
-                self.assertEqual(self._run_once(), golden_records())
+                self.assertEqual(self._run_once(), current_records())
 
     def test_no_record_kind_is_written_as_a_string(self):
         """A record kind is a declared name, never a literal, wherever it is

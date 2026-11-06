@@ -1176,6 +1176,24 @@ def sd_changelog():
                  f"ok={ok}")
 
 
+def _documented_module_names():
+    """Names a backticked ``x.py`` token in docs may resolve to.
+
+    Harness is not the only package the docs describe: ``docs/driver.md``
+    records the vendored ``driver_core`` sync, including modules that moved
+    into packages (``extractors/``). Resolve against that sibling package
+    too, or a real migration note is reported as a stale Harness module.
+    Invented names still fail closed.
+    """
+    names = set(modules()) | {q.stem for q in PKG.rglob("*.py")} | {"__init__"}
+    sibling = ROOT / "driver_core"
+    if sibling.is_dir():
+        names |= {q.stem for q in sibling.rglob("*.py")}
+        names |= {q.name for q in sibling.iterdir()
+                  if q.is_dir() and not q.name.startswith("_")}
+    return names
+
+
 def sd_docs_current():
     """architecture/security/threat docs reference only real modules; no
     stale core.py references anywhere."""
@@ -1184,7 +1202,7 @@ def sd_docs_current():
     # Subpackage-aware: a reference resolves if it names a real file
     # ANYWHERE under the package (e.g. local_fit/infer.py), not just a
     # top-level module. Still fail-closed: invented names flag.
-    real = set(modules()) | {q.stem for q in PKG.rglob("*.py")} | {"__init__"}
+    real = _documented_module_names()
     for d in docs:
         if not d.exists():
             continue
@@ -1260,6 +1278,31 @@ def sd_contributing():
 
 
 # ---------------------------------------------------------------- runner
+
+def sd_flush_canaries():
+    """The shipped planted-defect canary suite must pass as a gate.
+
+    The flush loop claims to refuse a set of defects (a claim with no read, a
+    delta-free pass, a "noted" disposition, a one-pass stop, a panel counted
+    as Jev, and three more that rotate through the held-out set). This rule
+    runs `packs/flush_canary_suite.json` through the same gate the CLI and MCP
+    serve, so the claim is measured on every audit run instead of resting on
+    the unit tests alone.
+    """
+    suite = ROOT / "packs" / "flush_canary_suite.json"
+    if not suite.is_file():
+        return 0.0, f"canary suite missing: {suite}"
+    try:
+        from harness.flush_loop import run_canary_suite_file
+        result = run_canary_suite_file(str(suite))
+    except Exception as exc:  # a broken gate is a failed gate
+        return 0.0, f"canary gate errored: {type(exc).__name__}: {exc}"
+    score = float(result.get("score") or 0.0)
+    return _pass(bool(result.get("passed")) and score == 1.0,
+                 f"shipped canary suite passes as a gate; score {score:.2f} "
+                 f"on {len(result.get('held_out') or [])} held-out case(s)",
+                 f"passed={result.get('passed')} score={result.get('score')}")
+
 
 def sd_corpus_integrity():
     """The audit evidence corpus is hash-pinned: every tracked dogfood
@@ -1685,7 +1728,9 @@ CHECKS = {
            ("D11", "corpus integrity (SHA-256 pinned)",
             sd_corpus_integrity),
            ("D12", "changed lines suite-executed (coverage)",
-            sd_coverage_changed)],
+            sd_coverage_changed),
+           ("D13", "flush-loop canary suite passes as a gate",
+            sd_flush_canaries)],
 }
 
 DIM_NAMES = {"A": "Security", "R": "Reliability",

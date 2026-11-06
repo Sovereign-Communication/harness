@@ -12,9 +12,10 @@ TOOL_SCHEMAS = [
         "name": "ask",
         "title": "Answer an ordinary request",
         "description": (
-            "Answer one conversational request through the shared Harness "
-            "lifecycle. Short follow-ups reuse the session's prior context; "
-            "this tool does not grant repository-write scope."),
+            "When: an ordinary conversational request or a short follow-up to "
+            "the shared session. "
+            "In: prompt plus optional session_id. "
+            "Out: one lifecycle answer; never repository-write scope."),
         "inputSchema": {"type": "object", "properties": {
             "prompt": {"type": "string", "description": "Question or short ordinary request"},
             "session_id": {"type": "string", "description": "Optional shared chat-history session id"},
@@ -25,10 +26,11 @@ TOOL_SCHEMAS = [
         "name": "site_check",
         "title": "Check one public site's availability",
         "description": (
-            "Run the shared freeform request lifecycle for one current "
-            "public-site availability question: Jev selects the workflow, "
-            "Harness performs at most one bounded HTTPS probe, and Jev judges "
-            "the observed response. No page-content research or mutation."),
+            "When: a current public-site availability question. "
+            "In: prompt plus optional session_id. "
+            "Out: a Jev-selected workflow with at most one bounded HTTPS "
+            "probe and a judged response; no page-content research or "
+            "mutation."),
         "inputSchema": {"type": "object", "properties": {
             "prompt": {"type": "string",
                        "description": "Natural-language request to check one public site"},
@@ -40,9 +42,14 @@ TOOL_SCHEMAS = [
     {
         "name": "panel_verify",
         "title": "Multi-model verification",
-        "description": "Panel of cheap/free models answers a self-contained question, then a judge "
-                       "synthesizes a structured verdict (agreement, confidence, disagreements, "
-                       "defer). Cost-bounded. No web/file tools by design.",
+        "description": (
+            "When: a self-contained question needs multi-model agreement and "
+            "a structured verdict. "
+            "In: prompt plus optional panel, judge, max_tokens, "
+            "reasoning_effort, converge, convergence_model, specialist_pool, "
+            "task_id, and task_max_cost. "
+            "Out: agreement, confidence, disagreements, and defer within the "
+            "cost bound; no web or file tools."),
         "inputSchema": {"type": "object", "properties": {
             "prompt": {"type": "string", "description": "Self-contained question + context"},
             "panel": {"type": "string", "description": "Comma-separated model pool. Defaults to configured panel pool."},
@@ -63,10 +70,13 @@ TOOL_SCHEMAS = [
     {
         "name": "apply_edit",
         "title": "Scoped code edit with verification",
-        "description": "Make a single, scoped (<500-line file) code change, run a verification "
-                       "gate, retry up to max_rounds, renew consent each round, defer instead of "
-                       "guessing at the capability limit, and rotate models on error. Returns a "
-                       "continuation state when deferred.",
+        "description": (
+            "When: one scoped code change needs a verified edit loop. "
+            "In: file, instruction, and optional edit_snippet plus gate, "
+            "budget, consent, and backend controls. "
+            "Out: the applied change or a continuation state when deferred, "
+            "after verification, consent renewal, and model rotation on "
+            "error."),
         "inputSchema": {"type": "object", "properties": {
             "file": {"anyOf": [
                          {"type": "string"},
@@ -107,8 +117,11 @@ TOOL_SCHEMAS = [
     {
         "name": "offer_work",
         "title": "Ask for consent on a work item",
-        "description": "Probe whether a model accepts, declines, defers, or redirects a work item. "
-                       "Dispatch is allowed only on 'accept'.",
+        "description": (
+            "When: a work item needs a model's accept, decline, defer, or "
+            "redirect decision. "
+            "In: the work-item fields declared by the schema. "
+            "Out: the model's choice; dispatch is allowed only on accept."),
         "inputSchema": {"type": "object", "properties": {
             "task": {"type": "string", "description": "Work item description"},
             "task_id": {"type": "string"},
@@ -119,9 +132,11 @@ TOOL_SCHEMAS = [
     {
         "name": "defer_work",
         "title": "Revoke consent mid-task",
-        "description": "A model (or operator) may defer/revoke consent at any point. Partial work is "
-                       "preserved; the task returns to the queue with the reason recorded. This is the "
-                       "continued-consensus hook: the sovereign model can call it to stop work.",
+        "description": (
+            "When: a model or operator defers or revokes consent mid-task. "
+            "In: the task and reason fields declared by the schema. "
+            "Out: partial work preserved, the task returned to the queue with "
+            "the reason recorded, and work stopped."),
         "inputSchema": {"type": "object", "properties": {
             "task_id": {"type": "string"},
             "reason": {"type": "string"},
@@ -131,8 +146,12 @@ TOOL_SCHEMAS = [
     {
         "name": "ledger_status",
         "title": "Autonomy ledger",
-        "description": "Tail of the append-only, hash-chained autonomy/participation ledger, plus "
-                       "chain-integrity status.",
+        "description": (
+            "When: a caller needs the tail and integrity of the "
+            "autonomy/participation ledger. "
+            "In: the optional tail and filter fields declared by the schema. "
+            "Out: recent append-only, hash-chained records plus chain- "
+            "integrity status."),
         "inputSchema": {"type": "object", "properties": {
             "limit": {"type": "integer", "default": 20, "minimum": 1},
         }},
@@ -140,22 +159,35 @@ TOOL_SCHEMAS = [
     {
         "name": "participation_report",
         "title": "Autonomy & participation metrics",
-        "description": "Aggregate metrics: offers, accept/decline/defer/redirect rates, completions, "
-                       "deferral points, per-model participation, and a degenerate-consent flag.",
+        "description": (
+            "When: a caller needs aggregate consent and participation "
+            "metrics. "
+            "In: the optional window and filter fields declared by the "
+            "schema. "
+            "Out: offers, accept/decline/defer/redirect rates, completions, "
+            "deferral points, per-model participation, and a degenerate- "
+            "consent flag."),
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "spend_status",
         "title": "Key & spend status",
-        "description": "OpenRouter key identity, spend limit, remaining balance, and harness session spend.",
+        "description": (
+            "When: a caller needs key identity and spend standing. "
+            "In: no inputs beyond the request. "
+            "Out: OpenRouter key identity, spend limit, remaining balance, "
+            "and harness session spend."),
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "trust_status",
         "title": "Trust & correctness standing",
-        "description": "Bipolar trust scores (-11 extreme distrust, 0 unknown, +11 extreme "
-                       "trust) for the calling host and optionally one model, plus the "
-                       "correctness level that rations spend ceilings. Read-only.",
+        "description": (
+            "When: a caller needs trust and correctness standing. "
+            "In: the optional host and model selectors declared by the "
+            "schema. "
+            "Out: bipolar trust scores from -11 to +11 plus the correctness "
+            "level that rations spend ceilings; read-only."),
         "inputSchema": {"type": "object", "properties": {
             "model": {"type": "string", "description": "Model id to score (defaults to none: host only)"},
         }},
@@ -163,9 +195,13 @@ TOOL_SCHEMAS = [
     {
         "name": "plan_and_execute",
         "title": "Autonomous DAG task planning and sliding-scale execution",
-        "description": "Decompose a high-level goal into an executable Directed Acyclic Graph (DAG), "
-                       "classify subtask complexity into sliding-scale model tiers (Scout/Distiller/Frontier), "
-                       "and optionally execute independent subtasks concurrently with file mutual exclusion.",
+        "description": (
+            "When: a high-level goal needs decomposition into an executable "
+            "DAG. "
+            "In: the goal plus optional planning, tier, budget, and execution "
+            "controls. "
+            "Out: the classified DAG and, when requested, concurrently "
+            "executed independent subtasks with file mutual exclusion."),
         "inputSchema": {"type": "object", "properties": {
             "goal": {"type": "string", "description": "High-level goal or instruction to plan and accomplish"},
             "root": {"type": "string", "description": "Selected workspace inside configured MCP allowed roots; required for execution or file access"},
@@ -223,11 +259,13 @@ TOOL_SCHEMAS = [
     {
         "name": "issue_sort",
         "title": "Sort an issue into an operator-declared bucket",
-        "description": "JEV-P5 issue-sort: operator declares the bucket pack; code owns "
-                       "matching; TypeSafe choice criteria = operator labels only. Never "
-                       "invents buckets, path_ids, or suggested actions. Unkeyed / "
-                       "transport fail / out-of-pack → is_fallback with keyword match "
-                       "against pack keywords only; no match → bucket=null.",
+        "description": (
+            "When: operator-declared issue buckets must be matched without "
+            "invention. "
+            "In: the issue text plus the operator bucket pack. "
+            "Out: operator-only labels, with unkeyed, transport-failed, or "
+            "out-of-pack results marked is_fallback and no match yielding "
+            "bucket=null."),
         "inputSchema": {"type": "object", "properties": {
             "issue": {"type": "string", "description": "Issue or deferral note text to sort"},
             "pack": {"type": "object",
@@ -238,14 +276,52 @@ TOOL_SCHEMAS = [
         }, "required": ["issue", "pack"]},
     },
     {
+        "name": "source_audit",
+        "title": "Run a resumable full-source Jev audit",
+        "description": (
+            "When: an opt-in, cost-capped full-source audit over a Git "
+            "snapshot is requested. "
+            "In: operator code, documentation, and evidence/data packs plus "
+            "the cost ceiling and resume options. "
+            "Out: a resumable manifest of paths, hashes, line ranges, typed "
+            "results, usage receipts, and lead dispositions; never source "
+            "text."),
+        "inputSchema": {"type": "object", "properties": {
+            "root": {"type": "string",
+                     "description": "Selected Git repository root inside configured allowed roots"},
+            "code_pack": {"type": "object",
+                          "description": "Operator repo-summary pack for code/configuration"},
+            "docs_pack": {"type": "object",
+                          "description": "Operator repo-summary pack for documentation"},
+            "evidence_pack": {"type": "object",
+                              "description": "Operator repo-summary pack for evidence/data"},
+            "run_budget": {"type": "number", "minimum": 0.000001, "maximum": 0.25,
+                            "description": "Required cumulative USD ceiling for this audit run"},
+            "chunk_chars": {"type": "integer", "default": 4000,
+                            "minimum": 512, "maximum": 8000},
+            "state_path": {"type": "string",
+                           "description": "SQLite resume state path inside the selected repository"},
+            "report_path": {"type": "string",
+                            "description": "Optional source-safe JSON report path inside the selected repository"},
+            "dispositions": {"type": "object",
+                             "description": "Optional lead-id map to verified, false_positive, historical_fixture, or unresolved"},
+            "task_id": {"type": "string"},
+            "allow_write": {"type": "boolean",
+                            "description": "Explicit permission to persist resume state and optional report"},
+        }, "required": ["code_pack", "docs_pack", "evidence_pack",
+                        "run_budget", "state_path", "allow_write"]},
+        "annotations": {"readOnlyHint": False, "openWorldHint": True},
+    },
+    {
         "name": "route_query",
         "title": "Route a query onto the declared model ladder",
-        "description": "SITE-2 route marketplace: compares the request against the "
-                       "declared rung ladder (tier + cost class + observed evidence) "
-                       "and picks the cheapest capable rung. Choice criteria = declared "
-                       "rung ids only; never invents rungs or model ids. Unkeyed / "
-                       "transport fail / out-of-ladder → is_fallback with the code-owned "
-                       "tier heuristic; unsatisfiable floor → rung=null.",
+        "description": (
+            "When: a request needs the cheapest capable rung from the "
+            "declared ladder. "
+            "In: the request plus the declared rung ladder. "
+            "Out: a declared rung id, or rung=null when unsatisfiable; "
+            "unkeyed, transport-failed, or out-of-ladder results are marked "
+            "is_fallback and never invent rungs or model ids."),
         "inputSchema": {"type": "object", "properties": {
             "goal": {"type": "string", "description": "The user request to route"},
             "pack": {"type": "object",
@@ -259,11 +335,12 @@ TOOL_SCHEMAS = [
     {
         "name": "mission_status",
         "title": "Mission pack status (read-only)",
-        "description": "Thin face over the HUL-A mission pack (harness.mission_record): "
-                       "regenerates STATUS.md/INDEX.md from on-disk pack state and returns "
-                       "the machine-readable summary (phase, dual budget, receipts, resume "
-                       "state). Read-only -- never mutates mission progress, spend, or "
-                       "resume status (same semantics as `harness mission status`).",
+        "description": (
+            "When: a caller needs machine-readable HUL-A mission pack state. "
+            "In: the mission pack selector declared by the schema. "
+            "Out: regenerated STATUS.md and INDEX.md summaries with phase, "
+            "dual budget, receipts, and resume state, without mutating "
+            "progress, spend, or resume status."),
         "inputSchema": {"type": "object", "properties": {
             "mission_id": {"type": "string", "description": "Mission id (pack directory name)"},
             "root": {"type": "string", "default": "missions",
@@ -273,12 +350,12 @@ TOOL_SCHEMAS = [
     {
         "name": "continue_work",
         "title": "Resume a deferred/failed apply from its continuation state",
-        "description": "Thin face over the existing continue lane (the same "
-                       "engine.apply_batch(continuation=...) path `harness continue` and "
-                       "the UI's Continue pane use): resumes a gated apply from its saved "
-                       "continuation state. Write-gated exactly like apply_edit -- refuses "
-                       "without allow_write, and the continuation's target file must be "
-                       "inside an allowed root.",
+        "description": (
+            "When: a gated apply must resume from saved continuation state. "
+            "In: the continuation state plus allow_write and an allowed "
+            "target root. "
+            "Out: the resumed apply result; refuses without allow_write or "
+            "when the target is outside an allowed root."),
         "inputSchema": {"type": "object", "properties": {
             "continuation": {"type": "object", "description": "Saved continuation state "
                              "from a deferred/failed apply_edit or `harness apply`"},
@@ -297,16 +374,14 @@ TOOL_SCHEMAS = [
     {
         "name": "script_run",
         "title": "Run one Python script inside an allowed workspace",
-        "description": "The governed scripting surface (harness/script.py) over "
-                       "MCP: writes the source under <root>/.harness/scripts/, "
-                       "runs it with the product's interpreter and a scrubbed "
-                       "environment, kills the whole process tree on timeout or "
-                       "cancellation, and returns a receipt (exit code, stdout, "
-                       "stderr, sha, duration, optional Jev alignment). Consent "
-                       "is bound to the exact bytes: consent_sha must equal "
-                       "sha256(source) or the call is refused. Scripting must be "
-                       "enabled on the server (HARNESS_SCRIPT_ENABLED=1) and "
-                       "root must be one of the configured allowed roots.",
+        "description": (
+            "When: governed scripting is enabled and a caller needs to run "
+            "source under a declared root. "
+            "In: source, root, consent_sha, and optional timeout and Jev- "
+            "alignment fields, with HARNESS_SCRIPT_ENABLED=1. "
+            "Out: a receipt with exit code, stdout, stderr, sha, and duration "
+            "after a scrubbed-environment run with process-tree cleanup; "
+            "refuses when consent_sha does not match sha256(source)."),
         "inputSchema": {"type": "object", "properties": {
             "source": {"type": "string",
                        "description": "Python source to run (<=200,000 chars)"},
@@ -331,12 +406,13 @@ TOOL_SCHEMAS = [
     {
         "name": "log_judgment",
         "title": "Single-pass log-factor analysis against a frozen operator pack",
-        "description": "JEV-LOG: code extracts log items ($0), the ONE Jev policy "
-                       "owner judges every item (bucket choice + operator-declared "
-                       "score), and code aggregates the JSON artifact. Bucket ids and "
-                       "score levels come only from the operator pack; unmatched "
-                       "items stay unmatched; fallback counts are reported, never "
-                       "smoothed. Freeze the pack via operator approval before use.",
+        "description": (
+            "When: code-extracted log items need one owner's Jev judgment and "
+            "aggregation. "
+            "In: the operator bucket pack plus the extracted items. "
+            "Out: judged bucket choices and scores aggregated into a JSON "
+            "artifact, with unmatched items and fallback counts reported, "
+            "never smoothed."),
         "inputSchema": {"type": "object", "properties": {
             "log_text": {"type": "string", "description": "Raw runtime log dump text"},
             "pack": {"type": "object",
@@ -348,13 +424,80 @@ TOOL_SCHEMAS = [
         }, "required": ["log_text", "pack"]},
     },
     {
+        "name": "lucas_gate_v2",
+        "title": "Lucas Gate v2 typed-track scorecard runner",
+        "description": (
+            "When: a caller has a typed-track Lucas Gate v2 assessment to "
+            "validate deterministically. "
+            "In: scores and evidence for applicable categories plus explicit "
+            "reasons for non-applicable ones. "
+            "Out: a typed pass or fail against the declared bars and bias "
+            "floors; never calls Jev or a model and does not persist "
+            "evidence."),
+        "inputSchema": {"type": "object", "additionalProperties": False,
+            "properties": {
+                "track": {"type": "string", "enum": ["typed"]},
+                "artifact_text": {"type": "string", "minLength": 1,
+                                  "maxLength": 100000},
+                "overall_average": {"type": "number", "minimum": 0, "maximum": 10},
+                "actual_risk": {"type": "boolean"},
+                "investigated_reason": {"type": "string", "maxLength": 4000},
+                "category_scores": {"type": "array", "minItems": 10, "maxItems": 10,
+                    "items": {"type": "object", "additionalProperties": False,
+                        "properties": {
+                            "id": {"type": "string", "enum": [
+                                "1", "2", "3", "4", "5", "6", "8", "9", "10", "11"]},
+                            "applicable": {"type": "boolean"},
+                            "not_applicable_reason": {
+                                "type": "string", "minLength": 1, "maxLength": 4000},
+                            "score": {"type": "number", "minimum": 0, "maximum": 10},
+                            "category_average": {
+                                "type": "number", "minimum": 0, "maximum": 10},
+                            "evidence": {"type": "string", "minLength": 1,
+                                         "maxLength": 4000},
+                            "precedent": {"type": "string", "minLength": 1,
+                                          "maxLength": 4000},
+                        },
+                        "required": ["id"],
+                        "allOf": [{
+                            "if": {"properties": {"applicable": {"const": False}},
+                                   "required": ["applicable"]},
+                            "then": {"required": ["not_applicable_reason"],
+                                     "not": {"anyOf": [
+                                         {"required": ["score"]},
+                                         {"required": ["category_average"]},
+                                         {"required": ["evidence"]},
+                                         {"required": ["precedent"]},
+                                     ]}},
+                            "else": {"required": ["score", "category_average",
+                                                  "evidence", "precedent"],
+                                     "not": {"required": ["not_applicable_reason"]}},
+                        }],
+                    }},
+                "bias_checks": {"type": "array", "minItems": 8, "maxItems": 8,
+                    "items": {"type": "object", "additionalProperties": False,
+                        "properties": {
+                            "id": {"type": "string", "enum": [
+                                "B1", "B3", "B4", "B5", "B8", "B9", "B10", "B11"]},
+                            "score": {"type": "number", "minimum": 0, "maximum": 10},
+                            "rationale": {"type": "string", "minLength": 1,
+                                          "maxLength": 4000},
+                        }, "required": ["id", "score", "rationale"]}},
+            },
+            "required": ["track", "artifact_text", "actual_risk",
+                         "category_scores", "bias_checks"]},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False,
+                        "openWorldHint": False},
+    },
+    {
         "name": "jev_phase",
         "title": "JEV completion bar (local-only, read-only)",
-        "description": "Thin face over harness.jev_completion (the same engine "
-                       "`harness jev-phase --local-only` runs): hard gates + "
-                       "sentiment buckets score one phase or the whole board. "
-                       "Always local-only -- never calls a live Jev judge and "
-                       "never mutates STATUS or the repo.",
+        "description": (
+            "When: a caller needs phase or board completion scoring locally. "
+            "In: the phase id or board selection. "
+            "Out: hard gates plus sentiment bucket scores; always local-only, "
+            "never calls a live Jev judge, and never mutates STATUS or the "
+            "repo."),
         "inputSchema": {"type": "object", "properties": {
             "repo_root": {"type": "string",
                           "description": "Workspace inside configured MCP allowed roots; defaults only when exactly one root is configured"},
@@ -373,14 +516,14 @@ TOOL_SCHEMAS = [
     {
         "name": "jev_freeze",
         "title": "Freeze JEV model pin + confidence threshold",
-        "description": "Thin face over harness.config.freeze_jev_settings (the "
-                       "same owner the CLI `jev-freeze` command calls). A "
-                       "preview (persist=false, the default) reports the pin/"
-                       "threshold the freeze would apply and writes nothing; "
-                       "persist=true writes the operator config.json and "
-                       "requires allow_write. Refused fail-closed when the "
-                       "environment pins the same key, since the pin would "
-                       "not take effect.",
+        "description": (
+            "When: a caller needs to preview or persist the Jev settings "
+            "freeze. "
+            "In: persist=false for preview, or persist=true plus allow_write "
+            "to write the operator config. "
+            "Out: the pin and threshold the freeze would apply, or the "
+            "written config; refuses fail-closed when the environment pins "
+            "the same key."),
         "inputSchema": {"type": "object", "properties": {
             "model": {"type": "string",
                       "description": "Model id to pin (e.g. jev-1.13.0); omit "
@@ -400,8 +543,11 @@ TOOL_SCHEMAS = [
     {
         "name": "dogfood",
         "title": "Three-phase self-hosting dogfood audit and gated repair",
-        "description": "DF-UI-2 / HV-6: Run the self-hosting dogfood loop "
-                       "(ground -> verify -> apply) over claims and source window.",
+        "description": (
+            "When: the self-hosting ground-verify-apply loop must run over "
+            "claims and a source window. "
+            "In: the claims and source-window fields declared by the schema. "
+            "Out: the dogfood loop result."),
         "inputSchema": {"type": "object", "properties": {
             "root": {"type": "string",
                      "description": "Selected workspace inside configured MCP allowed roots"},
@@ -429,9 +575,12 @@ TOOL_SCHEMAS = [
     {
         "name": "generate_brief",
         "title": "Build an evidence-bearing context pack",
-        "description": "Generate a grounded context pack (HV-2 brief) for a goal from source files. "
-                       "Cites exact windows, estimates tokens, checks freshness, and tracks omissions. "
-                       "Hermetic: no network, no model call.",
+        "description": (
+            "When: a goal needs a grounded HV-2 context pack from source "
+            "files. "
+            "In: the goal and source scope. "
+            "Out: exact cited windows, token estimates, freshness checks, and "
+            "tracked omissions; hermetic, with no network or model call."),
         "inputSchema": {"type": "object", "properties": {
             "goal": {"type": "string", "description": "High-level goal or instruction to brief"},
             "root": {"type": "string",
@@ -449,10 +598,12 @@ TOOL_SCHEMAS = [
     {
         "name": "driver_step",
         "title": "Run verified extraction, Jev decision, and action step",
-        "description": "Execute a verified extraction -> Jev decision -> deterministic action "
-                       "step via driver-core. Consensus happens upstream of the decision. "
-                       "Returns an envelope with ok: true on execution or ok: false on a refusal "
-                       "(HTTP 200). Only transport failures raise.",
+        "description": (
+            "When: one verified extraction, Jev decision, and deterministic "
+            "action step must run through driver-core. "
+            "In: the target, schema, and optional consent and parameters. "
+            "Out: an envelope with ok=true on execution or ok=false on "
+            "refusal at HTTP 200; only transport failures raise."),
         "inputSchema": {"type": "object", "properties": {
             "target": {"type": "string", "description": "Target window, process, URL or selector"},
             "schema": {"type": "string", "enum": ["cli", "dom", "gui", "screen", "mcp"],
@@ -468,7 +619,11 @@ TOOL_SCHEMAS = [
     {
         "name": "driver_health",
         "title": "Check driver-core service status and declared sources",
-        "description": "Query driver-core liveness, version, and declared perception sources.",
+        "description": (
+            "When: a caller needs driver-core liveness and declared "
+            "perception sources. "
+            "In: no inputs beyond the request. "
+            "Out: liveness, version, and declared perception sources."),
         "inputSchema": {"type": "object", "properties": {
             "task_id": {"type": "string"},
         }},
@@ -476,7 +631,11 @@ TOOL_SCHEMAS = [
     {
         "name": "driver_vocabulary",
         "title": "List driver-core declared action vocabulary",
-        "description": "Query driver-core closed 14-action vocabulary, tier mutability, and normalizers.",
+        "description": (
+            "When: a caller needs driver-core's closed action vocabulary. "
+            "In: no inputs beyond the request. "
+            "Out: the closed 14-action vocabulary, tier mutability, and "
+            "normalizers."),
         "inputSchema": {"type": "object", "properties": {
             "task_id": {"type": "string"},
         }},
@@ -484,7 +643,11 @@ TOOL_SCHEMAS = [
     {
         "name": "driver_verify",
         "title": "Verify cryptographic audit chain and spend budget",
-        "description": "Verify the hash-chain integrity of the driver audit log and return spend totals.",
+        "description": (
+            "When: a caller needs the driver audit log's chain integrity and "
+            "spend totals. "
+            "In: no inputs beyond the request. "
+            "Out: the hash-chain verdict and spend totals."),
         "inputSchema": {"type": "object", "properties": {
             "task_id": {"type": "string"},
         }},
@@ -492,14 +655,21 @@ TOOL_SCHEMAS = [
     {
         "name": "host_provision_probe",
         "title": "Probe host system facts for provisioning",
-        "description": "Probe host hardware, operating system, interpreter, GPU, and package managers (read-only facts).",
+        "description": (
+            "When: host capabilities must be discovered read-only. "
+            "In: no inputs beyond the request. "
+            "Out: hardware, operating system, interpreter, GPU, and package- "
+            "manager facts."),
         "inputSchema": {"type": "object", "properties": {}},
         "annotations": {"readOnlyHint": True, "openWorldHint": True},
     },
     {
         "name": "host_provision_plan",
         "title": "Plan host provisioning for a goal",
-        "description": "Generate an ordered, typed host-provisioning Plan for a goal (dry-run/advisory only; consent required before execution).",
+        "description": (
+            "When: a goal needs an ordered, typed host-provisioning plan. "
+            "In: the goal and optional constraints. "
+            "Out: a dry-run, advisory Plan; execution still requires consent."),
         "inputSchema": {"type": "object", "properties": {
             "goal": {"type": "string", "description": "Provisioning goal text (e.g. 'install ruff')"},
             "root": {"type": "string", "description": "Workspace inside configured MCP allowed roots; defaults only when exactly one root is configured"},
@@ -509,7 +679,11 @@ TOOL_SCHEMAS = [
     {
         "name": "repo_cards",
         "title": "Repo philosophy cards generator/checker",
-        "description": "Generate or check deterministic repo philosophy cards from committed repository config.",
+        "description": (
+            "When: deterministic repo philosophy cards must be generated or "
+            "checked. "
+            "In: the committed repository config. "
+            "Out: the generated or checked cards."),
         "inputSchema": {"type": "object", "properties": {
             "root": {"type": "string", "description": "Selected repo or parent workspace inside configured MCP allowed roots"},
             "check": {"type": "boolean", "default": True, "description": "True to verify cards match without writing (default)"},
@@ -521,7 +695,12 @@ TOOL_SCHEMAS = [
     {
         "name": "jev_calibration",
         "title": "Jev judgment calibration analysis",
-        "description": "Analyze Jev judgment confidence distribution and recommend calibration threshold bands from ledger history (read-only).",
+        "description": (
+            "When: a caller needs Jev confidence calibration from ledger "
+            "history. "
+            "In: the ledger window fields declared by the schema. "
+            "Out: the confidence distribution and recommended threshold "
+            "bands; read-only."),
         "inputSchema": {"type": "object", "properties": {
             "window": {"type": "integer", "default": 1000, "description": "Number of recent ledger entries to inspect"},
         }},
@@ -530,11 +709,37 @@ TOOL_SCHEMAS = [
     {
         "name": "economics_report",
         "title": "Economics & value routing report",
-        "description": "Report tier snapshot freshness, seat-share diversity, per-lane/per-tier cost metering, and bounded pool-rotation proposals (read-only).",
+        "description": (
+            "When: a caller needs economics and pool-rotation standing. "
+            "In: no inputs beyond the request. "
+            "Out: tier snapshot freshness, seat-share diversity, per-lane and "
+            "per-tier cost metering, and bounded pool-rotation proposals; "
+            "read-only."),
         "inputSchema": {"type": "object", "properties": {
             "allow_cost_increase": {"type": "boolean", "default": False, "description": "Allow proposing a candidate with higher expected cost"},
         }},
         "annotations": {"readOnlyHint": True, "openWorldHint": True},
+    },
+    {
+        "name": "flush_run",
+        "title": "Run a saturation (flush) campaign or canary gate",
+        "description": (
+            "When: a saturation campaign or planted-defect canary suite must "
+            "be replayed. "
+            "In: exactly one of campaign or canary_suite, plus optional "
+            "ledger, extended_instruments, cold_run, root, and allow_write. "
+            "Out: the same campaign state the CLI reports, or the fail-closed "
+            "canary gate verdict; no code is written."),
+        "inputSchema": {"type": "object", "properties": {
+            "campaign": {"type": "string", "description": "Campaign JSON path inside an allowed root"},
+            "canary_suite": {"type": "string", "description": "Canary suite JSON path inside an allowed root"},
+            "ledger": {"type": "string", "description": "Optional event ledger path inside an allowed root"},
+            "extended_instruments": {"type": "boolean", "default": False, "description": "Allow the FLUSH-2/3 panel, deterministic, and cold instruments"},
+            "cold_run": {"type": "boolean", "default": False, "description": "Require a clean ledger and a cold run in the final pass"},
+            "root": {"type": "string", "description": "Selected workspace inside configured MCP allowed roots"},
+            "allow_write": {"type": "boolean", "description": "Explicit permission to append the event ledger"},
+        }},
+        "annotations": {"openWorldHint": True},
     },
 ]
 

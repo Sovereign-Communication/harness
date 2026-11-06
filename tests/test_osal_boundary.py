@@ -104,7 +104,8 @@ class OsalSurfaceTest(unittest.TestCase):
         for name in ("run", "run_bounded", "which", "read_text", "write_text",
                      "detect_newline", "atomic_write_text", "norm_path", "same_path",
                      "is_within", "display_path", "normalize_roots", "keyfile_mode",
-                     "keyfile_is_insecure", "open_url", "python_exe"):
+                     "keyfile_is_insecure", "open_url", "python_exe",
+                     "acquire_file_lock", "release_file_lock"):
             self.assertTrue(callable(getattr(osal, name, None)),
                             f"harness.osal must keep {name}()")
 

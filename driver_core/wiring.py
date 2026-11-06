@@ -95,7 +95,7 @@ def parse_argv(text):
     return argv
 
 
-def configured_sources(settings):
+def configured_sources(settings, *, reads_captures=True):
     """The live perception sources this configuration enables.
 
     Returned in the declared tier order so ``/health`` and the refusal
@@ -116,7 +116,12 @@ def configured_sources(settings):
         # The vision tier is separate from the structured tiers because it is
         # the only one that spends money and the only one that cannot be
         # re-derived from state that was already available exactly.
-        sources.append(ScreenSource())
+        # ``reads_captures`` is how the caller says whether the pool that
+        # will consume this source actually reads a payload. A vision
+        # pool says no, and then no screenshot is taken at all, which is
+        # also what stops DRIVER_SCREEN_OUT from being an undocumented
+        # precondition of the vision tier working.
+        sources.append(ScreenSource(pixels=reads_captures))
     return sources
 
 

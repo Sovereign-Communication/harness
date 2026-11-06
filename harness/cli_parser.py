@@ -85,13 +85,50 @@ def _add_output_flags(p):
                    help="disable ANSI color in stderr rendering (NO_COLOR is honored too)")
 
 
+class _FixedWidthHelpFormatter(argparse.HelpFormatter):
+    """Help formatter pinned to a fixed width.
+
+    argparse sizes its help layout from the ambient terminal
+    (``shutil.get_terminal_size()`` reads the COLUMNS variable, then the
+    tty). Content assertions over --help output therefore pass or fail
+    with the width of whoever ran the suite: the economics parser-surface
+    test saw the receipt filename hyphen-split at a narrow COLUMNS on
+    one CI leg while every other leg passed. The rendered help is part
+    of the CLI's surface, so it renders identically in every
+    environment.
+    """
+
+    def __init__(self, prog, indent_increment=2, max_help_position=100,
+                 width=None):
+        # Width 100 with the option column pushed past the longest
+        # invocation: argparse then never wraps help text at all (each
+        # help string renders on one line), so no asserted phrase can
+        # be split by wrapping at ANY ambient width -- and none by this
+        # one either. The option/usage layout still wraps as usual.
+        super().__init__(prog, indent_increment=indent_increment,
+                         max_help_position=max_help_position,
+                         width=100)
+
+
 def build_parser():
     """The harness parser, built fresh per call: every subcommand and flag,
     nothing else. Returns the configured ArgumentParser."""
     ap = argparse.ArgumentParser(
-        prog="harness",
+        prog="harness", formatter_class=_FixedWidthHelpFormatter,
         description="Cost-bounded multi-model verification & coding harness with AI sovereignty.")
     sub = ap.add_subparsers(dest="command", required=True)
+    # argparse does not propagate formatter_class from the parent parser
+    # to subparsers (nor does it accept it as an add_parser default);
+    # wrap add_parser so every subcommand renders its help at the same
+    # fixed width (see the formatter class above). Subcommands that pass
+    # their own formatter_class keep it.
+    _add_parser = sub.add_parser
+
+    def _add_parser_fixed(name, **kwargs):
+        kwargs.setdefault("formatter_class", _FixedWidthHelpFormatter)
+        return _add_parser(name, **kwargs)
+
+    sub.add_parser = _add_parser_fixed
 
     # Media generation via the sovereign-media service (adapter in
     # harness/media_client.py; parses its own subarguments).
@@ -105,6 +142,41 @@ def build_parser():
     sub.add_parser("driver", help="Run one verified-extraction/Jev-decision "
                                   "step via driver-core (closed action "
                                   "vocabulary, consent bound to action+params)")
+
+    # The per-repo work queue and its laptop watcher (harness/queue_bus.py;
+    # parses its own subarguments). Local state only: it intercepts before
+    # settings load, so no provider key is needed to inspect or drain a queue.
+    sub.add_parser("queue", help="Per-repo work queue and supervised laptop "
+                                  "watcher (status|enqueue|watch; no key)")
+
+    # The v1 assessment gate (harness/jev_assessment.py; parses its own
+    # subarguments). It is a lane-workflow disposition, not the audit bar: the
+    # help text says so where an operator first meets it.
+    passess = sub.add_parser(
+        "assess", help="v1 five-aspect assessment gate over a JSON "
+                       "judgement (lane workflow; the audit bar is unchanged)")
+    passess.add_argument("--input", default="-",
+                         help="JSON file with the aspect judgements, or - for stdin")
+
+    # Overlay verification (#434): compose a shipped tree with a change and
+    # run one command against the result. The base tree is never written to;
+    # composition happens in a scratch tree that is removed afterwards.
+    pover = sub.add_parser(
+        "overlay", help="Run one verification command against a composed "
+                        "base+overlay tree (the base is never modified)")
+    pover.add_argument("--base", required=True,
+                       help="shipped tree to compose")
+    pover.add_argument("--overlay", required=True,
+                       help="tree laid over the base (real files, no symlinks)")
+    pover.add_argument("--cwd", default=None,
+                       help="subdirectory of the composed tree to run from")
+    pover.add_argument("--timeout", type=float, default=None,
+                       help="per-run timeout in seconds (timeouts report 124)")
+    pover.add_argument("--keep-scratch", action="store_true",
+                       help="keep the composed tree and report its path")
+    _add_output_flags(pover)
+    pover.add_argument("command", nargs=argparse.REMAINDER,
+                       help="argv list to run in the composed tree, after --")
 
     # Structured so --help lists the UI faces alongside the data commands.
     sub.add_parser("serve", help="Local web UI + JSON API over the core (loopback; "
@@ -400,6 +472,33 @@ def build_parser():
                           "configured max_cost; hard cap applies)")
     _add_output_flags(prs)
 
+    psa = sub.add_parser(
+        "source-audit",
+        help="Opt-in resumable full-source Jev audit (cost-capped; source-safe receipts)")
+    psa.add_argument("--root", default=None,
+                     help="Git repository root to audit (default: current directory)")
+    psa.add_argument("--code-pack", required=True,
+                     help="operator pack JSON for the code/configuration pass")
+    psa.add_argument("--docs-pack", required=True,
+                     help="operator pack JSON for the documentation pass")
+    psa.add_argument("--evidence-pack", required=True,
+                     help="operator pack JSON for supported evidence/data files")
+    psa.add_argument("--run-budget", type=float, required=True,
+                     help="required cumulative USD ceiling for this audit run")
+    psa.add_argument("--chunk-chars", type=int, default=4000,
+                     help="maximum deterministic chunk size in characters (512-8000)")
+    psa.add_argument("--state", default=None,
+                     help="SQLite resume receipts (default: <root>/.harness/source-audit.sqlite3)")
+    psa.add_argument("--recover-interrupted", action="store_true",
+                     help="retry matching failed/in-flight chunks; refuses an active same-state run and budgets prior reservations as unknown spend")
+    psa.add_argument("--save-to", default=None,
+                     help="write a source-safe JSON report to this path")
+    psa.add_argument("--dispositions", default=None,
+                     help="JSON object mapping lead ids to declared dispositions")
+    psa.add_argument("--task-id", default=None,
+                     help="optional ledger task id; generated when omitted")
+    _add_output_flags(psa)
+
     proute = sub.add_parser("route", help="Route a query onto the declared model ladder "
                                            "(cheapest capable rung; unkeyed = deterministic "
                                            "tier heuristic)")
@@ -583,6 +682,10 @@ def build_parser():
                      help="permit EV-4 rotation proposals that increase expected per-call cost")
     pec.add_argument("--check-fresh", action="store_true",
                      help="verify tiers.snapshot.json freshness (no API key required)")
+    pec.add_argument("--refresh-snapshot", action="store_true",
+                     help="rewrite packs/tiers.snapshot.json from the live catalog "
+                          "($0.00 /models read): catalog-validated, and a refusal "
+                          "writes nothing (needs an OpenRouter key)")
     pec.add_argument("--provider", choices=["openrouter", "fireworks"], default="openrouter",
                      help="pricing source for economics view (default: openrouter; "
                           "with --provider fireworks and --confirm-single-paid-call, "
@@ -833,6 +936,38 @@ def build_parser():
         help="record a task outcome: TASK_ID FAMILY JEV_OUTCOME (0-1)")
     prf.add_argument("--json", action="store_true", help="emit raw JSON output only")
     _add_output_flags(prf)
+
+    pfl = sub.add_parser(
+        "flush",
+        help="Saturation (flush) loop: replay a campaign's Jev verdicts, "
+             "write the event ledger, and report the stop rule honestly")
+    pfl.add_argument("--campaign", required=True,
+                     help="campaign JSON: target, passes (angles, records, "
+                          "aspects, verdicts), dossier, optional stop")
+    pfl.add_argument("--ledger", default=None,
+                     help="event ledger path (default: <campaign>.events.jsonl)")
+    pfl.add_argument("--extended-instruments", action="store_true",
+                     help="allow panel, deterministic and cold instruments "
+                          "(FLUSH-2/3 rotation); default is Jev-only")
+    pfl.add_argument("--cold-run", action="store_true",
+                     help="require a clean ledger and a cold run in the final "
+                          "pass (FLUSH-3)")
+    pfl.add_argument("--json", action="store_true",
+                     help="emit raw JSON only (no banner)")
+    _add_output_flags(pfl)
+
+    pfc = sub.add_parser(
+        "flush-canary",
+        help="Planted-defect canary gate: fail closed unless every held-out "
+             "defect is found")
+    pfc.add_argument("--suite", required=True,
+                     help="canary suite JSON: canaries, planted ids, findings, "
+                          "held_out, rotation")
+    pfc.add_argument("--ledger", default=None,
+                     help="gate ledger path (default: <suite>.canary.events.jsonl)")
+    pfc.add_argument("--json", action="store_true",
+                     help="emit raw JSON only (no banner)")
+    _add_output_flags(pfc)
 
     return ap
 

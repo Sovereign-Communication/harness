@@ -14,6 +14,7 @@ through a JSON body any more clearly than it can through the envelope the
 body would have produced.
 """
 from .consensus import Vote
+from .guardrails import PASS, GuardrailVerdict
 from .jev_client import NATIVE, UNAVAILABLE, Decision
 from .transport import Response
 
@@ -48,21 +49,47 @@ class FakeJev:
     checking what the double was asked.
     """
 
-    def __init__(self, envelope=None, *, decision_fn=None, cost=0.0):
+    def __init__(self, envelope=None, *, decision_fn=None, cost=0.0,
+                 guard_verdict=None):
         self.envelope = envelope
         self._decision_fn = decision_fn
         self.calls = []
         self.cost = cost
+        self.guard_verdict = guard_verdict
+        self.guard_calls = []
 
-    def decide(self, state, vocabulary, *, receipt=None, step_id="step"):
+    def decide(self, state, vocabulary, *, receipt=None, step_id="step",
+               performable=None, stability=None):
+        # ``performable`` and ``stability`` are recorded rather than ignored:
+        # the safety properties "the model was never offered an action with
+        # no handler" and "the stability guard was fed compared captures (or
+        # left to the model)" are only observable by checking what the
+        # double was handed.
         self.calls.append({"state": dict(state) if state else state,
-                           "receipt": receipt, "step_id": step_id})
+                           "receipt": receipt, "step_id": step_id,
+                           "performable": (None if performable is None
+                                           else tuple(performable)),
+                           "stability": stability})
         if self._decision_fn is not None:
             return self._decision_fn(state, vocabulary, receipt=receipt,
                                      step_id=step_id)
         if self.envelope is None:
             return unavailable("fake has no envelope configured")
         return self.envelope
+
+    def guard(self, action_name, state, *, step_id="step"):
+        """The guardrail seam, recorded like the rest of the double.
+
+        The safety property "the pack judged *this* action against *this*
+        state -- and was never asked about an observation" is only
+        observable by checking what the double was handed.
+        """
+        self.guard_calls.append({"action": action_name,
+                                 "state": dict(state) if state else state,
+                                 "step_id": step_id})
+        if self.guard_verdict is not None:
+            return self.guard_verdict
+        return GuardrailVerdict(PASS, "the fake guard sees no hazard")
 
     @property
     def called(self):

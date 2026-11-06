@@ -76,6 +76,7 @@ Callers may branch on these and on nothing else about a refusal:
 | `no_action_recommended` | The decision tier recommended doing nothing. |
 | `undeclared_action` | The decision named an action outside the declared vocabulary. |
 | `execution_refused` | The executor refused: missing, stale or mismatched consent, side effects switched off, or no input backend (see below). The `detail` says which. |
+| `verification_failed` | The action executed, but the opted-in post-action vision check did not confirm its visible result (application not visible/focused, typed text not visible, capture timeout, or Jev timeout). `stopped_at` is `verification`. |
 
 `action_unsupported` is **not** a driver reason and is never emitted.
 
@@ -106,17 +107,85 @@ Every permitted action still requires consent for its exact action and
 parameters. The service creates its native backend per driver, so one driver
 cannot inherit another driver's native-input setting.
 
-What the executor actually implements (the vocabulary declares 14 actions;
+What the executor actually implements (the vocabulary declares 15 actions;
 only these have an executor behind them, and anything else is refused as
 unregistered):
 
-- Always: three read-only executors, `no_action`, `observe` and `read_value`.
-  The other declared read-only actions (`read_dom`, `call_read_tool`,
-  `run_probe`) have no executor in this build and are refused.
+- Always: four read-only executors, `no_action`, `observe`, `read_value` and
+  `run_probe`. A probe is an observation with an exit code, so it must not
+  wait for write authority; the other declared read-only actions (`read_dom`,
+  `call_read_tool`) have no executor in this build and are refused.
 - Only when `DRIVER_ALLOW_WRITE` is set: `write_file` (back up, then atomic
   replace) and `delete_file` (irreversible). Input executors also require a
   registered backend; the native Windows backend makes only exact-title
   `focus` executable when `DRIVER_NATIVE_INPUT=1`.
+- Only when both `DRIVER_ALLOW_WRITE` and `DRIVER_LAUNCH_APP` are set:
+  `launch_app`. It starts one application from the code-owned
+  `APP_ALLOWLIST` in `driver_core/config.py` (`notepad`, `freebuff`), never a
+  caller-supplied path or command, through the platform launcher
+  (`cmd /c start ""`, `open -a`, `xdg-open`), and fails if the launcher has
+  not handed off within three seconds. The Harness host maps
+  `HARNESS_NL_CONTROL` onto `DRIVER_LAUNCH_APP` (driver-core reads only its
+  own namespace); write authority alone does not confer launching, and an
+  unlisted application is refused with the declared set named.
+
+### Post-action vision verification (#272)
+
+The executor's `ok` says an action was performed; it does not say the
+application painted or the typed string appeared. Two actions have an
+opt-in post-action check in
+[`driver_core/vision_verify.py`](../driver_core/vision_verify.py):
+
+- `launch_app`: after the launcher returns, poll at **2s and 5s** from
+action completion. Each poll takes a screenshot through `ScreenSource` and
+asks Jev the exact question `Is the application '<app_name>' visible and
+focused?`. A probability at or above **0.85** passes; two failures stop with
+`verification_failed` and `stopped_at: "verification"`.
+- `type_text`: one screenshot immediately after the action, with the exact
+question `Is the text '<text>' visible in the screenshot?`, the same 0.85
+bar, and the same failure path.
+
+A screenshot may spend at most **2 seconds** in capture and a Jev verdict at
+most **5 seconds**; exceeding either marks the attempt as a timeout and the
+driver escalates. The verifier uses the existing transport, endpoint, key,
+budget and price list -- there is no second Jev client. Image bytes are sent
+as a PNG asset and never written to the audit chain.
+
+**Flag-off is unchanged.** The check is built only when both `DRIVER_SCREEN`
+and `DRIVER_VISION_VERIFY` are enabled. With either off, no screenshot, Jev
+call, audit record or `verification` value is produced, and the action
+completes exactly as before. A dry run is not verified because it performed
+no effect.
+
+The same module carries the versioned **launch-verify** pack (`launch-verify`
+`1.0.0`): eight fields (`app_identity`, `backend`, `model`, `thinking`,
+`repo`, `build_mode`, `mission_queued`, `start_state`), a Choice plus a 0-3
+Score per field over one screenshot, and a **95** floor (`score / 3 * 100`).
+A field passes only when the Choice agrees with the caller-owned manifest and
+the Score reaches the floor. The live calibration corpus and freeze are not
+claimed by this lane pass: they require screenshots from the installed
+FreeBuff and a live key, and are recorded as the named follow-up on #272.
+
+### Read-only probes
+
+`run_probe` takes `command` as an **argv list**, never a string: a string
+would need tokenising, and a second tokeniser is a second, weaker argv
+parser. The shape must be declared read-only before a process starts:
+
+- built in: `git status`, `log`, `diff`, `show`, `rev-parse`, `ls-files`,
+  `describe`, `blame`, `grep`;
+- operator-declared, in `DRIVER_PROBE_ALLOWLIST`, as `;`-separated exact
+  argv shapes (for example `DRIVER_PROBE_ALLOWLIST="python scripts/check.py"`).
+
+Custom declarations match the full argv: include every argument the check
+needs, because caller-supplied trailing arguments are refused. Built in Git
+subcommands accept their arguments, except options that write a file
+(`--output`), launch an external pager (`--open-files-in-pager`, `-O`), or
+dispatch an external program (`--ext-diff`, `--textconv`) are refused. A
+probe's argv, exit code, stdout and stderr are written to the
+action record in the driver's audit chain; that record is the evidence. A
+non-zero exit is an answer, a missing program is a refusal, and a timeout is
+reported as exit code 124.
 
 ## Consent is never invented
 
@@ -162,6 +231,14 @@ harness driver schemas       # declared extraction schemas
 harness driver verify        # audit-chain verdict + spend snapshot
 harness driver step TARGET --schema cli --raw   # the full envelope as JSON
 ```
+
+`verify` is scoped to driver-core's own audit store. The response names the
+absolute `audit.store` (or `<memory>` for an in-memory test log), labels it
+`store_scope: driver-core`, and reports the chain head hash in `audit.head`.
+A run from an empty cwd still verifies the per-user default store under
+`LOCALAPPDATA`/`XDG_STATE_HOME` unless `DRIVER_AUDIT_PATH` names another file;
+the output always names that store. This is **not** the Harness autonomy
+ledger, so a green `driver-core verify` is not harness evidence.
 
 `harness driver step` exits `0` when the step completed, `1` when the driver
 refused with a named reason (a decision, **not** a failure of the command),
@@ -259,6 +336,7 @@ loopback default**. No Harness state file is written on the driver's behalf.
 |---|---|---|
 | Endpoint | `DRIVER_BASE_URL` | `http://127.0.0.1:8791` |
 | Token | `DRIVER_TOKEN` | generated per start when unset |
+| TypeSafe key | `DRIVER_JEV_API_KEY` | unset (keyless; see below) |
 | Config file | `DRIVER_CONFIG_PATH` | `$HARNESS_CONFIG_DIR/driver.json` (`~/.config/harness/driver.json` by default) |
 | Audit log | `DRIVER_AUDIT_PATH` | per-user state directory |
 | Allow side-effect executors | `DRIVER_ALLOW_WRITE` | off |
@@ -273,6 +351,92 @@ endpoint that can act on a machine should never be reachable by accident from
 another host. That is a floor, not a security claim: any local process that
 holds the token can drive it. The driver is configured entirely under
 `DRIVER_*` and reads nothing from Harness's environment.
+
+### Headless key provisioning
+
+A headless install (a sandbox, CI runner or oversight verifier with no
+desktop session) becomes keyed through one named environment variable:
+
+```bash
+export DRIVER_JEV_API_KEY="..."   # process environment only; never a file
+```
+
+There is no config-file key entry and no prompt: the value is read from the
+environment by `load_settings`, kept out of `repr`, and never printed,
+logged or returned. `DRIVER_JEV_API_KEY` is the whole path.
+
+Which surfaces are keyless is deliberate, not an accident of configuration:
+
+| Surface | Keyed? | Why |
+|---|---|---|
+| `health`, `verify`, `vocabulary` | keyless | A verifier must be able to check liveness, the audit chain and the declared action set with no credential at all. |
+| extraction (`observe`, vision) | keyed | Model-backed extraction is a provider call that costs money and needs a credential. |
+| Jev decisions | keyed | The decision tier is the credentialed model; an unkeyed client refuses rather than inventing a decision. |
+
+`health` reports `keyed` and, when unkeyed, a `key_provisioning` object naming
+`DRIVER_JEV_API_KEY` and this section. The CLI prints the same sentence. A
+keyed step records its spend in the ledger and `verify` reports it under
+`budget.spent_usd`.
+
+For a headless step followed by spend verification, keep `driver-core serve`
+running and call `POST /step` followed by `GET /verify` on that service. Those
+routes share the same per-process budget, so `verify` includes the step's spend.
+Standalone `driver-core step` and `driver-core verify` commands start separate
+processes; their in-memory budgets are separate even when they use the same
+persistent audit path.
+
+## Vendoring `driver_core`
+
+The package under `driver_core/` is a vendored copy of
+[`Treystu/driver-core`](https://github.com/Treystu/driver-core), pinned by
+`driver_core/__init__.py`'s `__version__` (`3.5.0` as vendored), with the
+upstream identity recorded in `driver_core/UPSTREAM.json` (repository,
+version, commit and raw source URL). The standalone repository publishes no
+tags, so the pin is the version plus commit, not a tag.
+
+**The copy is not a pure mirror.** The harness carries local patches upstream
+does not have, and harness-owned tests import modules upstream has removed. A
+wholesale copy over `driver_core/` is therefore wrong:
+
+| Local fact | Evidence |
+|---|---|
+| Blank `DRIVER_JEV_API_KEY` is a named `ConfigError`, and health reports `key_provisioning` | `01b1bbd` (#438) |
+| Probe hardening for external dispatch | `266f186`, `c9fdbbc` (#439) |
+| Batch consent contract enforced as its docstring states | `832a059` (#300) |
+| `tests/test_driver_conformance.py` imports `driver_core.consent_ledger` | `tests/test_driver_conformance.py:25` |
+| `tests/test_driver_core/test_audit_compat.py` imports `driver_core.extractors` | `tests/test_driver_core/test_audit_compat.py:39` |
+
+The measured `3.4.0`-to-`3.5.0` delta (2026-11-04) is 66 files,
++4918/-1987: `extractors.py` became the `extractors/` package;
+`consent_ledger.py` is absent upstream; `guardrails.py`, `jev_audit.py`,
+`jev_context.py`, `locate.py` and `verdicts.py` are new. The sync landed at
+`76fb1cf` (#292). Upstream 3.5.0 is a parallel line, not a superset, so the
+harness patches in the table above were reapplied deliberately.
+
+### Sync procedure
+
+1. Record the upstream `main` commit SHA and its `__version__` in
+   `driver_core/UPSTREAM.json`; the SHA is the pin for the sync, because the
+   standalone repository has no tags.
+2. Reconstruct the upstream tree the vendored copy was taken from (the 3.4.0
+   base) before diffing; a two-way diff against `main` mixes the upstream delta
+   with the harness patches in the table above.
+3. Merge per file, resolving each harness patch deliberately: keep, port or
+   drop, with the reason in the sync PR.
+4. Port the harness-owned tests that reference removed modules rather than
+   deleting their coverage.
+5. Run `python -m unittest discover -s tests/test_driver_core -t .`,
+   `python -m unittest tests.test_driver_conformance`, the hermetic suite, and
+   `python -m ruff check harness tests` before landing.
+6. Update `__version__`, `driver_core/UPSTREAM.json` and this section in the
+   same commit.
+
+`scripts/check_driver_core_drift.py` is the live drift check. It compares
+`driver_core.__version__` with the pin, and with `--remote` it reads the
+standalone `driver_core/__init__.py` from the pin's HTTPS source and fails if
+that version differs. A fetch failure is a drift failure. The checkout-hygiene
+job runs the remote form; `tests/test_driver_core_drift.py` covers both the
+pin-only and remote paths without network access.
 
 ## Status
 

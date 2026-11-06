@@ -58,3 +58,36 @@ Tested on harness PR #312:
 - Under old policy: ESCALATE on 0.74 Choice confidence (methodological artifact).
 
 The v1 policy produces the correct verdict where the old policy escalated on noise.
+
+## Code counterpart (2026-10-29, issue #325)
+
+The assessment gate is implemented in `harness/jev_assessment.py` and runs as
+`harness assess --input <judgement.json>` (JSON in, verdict out; exit 0 pass,
+1 investigate/block/stop, 2 malformed). It answers for lane-workflow
+dispositions only: `authority` in every verdict says so, and
+`production_gate` says the audit and phase-completion bars are unchanged.
+
+**Aggregation rule (declared, because the policy's point scores and a live
+Jev distribution are different objects):** an aspect is in a band when that
+band holds a strict majority (> 0.5) of the declared distribution. A tie or
+distribution with no strict majority is `UNCERTAIN` and is investigated; it is never converted
+into a point score, and the full distribution stays in the verdict.
+
+**Disposition ladder, in order:**
+
+1. three stalled rounds (`stalled_rounds >= 3`) -> `STOP`, scores reported;
+2. any named actual `risk` -> `BLOCK`, at any score;
+3. a majority `<85` -> `BLOCK` (fix and re-assess; investigation does not
+   excuse a below-bar aspect);
+4. a majority `85-89`, or `UNCERTAIN` -> `INVESTIGATE` until the aspect
+   carries an investigation finding; then `PASS_WITH_NOTE` when no risk was
+   named. Four green plus one flex and three green plus two flex take the
+   same path, which is the flexibility rule and the single-point rule;
+5. five green -> `PASS`.
+
+Relevance-first is enforced in the input: an irrelevant aspect must carry a
+reason, is excluded from the disposition, and cannot be scored. All five
+aspects must be present -- an unjudged aspect is a refusal, not a smaller
+denominator. A `composer` object supplied by the caller is carried through
+untouched under its own key; a v1 `PASS` never rewrites it, so a lane can
+publish both outputs without claiming the production composer proceeded.

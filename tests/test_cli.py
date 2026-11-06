@@ -685,7 +685,20 @@ class EngineKeyWiringTests(unittest.TestCase):
                 settings.jev_api_key = None
                 return real_policy_for(settings, **kwargs)
 
+            # Hermetic settings: the machine's config.json may pin MCP
+            # allowed_roots (operator state). A bench manifest in a temp dir
+            # must not inherit them, or this proof fails on ambient config
+            # that CI never has.
+            real_load_settings = cli.load_settings
+
+            def _hermetic_settings(*args, **kwargs):
+                s = real_load_settings(*args, **kwargs)
+                s.mcp_allowed_roots = []
+                return s
+
             with mock.patch.object(session, "governor_for", side_effect=fake_governor), \
+                 mock.patch.object(cli, "load_settings",
+                                   side_effect=_hermetic_settings), \
                  mock.patch.object(session, "HttpTransport", TransportStub), \
                  mock.patch.object(session, "ledger_for", return_value=led), \
                  mock.patch.object(session, "policy_for",
@@ -1064,8 +1077,12 @@ class CliParserSurfaceTests(unittest.TestCase):
         sub_action = next(a for a in build_parser()._actions
                           if isinstance(a, argparse._SubParsersAction))
         registered = set(sub_action.choices)
+        # `queue` joins the early-intercept faces: it owns local queue state
+        # and must run before settings load, so it is dispatched beside
+        # serve/desktop/media/driver rather than through the keyed table.
         self.assertEqual(registered,
-                         set(_DISPATCH) | {"serve", "desktop", "media", "driver"})
+                         set(_DISPATCH) | {"serve", "desktop", "media",
+                                           "driver", "queue"})
 
     def test_handler_seams_stay_importable_from_cli(self):
         import harness.cli as cli

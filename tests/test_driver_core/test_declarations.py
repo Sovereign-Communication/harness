@@ -19,7 +19,9 @@ import inspect
 import os
 import pathlib
 import re
+import sys
 import unittest
+from typing import Any, cast
 
 import driver_core
 from driver_core import osal
@@ -87,7 +89,8 @@ class OsBoundaryTests(unittest.TestCase):
             for node in ast.walk(tree):
                 for label, predicate in BANNED:
                     if predicate(node):
-                        findings.append(f"{name}:{node.lineno} {label}")
+                        findings.append(
+                            f"{name}:{getattr(node, 'lineno', 0)} {label}")
         self.assertEqual(findings, [],
                          "OS contact escaped the boundary: " + "; ".join(findings))
 
@@ -113,13 +116,13 @@ class OsBoundaryTests(unittest.TestCase):
         self.assertEqual(result.reason, "not_found")
 
     def test_a_non_zero_exit_is_an_answer_not_a_failure(self):
-        result = osal.run(["python", "-c", "import sys; sys.exit(3)"])
+        result = osal.run([sys.executable, "-c", "import sys; sys.exit(3)"])
         self.assertEqual(result.returncode, 3)
         self.assertFalse(result.ok)
         self.assertEqual(result.reason, "")
 
     def test_a_command_that_actually_runs_returns_its_output(self):
-        result = osal.run(["python", "-c", "print('hello')"])
+        result = osal.run([sys.executable, "-c", "print('hello')"])
         self.assertTrue(result.ok)
         self.assertIn("hello", result.stdout)
 
@@ -218,6 +221,24 @@ class VocabularyTests(unittest.TestCase):
         with self.assertRaises(VocabularyError):
             check_batch(["delete_file", "submit_irreversible"],
                         DEFAULT_VOCABULARY)
+
+    def test_an_irreversible_may_not_share_a_batch_with_a_read_only_action(self):
+        with self.assertRaises(VocabularyError):
+            check_batch(["delete_file", "read_value"], DEFAULT_VOCABULARY)
+
+    def test_an_irreversible_may_not_share_a_batch_with_a_mutating_action(self):
+        with self.assertRaises(VocabularyError):
+            check_batch(["delete_file", "click"], DEFAULT_VOCABULARY)
+
+    def test_a_batch_of_only_reversible_actions_is_accepted(self):
+        self.assertEqual(
+            check_batch(["read_value", "click"], DEFAULT_VOCABULARY),
+            ["read_value", "click"])
+
+    def test_a_lone_irreversible_action_is_accepted(self):
+        self.assertEqual(
+            check_batch(["delete_file"], DEFAULT_VOCABULARY),
+            ["delete_file"])
 
     def test_a_duplicate_action_name_is_refused(self):
         from driver_core.actions import Action
@@ -323,10 +344,13 @@ class AuditIsRequiredTests(unittest.TestCase):
         """Every class in the package whose constructor accepts ``audit``."""
         found = []
         root = pathlib.Path(driver_core.__file__).parent
-        for path in sorted(root.glob("*.py")):
-            module = importlib.import_module(
-                f"driver_core.{path.stem}" if path.stem != "__init__"
-                else "driver_core")
+        for path in sorted(root.rglob("*.py")):
+            parts = list(path.relative_to(root).parts)
+            if parts[-1] == "__init__.py":
+                parts = parts[:-1]
+            else:
+                parts[-1] = parts[-1][:-3]
+            module = importlib.import_module(".".join(["driver_core"] + parts))
             for _, cls in inspect.getmembers(module, inspect.isclass):
                 if cls.__module__ != module.__name__:
                     continue
@@ -346,20 +370,26 @@ class AuditIsRequiredTests(unittest.TestCase):
             f"a default of {defaulted} puts an unrecorded action back within "
             f"reach; the argument has to be required")
 
-    def test_the_four_that_take_one_all_do(self):
+    def test_the_five_that_take_one_all_do(self):
         """Pins that the scan found the real collaborators and not an empty
-        set, which would pass the test above for the wrong reason."""
+        set, which would pass the test above for the wrong reason. The
+        post-action verifier writes ``verification`` records, so it owns a
+        required chain exactly like the vision extractor."""
         self.assertEqual(
             sorted(cls.__name__ for cls in self._constructors_taking_an_audit()),
-            ["Driver", "Executor", "JevClient", "VisionExtractor"])
+            ["Driver", "Executor", "JevClient", "VisionExtractor",
+             "VisionVerifier"])
 
     def test_an_executor_cannot_be_built_without_a_chain(self):
+        # Deliberately omit the required ``audit`` argument; the cast keeps
+        # the static checker from demanding the very argument under test.
         with self.assertRaises(TypeError):
-            Executor(vocabulary=DEFAULT_VOCABULARY, registry={})
+            Executor(**cast(Any, {"vocabulary": DEFAULT_VOCABULARY,
+                                  "registry": {}}))
 
     def test_a_driver_cannot_be_built_without_a_chain(self):
         with self.assertRaises(TypeError):
-            Driver()
+            Driver(**cast(Any, {}))
 
     def test_none_is_refused_by_name(self):
         """Passing ``audit=None`` explicitly is the same mistake with more

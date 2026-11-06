@@ -369,10 +369,13 @@ class LaunchDiagnosticTests(unittest.TestCase):
 
     def test_a_timeout_is_not_dressed_up_as_a_missing_binary(self):
         source = configured_sources(
-            load_settings(env={"DRIVER_CLI_COMMAND": "python"}))[0]
+            load_settings(env={"DRIVER_CLI_COMMAND": sys.executable}))[0]
         detail = source.capture(Target("x")).detail
-        # python exists, so this one ran; the assertion is that a *successful*
-        # launch produces no diagnostic at all.
+        # The running interpreter exists, so this one ran; the assertion is
+        # that a *successful* launch produces no diagnostic at all. Naming the
+        # interpreter by path (not "python") keeps the test independent of
+        # whether PATH happens to expose it -- the 2026-10-29 bare-venv run
+        # failed here only because "python" was not on PATH.
         self.assertEqual(detail, "")
 
 

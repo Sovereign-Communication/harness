@@ -85,7 +85,7 @@ def compare_fireworks_vs_openrouter(endpoints=None):
     """Compare committed Fireworks offers against the OpenRouter tier snapshot."""
     from .routing_table import SNAPSHOT_PRICE_TABLE
     offers = (endpoints.get("offers") if isinstance(endpoints, dict) and "offers" in endpoints
-              else fireworks_offers())
+              else fireworks_offers()) or []
     rows = []
     for offer in offers:
         fw_in = round(offer.price.prompt * 1_000_000.0, 4)

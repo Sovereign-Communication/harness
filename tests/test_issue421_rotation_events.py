@@ -107,7 +107,7 @@ class ConsentRotationEventTests(unittest.TestCase):
         budget = TokenBudget(max_input_tokens=1000, max_output_tokens=1000)
         governor = SpendGovernor(transport, "sk-test")
 
-        with patch("harness.consent.chat",
+        with patch("harness.consent.chat_routed",
                    side_effect=RuntimeError("transport unavailable")):
             with self.assertRaisesRegex(RuntimeError, "transport unavailable"):
                 probe_consent(

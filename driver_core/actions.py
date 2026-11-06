@@ -45,10 +45,10 @@ class Action:
     """One declared action."""
 
     __slots__ = ("name", "action_class", "executor", "params", "description",
-                 "target", "normalisers")
+                 "target", "normalisers", "records_output")
 
     def __init__(self, name, action_class, executor, params, description,
-                 target, normalisers=None):
+                 target, normalisers=None, records_output=False):
         if not isinstance(name, str) or not name.strip():
             raise VocabularyError("action name must be a non-empty string")
         if action_class not in ACTION_CLASSES:
@@ -75,6 +75,12 @@ class Action:
         #: executor tier resolves them to functions so that this module
         #: stays a pure declaration and no platform logic leaks into it.
         self.normalisers = dict(normalisers or {})
+        #: Whether the executor's returned output belongs in the audit record.
+        #: Most outputs duplicate the extraction receipt the record already
+        #: carries; a probe's stdout, stderr and exit code are the evidence
+        #: itself, and nothing else records them. Declared here rather than
+        #: special-cased by name in the executor tier.
+        self.records_output = bool(records_output)
 
     @property
     def severity(self):
@@ -149,7 +155,7 @@ def _declare():
         # ---- read-only, structured targets (no pixels) ----------------
         Action("run_probe", READ_ONLY, "run_probe", ("command",),
                "Run a declared read-only command and return its stdout, exit "
-               "code and stderr.", "cli"),
+               "code and stderr.", "cli", records_output=True),
         Action("call_read_tool", READ_ONLY, "call_read_tool", ("tool",),
                "Call a declared read-only MCP tool and return its structured "
                "result.", "mcp"),
@@ -169,6 +175,9 @@ def _declare():
                "any"),
         Action("scroll", MUTATING, "scroll", ("direction",),
                "Scroll the focused scrollable region.", "any"),
+        Action("launch_app", MUTATING, "launch_app", ("app_name",),
+               "Launch one application declared in the code-owned allowlist, "
+               "named exactly as the allowlist names it.", "any"),
         Action("write_file", MUTATING, "write_file", ("path", "content"),
                "Write a file through the backup-and-atomic-write policy.",
                "filesystem", normalisers={"path": "resolve_path"}),
@@ -255,16 +264,16 @@ def check_batch(proposed, vocabulary):
 
     Refuses a batch that mixes an irreversible action with anything else,
     which is how a single "yes" would otherwise launder several consequences
-    past a human who was only asked about one.
+    past a human who was only asked about one. A lone irreversible action is
+    allowed; the executor still requires a per-step Consent grant for it.
     """
     if not isinstance(proposed, (list, tuple)):
         raise VocabularyError("a proposed batch must be a sequence of actions")
-    if len(proposed) > MAX_IRREVERSIBLE_PER_STEP:
-        irreversible = [n for n in proposed
-                        if vocabulary.resolve(n).requires_human_confirmation]
-        if len(irreversible) > 1:
-            raise VocabularyError(
-                f"a single step may propose at most "
-                f"{MAX_IRREVERSIBLE_PER_STEP} irreversible action, got "
-                f"{sorted(irreversible)}")
+    irreversible = [n for n in proposed
+                    if vocabulary.resolve(n).requires_human_confirmation]
+    if irreversible and len(proposed) > MAX_IRREVERSIBLE_PER_STEP:
+        raise VocabularyError(
+            f"an irreversible action ({sorted(irreversible)}) may not be "
+            f"proposed in a batch with other actions, got a batch of "
+            f"{len(proposed)}")
     return list(proposed)

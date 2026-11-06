@@ -84,7 +84,7 @@ class DriverLiveConformanceTest(unittest.TestCase):
 
         vocab = self.adapter.vocabulary()
         self.assertTrue(vocab.get("ok"))
-        self.assertEqual(len(vocab.get("vocabulary", {}).get("actions", [])), 14)
+        self.assertEqual(len(vocab.get("vocabulary", {}).get("actions", [])), 15)
 
         schemas = self.adapter.schemas()
         self.assertTrue(schemas.get("ok"))
@@ -142,9 +142,10 @@ class DriverLiveConformanceTest(unittest.TestCase):
         self.assertFalse(envelope.get("ok"))
         self.assertEqual(envelope.get("reason"), "no_capture")
         self.assertEqual(envelope.get("stopped_at"), "capture")
-        # 11 keys in response contract
+        # 12 keys in the additive response contract
         for key in ("step_id", "ok", "stopped_at", "reason", "detail", "capture",
-                    "agreement", "decision", "execution", "receipt", "cost_usd"):
+                    "agreement", "decision", "execution", "receipt", "cost_usd",
+                    "verification"):
             self.assertIn(key, envelope)
 
     def test_assertion_5_4xx_boundary_raises_perception_unavailable(self):
@@ -189,6 +190,7 @@ class DriverLiveConformanceTest(unittest.TestCase):
             "no_action_recommended",
             "undeclared_action",
             "execution_refused",
+            "verification_failed",
         )
         self.assertEqual(STOP_REASONS, expected)
         self.assertEqual(dc_server.STOP_REASONS, expected)

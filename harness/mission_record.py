@@ -76,7 +76,7 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def validate_mission_id(mission_id: str) -> str:
+def validate_mission_id(mission_id: Any) -> str:
     """Mission ids are path-safe single segments (no separators, no '..')."""
     if not isinstance(mission_id, str) or not mission_id.strip():
         raise HarnessError("mission id must be a non-empty string")
@@ -550,6 +550,10 @@ class MissionPack:
 def _append_jsonl(path: Path, record: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(record, dict):
         raise HarnessError("receipt/eval record must be a mapping")
+    # Do not extend a stream whose earlier bytes cannot be parsed. Appending
+    # would leave the damaged row in place while making later rows look like
+    # a continuous, complete history.
+    _load_jsonl(path)
     body = dict(record)
     body.setdefault("ts", _now_iso())
     try:
@@ -561,23 +565,50 @@ def _append_jsonl(path: Path, record: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
+    """Read a receipt/evaluation stream, or refuse it by path and line.
+
+    The 2026-10-28 reproduction (issue #427) fed valid, malformed, valid and
+    got both valid rows back: a corrupted middle line was indistinguishable
+    from records that never existed, while resume counters, STATUS and
+    ``pack_summary`` all presented the stream as complete. Skipping is not a
+    recovery policy, so a malformed or non-object row now raises. A final
+    row without a terminating newline is reported as an interrupted append
+    and fails closed too: nothing claims a complete receipt sequence over
+    bytes nobody can parse.
+    """
     if not Path(path).exists():
         return []
     out: List[Dict[str, Any]] = []
     try:
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(entry, dict):
-                    out.append(entry)
+        with open(path, "rb") as f:
+            lines = f.read().splitlines(keepends=True)
     except OSError as e:
         raise HarnessError(f"cannot read JSONL: {path} ({e})") from e
+    for number, raw in enumerate(lines, start=1):
+        try:
+            decoded = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise HarnessError(
+                f"{path}:{number}: malformed UTF-8 record ({exc.reason}); "
+                f"stream integrity cannot be established") from exc
+        line = decoded.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError as exc:
+            interrupted = (number == len(lines)
+                           and not raw.endswith((b"\n", b"\r")))
+            kind = ("interrupted final record" if interrupted
+                    else "malformed record")
+            raise HarnessError(
+                f"{path}:{number}: {kind} ({exc.msg}); the stream is not "
+                f"complete and no receipt count may be derived from it") from exc
+        if not isinstance(entry, dict):
+            raise HarnessError(
+                f"{path}:{number}: record is not a JSON object "
+                f"({type(entry).__name__}); the stream is not complete")
+        out.append(entry)
     return out
 
 
@@ -775,6 +806,7 @@ def record_spend(
 
 def build_resume_state(pack: MissionPack, **extra: Any) -> Dict[str, Any]:
     receipts = load_receipts(pack)
+    load_jev_evals(pack)
     budget = load_budget(pack) if pack.budget_path.is_file() else {}
     state = {
         "schema_version": RESUME_SCHEMA_VERSION,
@@ -974,6 +1006,10 @@ def mark_terminal(
     if outcome not in _TERMINAL_STATUSES:
         raise HarnessError(
             f"terminal outcome must be one of {sorted(_TERMINAL_STATUSES)}; got {outcome!r}")
+    # Validate both append-only histories before writing findings or terminal
+    # resume state. A failed STATUS refresh must not leave a partial completion.
+    load_receipts(pack)
+    load_jev_evals(pack)
     text = findings if findings is not None else (
         f"# FINDINGS — {pack.id}\n\n"
         f"Terminal outcome: `{outcome}` at {_now_iso()}.\n\n"

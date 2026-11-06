@@ -7,7 +7,15 @@ Every layer raises it directly from this module.
 
 class HarnessError(Exception):
     """A harness-level failure with a user-facing message."""
+
     kind = "harness_error"
+    # The spend path books a post-dispatch charge before it raises, because a
+    # provider price/usage mismatch cannot undo the charge; the error then
+    # carries the amount so a bounded lane can account for it (#445). Readers
+    # already use getattr(...) defensively, but an assignment to an undeclared
+    # attribute is a contract written in the dark, so it is declared here.
+    known_cost: float = 0.0
+    cost_accounted: bool = False
 
 
 class ToolCancelled(Exception):

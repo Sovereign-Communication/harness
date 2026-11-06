@@ -18,7 +18,7 @@ from .prompts import (
 from .results import (_defer_result, _http_error, _round_entry,
                        model_envelope)
 from .chat import (
-    chat, extract_content_and_cost, _extract_json,
+    chat_routed, extract_content_and_cost, _extract_json,
     REASONING_FALLBACK_PREFIX, _reported_cost, _chat_reservation_slots,
 )
 from . import events as _events
@@ -352,7 +352,7 @@ class ApplyEngineMixin:
             _events.emit("attempt_start", task_id=req.task_id, model=attempt_model,
                          round=state.round_no, backend=req.backend)
             try:
-                status, resp = chat(self.transport, self.api_key, attempt_model,
+                status, resp = chat_routed(self.transport, self.api_key, attempt_model,
                                     [{"role": "user", "content": prompt}], req.max_tokens,
                                     req.reasoning, self.reasoning_token_budget, self.governor)
             except Exception:
@@ -693,7 +693,7 @@ class ApplyEngineMixin:
             [(f"escalation attempt {i + 1}/{esc_slots}", esc["model"], req.max_tokens, 0)
              for i in range(esc_slots)],
         )
-        status, resp = chat(self.transport, self.api_key, esc["model"],
+        status, resp = chat_routed(self.transport, self.api_key, esc["model"],
                             [{"role": "user", "content": prompt}], req.max_tokens,
                             "high", self.reasoning_token_budget, self.governor)
         if status != 200:

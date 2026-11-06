@@ -4,15 +4,26 @@ This module owns JSON-RPC framing, dispatch, cancellation lifecycle, and
 response serialization; the tool contracts (schemas) live in
 harness/mcp_schemas.py as pure data, and the lane-scheduling policy
 (which serial worker runs each tool) lives in harness/mcp_lanes.py.
+
+Tool-call logging is opt-in: set ``HARNESS_MCP_LOG`` to a file path and every
+``tools/call`` appends one JSON line with the tool, scrubbed arguments, outcome
+and duration. stdio is the transport, so the logging path never writes to
+stdout or stderr.
+
+Tool schemas are additive-only: a schema may gain optional fields, but
+removing, renaming, or retyping a field requires a new tool name. The policy
+is repeated in ``docs/mcp.md`` where contributors look.
 """
 import json
 import math
+import os
 import sys
 import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any, Dict, cast
 
 from . import __version__
 from . import events as _events
@@ -30,10 +41,13 @@ from .config import HARD_MAX_COST, HARD_TASK_MAX_COST
 from .waist import compose_arguments
 from .waist import compose_plan
 from .errors import HarnessError, ToolCancelled
+from .flush_loop import run_campaign_file, run_canary_suite_file
 from . import osal
 from .executor import DEFAULT_PLAN_WORKERS, PlanExecutor
 from .mcp_lanes import LANES, lane_for
 from .mcp_schemas import TOOL_SCHEMAS
+from driver_core.audit import lint_tool_descriptions
+from .mcp_log import log_tool_call
 from .jev_completion import dogfood_phase, score_all_phases
 from .jev_policy import aggregate_structural, policy_for
 from .jev_packs import validate_log_pack, validate_operator_pack
@@ -42,7 +56,11 @@ from .log_analysis import analyze_log
 from .perception_client import PerceptionAdapter, PerceptionUnavailable
 from .service import run_verify as _service_run_verify
 from .jev import jev_credit_status
+from .lucas_gate import (LUCAS_GATE_V2_INPUT_FIELDS,
+                         run_typed_track as _run_lucas_gate_v2)
 from .service import run_dogfood as _service_run_dogfood
+from .source_audit import (run_source_audit, source_audit_policy_factory,
+                           write_report)
 from .brief import build_brief, freshness_report, render_brief
 from .session import apply_session
 from .workspace import (choose_allowed_workspace, resolve_allowed_path,
@@ -139,7 +157,7 @@ class McpServer:
                  max_panelists=3, use_free=True, stdin=None, stdout=None,
                  allow_verify=False, allow_write=False, allowed_roots=None,
                  tool_timeout=None, caller=None, auth_token=None,
-                 hourglass=None, settings=None):
+                 hourglass=None, settings=None, mcp_log_path=None):
         self.transport = transport
         self.api_key = api_key
         self.governor = governor
@@ -189,6 +207,10 @@ class McpServer:
         # created on this connection carry it; trust scores break out
         # per-caller history from it.
         self.caller = caller
+        # Structured tool-call log: explicit path or HARNESS_MCP_LOG. No path
+        # means no file; the logging path never touches stdio.
+        self.mcp_log_path = (mcp_log_path
+                             or os.environ.get("HARNESS_MCP_LOG") or None)
         # Remote safety is explicit: verify commands and file writes are not
         # enabled merely because a protocol client can reach this process.
         self.allow_verify = bool(allow_verify)
@@ -438,22 +460,69 @@ class McpServer:
             return request_id in self._cancelled
 
     def _call_tool(self, msg):
+        started = time.monotonic()
         request_id = msg.get("id")
         if "id" in msg:
             with self._cancel_lock:
                 if request_id in self._cancelled:
                     self._cancelled.discard(request_id)
-                    return {"jsonrpc": "2.0", "id": request_id,
-                            "error": {"code": -32800,
-                                       "message": "Request cancelled before execution"}}
-        return self._call_tool_impl(msg)
+                    response = {
+                        "jsonrpc": "2.0", "id": request_id,
+                        "error": {"code": -32800,
+                                  "message": "Request cancelled before execution"},
+                    }
+                    self._log_tool_call(msg, response, started)
+                    return response
+        try:
+            response = self._call_tool_impl(msg)
+        except Exception as exc:
+            self._log_tool_call(
+                msg, {"error": {"message": str(exc)}}, started)
+            raise
+        self._log_tool_call(msg, response, started)
+        return response
+
+    def _log_tool_call(self, msg, response, started):
+        path = self.mcp_log_path
+        if not path:
+            return
+        params = msg.get("params")
+        if not isinstance(params, dict):
+            params = {}
+        result = response.get("result")
+        if isinstance(result, dict):
+            ok = not bool(result.get("isError"))
+            error = None if ok else self._error_text(result)
+        else:
+            ok = False
+            raw = response.get("error")
+            error = (raw.get("message") if isinstance(raw, dict)
+                     else str(raw or "request failed"))
+        log_tool_call(
+            path, tool=params.get("name"), args=params.get("arguments"),
+            ok=ok, duration_ms=(time.monotonic() - started) * 1000,
+            error=error)
+
+    @staticmethod
+    def _error_text(result):
+        content = result.get("content")
+        if isinstance(content, list) and content:
+            first = content[0]
+            if isinstance(first, dict) and first.get("text"):
+                return first["text"]
+        return result.get("errorKind") or "tool failed"
+
 
     def _check_auth(self, msg):
         """Shared-secret gate for tools/call when auth_token is configured."""
         if not self.auth_token:
             return None
-        params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
-        meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else {}
+        raw_params = msg.get("params")
+        params: Dict[str, Any] = (dict(raw_params)
+                                  if isinstance(raw_params, dict) else {})
+        raw_meta = params.get("_meta")
+        meta: Dict[str, Any] = (dict(raw_meta)
+                                if isinstance(raw_meta, dict) else {})
         token = meta.get("harness_token") or params.get("harness_token")
         if token is None or not isinstance(token, str) or token != self.auth_token:
             return {"jsonrpc": "2.0", "id": msg.get("id"),
@@ -492,8 +561,11 @@ class McpServer:
             # notifications/progress frame per typed run event until the
             # response frame is written. Without the token, zero progress
             # frames -- the historical behavior.
-            meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else {}
-            token = meta.get("progressToken")
+            raw_progress_meta = params.get("_meta")
+            progress_meta: Dict[str, Any] = (
+                dict(raw_progress_meta)
+                if isinstance(raw_progress_meta, dict) else {})
+            token = progress_meta.get("progressToken")
             if _valid_progress_token(token):
                 self._register_progress(request_id, token)
         try:
@@ -542,6 +614,7 @@ class McpServer:
             self._remove_progress(request_id)
 
     def _tools(self):
+        lint_tool_descriptions(TOOL_SCHEMAS)
         return TOOL_SCHEMAS
 
     def _refuse(self, reason, message, task_id=None, model=None,
@@ -590,6 +663,7 @@ class McpServer:
 
         if name == "ask":
             prompt = validate_mcp_prompt(args.get("prompt"))
+            assert isinstance(prompt, str)  # required=True validated it
             settings = self.settings or load_settings()
             session_id = (validate_mcp_task_id(args.get("session_id"))
                           if args.get("session_id") is not None else None)
@@ -601,6 +675,7 @@ class McpServer:
 
         if name == "site_check":
             prompt = validate_mcp_prompt(args.get("prompt"))
+            assert isinstance(prompt, str)  # required=True validated it
             if not is_site_check_prompt(prompt):
                 raise HarnessError(
                     "site_check requires a single current availability "
@@ -1022,6 +1097,7 @@ class McpServer:
             # levels, paths, or actions; unmatched stays honest.
             log_text = validate_text(args.get("log_text"), "log_text", 8_000_000,
                                      required=True)
+            assert isinstance(log_text, str)  # required=True validated it
             raw_pack = args.get("pack")
             if raw_pack is None:
                 raise HarnessError(
@@ -1055,12 +1131,26 @@ class McpServer:
             from . import mission_record as mr
             mission_id = validate_text(args.get("mission_id"), "mission_id", 256,
                                        required=True)
+            assert isinstance(mission_id, str)  # required=True validated it
             root = mr.resolve_missions_root(
                 validate_text(args.get("root"), "root", 4096) or "missions")
             pack = mr.load_mission_pack(root, mission_id)
             mr.write_status(pack)
             mr.write_index(pack)
             return mr.pack_summary(pack)
+        if name == "lucas_gate_v2":
+            if not isinstance(args, dict) or not set(args).issubset(
+                    LUCAS_GATE_V2_INPUT_FIELDS):
+                raise ValueError("lucas_gate_v2 contains unsupported fields")
+            return _run_lucas_gate_v2(
+                track=args.get("track"),
+                artifact_text=args.get("artifact_text"),
+                category_scores=args.get("category_scores"),
+                bias_checks=args.get("bias_checks"),
+                overall_average=args.get("overall_average"),
+                actual_risk=args.get("actual_risk"),
+                investigated_reason=args.get("investigated_reason"),
+            )
         if name == "jev_phase":
             # Thin face over harness.jev_completion (the same engine
             # `harness jev-phase --local-only` runs). Always local-only:
@@ -1074,6 +1164,7 @@ class McpServer:
                 return score_all_phases(str(repo_root), jev_policy=None,
                                         min_score=min_score)
             phase = validate_text(args.get("phase"), "phase", 256, required=True)
+            assert isinstance(phase, str)  # required=True validated it
             return dogfood_phase(str(repo_root), phase, settings=None,
                                  use_live_jev=False, min_score=min_score)
         if name == "jev_freeze":
@@ -1106,6 +1197,41 @@ class McpServer:
                 min_confidence=confidence, persist=persist)
             return {"status": "frozen" if frozen["persisted"] else "preview",
                     "freeze": frozen}
+        if name == "flush_run":
+            raw_campaign = validate_text(args.get("campaign"), "campaign", 4096)
+            raw_suite = validate_text(args.get("canary_suite"), "canary_suite", 4096)
+            if bool(raw_campaign) == bool(raw_suite):
+                raise HarnessError(
+                    "flush_run needs exactly one of campaign or canary_suite")
+            allow_write = validate_mcp_bool(args.get("allow_write", False),
+                                            "allow_write")
+            if not (self.allow_write or allow_write):
+                self._refuse(
+                    "mcp flush write without allow_write",
+                    "flush_run appends its event ledger; re-send with "
+                    "allow_write=true or configure allow_write=True explicitly")
+            root = self._workspace_for(args.get("root"))
+            raw_ledger = validate_text(args.get("ledger"), "ledger", 4096)
+            ledger_path = None
+            if raw_ledger:
+                ledger_path = str(self._file_for(
+                    raw_ledger, workspace=root, must_exist=False))
+            if raw_suite:
+                suite_path = self._file_for(
+                    raw_suite, workspace=root, must_exist=True)
+                if ledger_path is None:
+                    ledger_path = f"{suite_path}.canary.events.jsonl"
+                return run_canary_suite_file(
+                    str(suite_path), ledger_path=ledger_path)
+            campaign_path = self._file_for(
+                raw_campaign, workspace=root, must_exist=True)
+            return run_campaign_file(
+                str(campaign_path), ledger_path=ledger_path,
+                extended_instruments=validate_mcp_bool(
+                    args.get("extended_instruments", False),
+                    "extended_instruments"),
+                cold_run=validate_mcp_bool(
+                    args.get("cold_run", False), "cold_run"))
         if name == "ledger_status":
             limit = validate_mcp_limit(args.get("limit"))
             ok, bad_seq = self.ledger.verify()
@@ -1448,6 +1574,7 @@ class McpServer:
         if name == "host_provision_plan":
             from . import provision as pv
             goal = validate_text(args.get("goal"), "goal", pv.MAX_GOAL_CHARS, required=True)
+            assert isinstance(goal, str)  # required=True validated it
             root = self._workspace_for(args.get("root"))
             probe = pv.probe_host()
             policy = pv.policy_for_probe(probe, [str(root)])
@@ -1483,6 +1610,63 @@ class McpServer:
                 return {"status": "stale" if stale else "ok", "checked": len(repos), "stale": stale}
             changed, unchanged = rc.generate(root, cards, repo=repo_filter)
             return {"status": "written", "changed": changed, "unchanged": unchanged}
+        if name == "source_audit":
+            allow_write = validate_mcp_bool(args.get("allow_write", False),
+                                            "allow_write")
+            if not (self.allow_write or allow_write):
+                self._refuse(
+                    "mcp source audit write without allow_write",
+                    "source_audit writes resume state; re-send with allow_write=true "
+                    "or configure allow_write=True explicitly",
+                    task_id=args.get("task_id"))
+            root = self._workspace_for(
+                validate_text(args.get("root"), "root", 4096))
+            raw_state = validate_text(args.get("state_path"), "state_path", 4096,
+                                      required=True)
+            state_path = self._file_for(raw_state, workspace=root, must_exist=False)
+            if not osal.is_within(str(state_path), str(root)):
+                raise HarnessError("source audit state path must stay inside the selected repository")
+            raw_report = validate_text(args.get("report_path"), "report_path", 4096)
+            report_path = None
+            if raw_report:
+                report_path = self._file_for(
+                    raw_report, workspace=root, must_exist=False)
+                if not osal.is_within(str(report_path), str(root)):
+                    raise HarnessError("source audit report path must stay inside the selected repository")
+            packs = {
+                "code": args.get("code_pack"),
+                "docs": args.get("docs_pack"),
+                "evidence": args.get("evidence_pack"),
+            }
+            run_budget = finite_number(args.get("run_budget"), "run_budget",
+                                       0.000001, HARD_MAX_COST)
+            chunk_chars = bounded_int(args.get("chunk_chars", 4000),
+                                      "chunk_chars", 512, 8000)
+            dispositions = args.get("dispositions")
+            if dispositions is not None and not isinstance(dispositions, dict):
+                raise HarnessError("source audit dispositions must be an object")
+            raw_task_id = args.get("task_id")
+            task_id = (str(validate_mcp_task_id(raw_task_id))
+                       if raw_task_id is not None
+                       else "source-audit-{}".format(uuid.uuid4().hex[:12]))
+            self.ledger.ensure_offered_task_id(
+                task_id, model="(source-audit)", required=False, source="mcp")
+            settings = getattr(self, "settings", None) or getattr(
+                self.engine, "settings", None)
+            if settings is None:
+                raise HarnessError("source_audit requires configured Jev settings")
+            report = run_source_audit(
+                root, packs,
+                source_audit_policy_factory(settings, run_budget, self.ledger),
+                state_path=state_path, run_budget=run_budget,
+                chunk_chars=chunk_chars,
+                exclude=[report_path], dispositions=dispositions,
+                task_id=task_id)
+            report["task_id"] = task_id
+            report["state_path"] = str(state_path)
+            if report_path:
+                report["written"] = {"report": write_report(report, report_path)}
+            return report
         if name == "jev_calibration":
             from . import jev_calibration as jcal
             window = bounded_int(args.get("window", 1000), "window", 1, 10000)
@@ -1575,18 +1759,24 @@ class McpServer:
             self.stdout.flush()
 
 
-def _handle_cli_flags(argv, *, stdout=None):
-    """DF-DOCS-2: `harness-mcp --help` / `--version` must answer and exit
-    without touching stdio-JSON-RPC mode -- an operator checking the entry
-    point (or a packaging smoke test) should never block on a server that's
-    waiting for a JSON-RPC frame on stdin. Returns an exit code (int) if a
-    flag was handled, or None to fall through to serving. Kept separate
-    from main() so it can be exercised without starting a server."""
-    stdout = stdout or sys.stdout
+def _handle_cli_flags(argv, *, stdout=None, stderr=None):
+    """Handle the MCP executable's small flag surface before stdio serving.
+
+    Help takes precedence when both display flags are supplied, and repeated
+    flags are idempotent. Unknown arguments return argparse's conventional
+    status 2 instead of being mistaken for a no-argument server launch.
+    """
+    stdout = sys.stdout if stdout is None else stdout
+    stderr = sys.stderr if stderr is None else stderr
     args = list(argv if argv is not None else sys.argv[1:])
-    if "--version" in args:
-        stdout.write("harness-mcp {}\n".format(__version__))
-        return 0
+    allowed = {"--help", "-h", "--version"}
+    unknown = [arg for arg in args if arg not in allowed]
+    if unknown:
+        stderr.write(
+            "usage: harness-mcp [--help] [--version]\n"
+            "harness-mcp: error: unrecognized arguments: {}\n".format(
+                " ".join(unknown)))
+        return 2
     if "--help" in args or "-h" in args:
         stdout.write(
             "usage: harness-mcp [--help] [--version]\n\n"
@@ -1597,6 +1787,9 @@ def _handle_cli_flags(argv, *, stdout=None):
             "  --help, -h   show this message and exit\n"
             "  --version    print the server version and exit\n"
         )
+        return 0
+    if "--version" in args:
+        stdout.write("harness-mcp {}\n".format(__version__))
         return 0
     return None
 
@@ -1618,7 +1811,8 @@ def main(argv=None):  # pragma: no cover - thin wiring; exercised via smoke test
     engine = composition.engine_for(settings, api_key, governor, ledger, router)
     McpServer(
         transport=transport, api_key=api_key, governor=governor, ledger=ledger,
-        router=router, engine=engine, max_panelists=settings.max_panelists,
+        router=router, engine=engine,
+        max_panelists=cast(int, settings.max_panelists),
         use_free=settings.use_free, allow_write=settings.mcp_allow_write,
         allow_verify=settings.mcp_allow_verify,
         allowed_roots=settings.mcp_allowed_roots,
@@ -1630,4 +1824,4 @@ def main(argv=None):  # pragma: no cover - thin wiring; exercised via smoke test
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

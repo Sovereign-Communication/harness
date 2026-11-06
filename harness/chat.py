@@ -23,6 +23,7 @@ from .config import (
     OPENROUTER_CHAT_URL,
     is_fireworks_model_path,
     is_meta_model_id,
+    resolve_meta_key,
 )
 from .errors import HarnessError, ProviderUsageUnknown, ToolCancelled
 from .events import emit, provider_request_context
@@ -392,7 +393,7 @@ def _ensure_accounted(governor, model, resp, usage):
 
 def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto",
          reasoning_token_budget=0.4, governor=None, enable_floor=True,
-         max_price=None, provider_sort="price"):
+         max_price=None, provider_sort="price", meta_key=None):
     """One chat completion with the spend governor's payload guards.
 
     Reasoning is included whenever the effort mode resolves to a value --
@@ -404,6 +405,22 @@ def chat(transport, api_key, model, messages, max_tokens, reasoning_effort="auto
     accounting: a missing usage.cost is resolved here, once, so no lane can
     bill a paid call as $0.
     """
+    if is_meta_model_id(model):
+        # #447: the panel, apply and verify lanes call chat() directly, and
+        # under the Muse preset every id they hold is a Muse id. This path
+        # used to floor the id and post it to OpenRouter, so a Muse-only run
+        # was not Muse-transport-only on any of the three lanes. The preset
+        # threads the Meta key as api_key (session.governor_for), so that is
+        # the key to send; an explicit meta_key wins, and a run that has
+        # neither refuses instead of falling back to another provider.
+        key = meta_key or api_key or resolve_meta_key()
+        if not key:
+            raise HarnessError(
+                "Meta key missing: set ~/.config/scmorc/meta.env, "
+                "$HARNESS_CONFIG_DIR/meta.env (default: "
+                "~/.config/harness/meta.env), META_API_KEY, or MUSE_API_KEY")
+        return _chat_meta(transport, key, model, messages, max_tokens,
+                          governor=governor)
     if is_fireworks_model_path(model):
         return _chat_fireworks(transport, api_key, model, messages, max_tokens,
                                governor=governor)
@@ -822,13 +839,13 @@ def _chat_meta(transport, api_key, model, messages, max_tokens,
 
 
 def chat_for_route(route, transport, openrouter_key, fireworks_key, messages,
-                   max_tokens, governor=None, meta_key=None):
+                   max_tokens, governor=None, meta_key=None,
+                   reasoning_effort="auto", reasoning_token_budget=0.4):
     """Dispatch one call to the provider a Route names.
 
-    OpenRouter routes go through the unchanged chat() path with its defaults.
-    Fireworks and Meta routes use their plain direct payloads and never
-    reach OpenRouter. No per-call options: the only caller sends the fixed
-    verification shape, and EV-1 will own selection policy when it lands.
+    OpenRouter routes go through the unchanged chat() path, including the
+    reasoning options a lane may have set. Fireworks and Meta routes use
+    their plain direct payloads and never reach OpenRouter.
     """
     if route.provider == META_PROVIDER:
         if not meta_key:
@@ -847,7 +864,43 @@ def chat_for_route(route, transport, openrouter_key, fireworks_key, messages,
         return _chat_fireworks(transport, fireworks_key, route.wire_model,
                                messages, max_tokens, governor)
     return chat(transport, openrouter_key, route.wire_model, messages, max_tokens,
-                governor=governor)
+                reasoning_effort, reasoning_token_budget, governor)
+
+
+def chat_routed(transport, api_key, model, messages, max_tokens,
+                reasoning_effort="auto", reasoning_token_budget=0.4,
+                governor=None, *, settings=None, meta_key=None,
+                fireworks_key=None):
+    """Resolve *model* to its backend and dispatch through that route.
+
+    The single entry point for lanes that hold a model id -- panel seats, the
+    judge, the convergence specialist, apply and verify. A Muse id dispatches
+    to the Meta endpoint and a Fireworks path to Fireworks; neither can reach
+    OpenRouter (issue #447), because the provider comes from
+    ``routing_table.route_for_model`` rather than from a ``chat()`` branch.
+
+    Under the Muse preset the lane's threaded key IS the Meta key, so it is
+    used when no explicit ``meta_key`` is given; with no key at all the
+    dispatch refuses with the Meta-key message instead of falling back.
+    """
+    from .routing_table import route_for_model
+    route = route_for_model(model, settings=settings)
+    # The key surface follows the backend the route names: an explicit
+    # argument wins, then the setting that feeds that backend, then the key
+    # this lane already threads (under the Muse preset the threaded key IS
+    # the Meta key, which is how every migrated lane passes it). A backend
+    # left unset still refuses in chat_for_route rather than borrowing
+    # another provider's credential.
+    if route.provider == META_PROVIDER:
+        meta_key = meta_key or getattr(settings, "meta_key", None) or api_key
+    elif route.provider == FIREWORKS_PROVIDER:
+        fireworks_key = (fireworks_key
+                         or getattr(settings, "fireworks_key", None))
+    return chat_for_route(
+        route, transport, api_key, fireworks_key, messages, max_tokens,
+        governor=governor, meta_key=meta_key,
+        reasoning_effort=reasoning_effort,
+        reasoning_token_budget=reasoning_token_budget)
 
 
 def chat_ladder(settings) -> list:

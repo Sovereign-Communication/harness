@@ -50,6 +50,80 @@ SLOT_OK = "ok"
 SLOT_MALFORMED = "malformed"
 SLOT_ERROR = "error"
 
+#: Source-coordinate intersection over union required within a Box cluster.
+#: An explicit agreement policy, not a calibrated accuracy claim.
+BOX_IOU_FLOOR = 0.8
+
+
+def box_iou(first, second):
+    """Intersection over union of two validated boxes in one coordinate frame."""
+    width = max(0.0, min(first["right"], second["right"])
+                - max(first["left"], second["left"]))
+    height = max(0.0, min(first["bottom"], second["bottom"])
+                 - max(first["top"], second["top"]))
+    intersection = width * height
+    def area(box):
+        return ((box["right"] - box["left"])
+                * (box["bottom"] - box["top"]))
+    return intersection / (area(first) + area(second) - intersection)
+
+
+def tally_boxes(votes, *, quorum=2, min_agreement=1.0):
+    """Conservative complete-link agreement over source-space Box votes.
+
+    A present vote requires a validated, confidence-qualified box; an absent
+    vote is an answered presence question, not a missing slot. Every member
+    of a cluster must agree with every other member, so overlapping chains
+    cannot manufacture unanimity. Sorted greedy clustering is deterministic
+    and conservative: it may refuse ambiguous overlapping clusters. It never
+    averages coordinates or lets confidence override the vote count.
+    """
+    from .locate import parse_box
+
+    if quorum < 1 or not 0 < min_agreement <= 1:
+        raise ValueError("invalid Box quorum or agreement threshold")
+    votes = list(votes)
+    answered = []
+    for vote in votes:
+        state = vote.state
+        if vote.status != SLOT_OK or not isinstance(state.get("present"), bool):
+            continue
+        if state["present"]:
+            box, _ = parse_box({"type": "box", "box": state.get("box"),
+                                "confidence": state.get("confidence")})
+            if box is None:
+                continue
+        answered.append(vote)
+    base = dict(asked=len(votes), answering=len(answered), slots=votes,
+                unanswered=[v.slot for v in votes if v not in answered],
+                cost=sum(v.cost for v in votes))
+    if len(answered) < quorum:
+        return Agreement(INSUFFICIENT, **base)
+
+    def key(vote):
+        state = vote.state
+        return (state["present"], tuple((state.get("box") or {}).get(edge, 0)
+                                       for edge in ("left", "top", "right", "bottom")))
+
+    def matches(first, second):
+        if first["present"] != second["present"]:
+            return False
+        return (not first["present"]
+                or box_iou(first["box"], second["box"]) >= BOX_IOU_FLOOR)
+
+    clusters = []
+    for vote in sorted(answered, key=key):
+        group = next((group for group in clusters if all(
+            matches(vote.state, other.state) for other in group)), None)
+        if group is None:
+            clusters.append([vote])
+        else:
+            group.append(vote)
+    winner = max(clusters, key=len)
+    if len(winner) / len(answered) < min_agreement:
+        return Agreement(DISAGREED, **base)
+    return Agreement(AGREED, state=dict(winner[0].state), **base)
+
 
 class Vote:
     """One extractor's answer, or the reason it has none.

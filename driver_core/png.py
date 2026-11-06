@@ -1,36 +1,20 @@
-"""Strict PNG raster validation for locally prepared screen captures."""
+"""Strict raster validation: https://www.w3.org/TR/png-3/ (sections 5, 7–10)."""
 import struct
 import zlib
 
 
 SIGNATURE = b"\x89PNG\r\n\x1a\n"
-
-# Bound decoded storage before starting DEFLATE. A 4 MiB scanline is far above
-# normal screen captures; 256 MiB covers a 7680x4320 RGBA raster.
 MAX_SCANLINE_BYTES = 4 * 1024 * 1024
 MAX_DECODED_BYTES = 256 * 1024 * 1024
 
 
-def dimensions(data):
-    """Return PNG IHDR dimensions, or None when the header is incomplete."""
-    if (not isinstance(data, bytes) or len(data) < 24
-            or data[:8] != SIGNATURE
-            or data[8:12] != b"\x00\x00\x00\x0d"
-            or data[12:16] != b"IHDR"):
-        return None
-    width, height = struct.unpack_from(">II", data, 16)
-    return (width, height) if width and height else None
-
-
 def decodable(data):
-    """Validate chunks, checksums, DEFLATE completion and every scanline.
+    """Check chunks, checksums, DEFLATE completion and every scanline.
 
-    IHDR scanline and aggregate sizes are capped before inflation; decompressed
-    data is then streamed in 64 KiB blocks. Animated PNGs are refused because
-    a screenshot asset must be a still.
+    Inflation is streamed in 64 KiB blocks; a forged IHDR cannot cause an
+    unbounded decompression allocation. Platform composition still performs
+    the actual pixel decode. Animated PNGs are not dispatchable stills.
     """
-    if not isinstance(data, bytes):
-        return False
     try:
         _validate(data)
     except (ValueError, struct.error, zlib.error):
@@ -39,7 +23,7 @@ def decodable(data):
 
 
 def _validate(data):
-    if data[:8] != SIGNATURE:
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
         raise ValueError("signature")
     offset = 8
     header = None
@@ -60,8 +44,7 @@ def _validate(data):
                 raise ValueError("IHDR")
             header = struct.unpack(">IIBBBBB", payload)
         elif kind == b"PLTE":
-            if (compressed or palette is not None or not 0 < length <= 768
-                    or length % 3):
+            if compressed or palette is not None or not 0 < length <= 768 or length % 3:
                 raise ValueError("palette")
             palette = length // 3
         elif kind == b"IDAT":
@@ -72,14 +55,12 @@ def _validate(data):
             if length or offset != len(data):
                 raise ValueError("IEND")
             break
-        elif (kind in (b"acTL", b"fcTL", b"fdAT")
-              or not kind[0] & 32):
+        elif kind in (b"acTL", b"fcTL", b"fdAT") or not kind[0] & 32:
             raise ValueError("unsupported critical/animated chunk")
         elif compressed:
             ended = True
     else:
         raise ValueError("missing IEND")
-
     width, height, depth, color, compression, filtering, interlace = header
     depths = {0: (1, 2, 4, 8, 16), 2: (8, 16), 3: (1, 2, 4, 8),
               4: (8, 16), 6: (8, 16)}
@@ -89,7 +70,6 @@ def _validate(data):
         raise ValueError("unsupported raster")
     if color == 3 and (palette is None or palette > 2 ** depth):
         raise ValueError("missing/oversized palette")
-
     bits = depth * {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[color]
     passes = ((0, 0, 1, 1),) if not interlace else (
         (0, 0, 8, 8), (4, 0, 8, 8), (0, 4, 4, 8), (2, 0, 4, 4),
@@ -108,10 +88,9 @@ def _validate(data):
         if decoded_size > MAX_DECODED_BYTES:
             raise ValueError("oversized raster")
         pass_shapes.append((pass_width, pass_height))
-
-    rows = ((pass_width, row == 0)
-            for pass_width, pass_height in pass_shapes
-            for row in range(pass_height))
+    rows = ((w, row == 0)
+            for w, h in pass_shapes
+            for row in range(h))
     current = next(rows, None)
     previous = b""
     buffer = bytearray()
@@ -122,21 +101,20 @@ def _validate(data):
         pending = decoder.unconsumed_tail
         buffer.extend(block)
         while current is not None:
-            width_for_row, first = current
-            size = (width_for_row * bits + 7) // 8
+            w, first = current
+            size = (w * bits + 7) // 8
             if len(buffer) < size + 1:
                 break
             method = buffer[0]
             if method > 4:
                 raise ValueError("scanline filter")
             if color == 3:
-                previous = _palette_row(
-                    buffer[1:size + 1], method,
-                    b"" if first else previous)
+                previous = _palette_row(buffer[1:size + 1], method,
+                                        b"" if first else previous)
                 mask = (1 << depth) - 1
                 if any((previous[i * depth // 8] >>
                         (8 - depth - i * depth % 8)) & mask >= palette
-                       for i in range(width_for_row)):
+                       for i in range(w)):
                     raise ValueError("palette index")
             del buffer[:size + 1]
             current = next(rows, None)
@@ -144,8 +122,7 @@ def _validate(data):
             raise ValueError("excess raster bytes")
         if not pending and len(block) < 65536:
             break
-    if (not decoder.eof or decoder.unused_data or current is not None
-            or buffer):
+    if not decoder.eof or decoder.unused_data or current is not None or buffer:
         raise ValueError("incomplete raster")
 
 
@@ -161,3 +138,14 @@ def _palette_row(row, method, previous):
         paeth = (left, up, corner)[distances.index(min(distances))]
         result[i] = (value + (0, left, up, (left + up) // 2, paeth)[method]) % 256
     return result
+
+
+def dimensions(data):
+    """Return PNG IHDR dimensions, or None when the header is incomplete."""
+    if (not isinstance(data, bytes) or len(data) < 24
+            or data[:8] != SIGNATURE
+            or data[8:12] != b"\x00\x00\x00\x0d"
+            or data[12:16] != b"IHDR"):
+        return None
+    width, height = struct.unpack_from(">II", data, 16)
+    return (width, height) if width and height else None

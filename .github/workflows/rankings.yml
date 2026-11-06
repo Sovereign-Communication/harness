@@ -28,8 +28,12 @@ on:
   schedule:
     - cron: "0 6 * * 1" # Mondays 06:00 UTC
 
+# contents: write + pull-requests: write are for the DF-EV-5 delivery step at
+# the bottom of this job only: the refresh lands as a reviewable PR, never as a
+# direct commit to main.
 permissions:
-  contents: read
+  contents: write
+  pull-requests: write
 
 jobs:
   report:
@@ -41,6 +45,26 @@ jobs:
           python-version: "3.11"
       - name: Install
         run: python -m pip install -e .
+      - name: Refresh the committed tier snapshot from the live catalog
+        # DF-EV-5 delivery, restored (#446). The artifact's only gate is its own
+        # freshness window, and before this step nothing in the repo could
+        # rewrite it: the freshness warning advertised `--report`, which writes
+        # no snapshot, so the moment the committed file aged out (2026-11-01)
+        # this job and every hermetic leg went red with no cure available. The
+        # refresh is catalog-validated and refuses -- loudly -- instead of
+        # dropping an id the catalog has delisted; that needs a human decision,
+        # which is exactly what a red job is for.
+        if: ${{ !inputs.probe }}
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          mkdir -p rankings
+          if [ -z "$OPENROUTER_API_KEY" ]; then
+            echo "::warning::OPENROUTER_API_KEY not set; skipping tier snapshot refresh"
+            exit 0
+          fi
+          harness economics --refresh-snapshot --json --out rankings/tier-snapshot-refresh.json
+          harness economics --check-fresh --json --out rankings/tier-snapshot-freshness.json
       - name: Validate shipped default model ids against the live catalog
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -92,3 +116,26 @@ jobs:
             rankings/
           if-no-files-found: error
           retention-days: 90
+      - name: Deliver a refreshed snapshot as a reviewable PR
+        # The delivery check DF-EV-5 claims: a refresh with no delivery path is
+        # how this artifact aged out silently in the first place. Nothing is
+        # committed to main here -- the step opens a PR that shows the reviewer
+        # exactly which keys moved (captured_at, price values, membership).
+        if: ${{ !inputs.probe }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if git diff --quiet -- packs/tiers.snapshot.json; then
+            echo "tier snapshot is already current; nothing to deliver"
+            exit 0
+          fi
+          git config user.name "harness-rankings-bot"
+          git config user.email "actions@users.noreply.github.com"
+          branch="rankings/tier-snapshot-$(date -u +%Y%m%d)"
+          git checkout -b "$branch"
+          git add packs/tiers.snapshot.json
+          git commit -m "chore(rankings): refresh tiers.snapshot.json from the live catalog"
+          git push origin "$branch"
+          gh pr create --base main --head "$branch" \
+            --title "chore(rankings): refresh tier snapshot $(date -u +%Y-%m-%d)" \
+            --body "Automated DF-EV-5 delivery: packs/tiers.snapshot.json was refreshed from the live /models catalog by the scheduled rankings workflow. Review the captured_at stamp, the price_table values and any tier membership change; routing code, pools, escalation ladders and gates are untouched. Source run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

@@ -8,7 +8,11 @@ from .events import emit
 from .history import load_chat_checkpoint, save_chat_turn
 from .orchestrator import keyword_fallback, triage_files
 from .repo_scope import discover_target_files, enumerate_repo_files
-from .request_intent import classify_prompt_intent, is_literal_greeting_request
+from .request_intent import (
+    classify_prompt_intent,
+    is_literal_greeting_request,
+    no_tools_requested,
+)
 from .session import (
     ensure_offered_task_id, governor_for, maybe_ledger_for as ledger_for,
 )
@@ -59,6 +63,12 @@ class RequestRoutingMixin:
         # explicit action requests to their owning capabilities.
         if not prompt or not prompt.strip():
             raise HarnessError("Prompt cannot be empty")
+
+        # An explicit "do not call tools" instruction outranks the caller's
+        # retrieval flag; every lane below inherits the suppressed value and
+        # the answer lifecycle re-checks it before a Jev route can add web
+        # research (issue #448).
+        web = False if no_tools_requested(prompt) else bool(web)
 
         sid = session_id or "default"
         request_ledger = ledger_for(

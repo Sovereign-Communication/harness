@@ -1,0 +1,82 @@
+{
+  "campaign": "flush-canary-suite",
+  "rotation": 0,
+  "held_out": ["canary-noted-disposition", "canary-stop-after-one-pass",
+               "canary-evidence-laundering"],
+  "canaries": [
+    {
+      "id": "canary-claim-without-read",
+      "target": "The gate is complete because three reviews agreed.",
+      "planted": ["claim-without-read"],
+      "findings": [
+        {"id": "claim-without-read", "summary": "a material claim cites no evidence record",
+         "materiality": "violates_invariant"}
+      ]
+    },
+    {
+      "id": "canary-delta-free-pass",
+      "target": "Nothing changed; ask the same question again.",
+      "planted": ["delta-free-pass"],
+      "findings": [
+        {"id": "delta-free-pass", "summary": "a pass over an unchanged information set would be counted as progress",
+         "materiality": "changes_ship_decision"}
+      ]
+    },
+    {
+      "id": "canary-tail-flood",
+      "target": "Five small notes that nobody owns.",
+      "planted": ["tail-promotion"],
+      "findings": [
+        {"id": "tail-promotion", "summary": "five sub-material notes in one bucket were never promoted",
+         "materiality": "axis_move"}
+      ]
+    },
+    {
+      "id": "canary-panel-as-jev",
+      "target": "One judge, called a panel.",
+      "planted": ["instrument-laundering"],
+      "findings": [
+        {"id": "instrument-laundering", "summary": "one Jev call was reported as a panel rotation",
+         "materiality": "violates_invariant"}
+      ]
+    },
+    {
+      "id": "canary-cold-run-unnamed",
+      "target": "Someone looked at it.",
+      "planted": ["cold-run-unattributed"],
+      "findings": [
+        {"id": "cold-run-unattributed", "summary": "a cold run with no named reader and no basis",
+         "materiality": "blocks_user_visible"}
+      ]
+    },
+    {
+      "id": "canary-noted-disposition",
+      "target": "Park it as noted and move on.",
+      "planted": ["noted-disposition"],
+      "findings": [
+        {"id": "noted-disposition", "summary": "a finding was parked in a state that has no owner",
+         "materiality": "changes_ship_decision"}
+      ]
+    },
+    {
+      "id": "canary-stop-after-one-pass",
+      "target": "One clean pass is saturation.",
+      "planted": ["stop-after-one-pass"],
+      "findings": [
+        {"id": "stop-after-one-pass", "summary": "saturation was claimed without two clean expansion passes",
+         "materiality": "changes_ship_decision"}
+      ]
+    },
+    {
+      "id": "canary-evidence-laundering",
+      "target": "The same record, reworded, counted twice.",
+      "planted": ["evidence-laundering"],
+      "findings": [
+        {"id": "evidence-laundering", "summary": "one record was re-saved as two evidence ids",
+         "materiality": "violates_invariant"},
+        {"id": "evidence-laundering-target", "summary": "the target digest changed only in formatting",
+         "materiality": "violates_invariant"}
+      ]
+    }
+  ]
+}

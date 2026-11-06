@@ -148,6 +148,14 @@ with the venv activated. Without the extra, `harness-desktop` falls back to the
 system browser. Both install modes provide `harness`, `harness-mcp`,
 `harness-desktop`, and `driver-core`.
 
+`driver-core` is the headless verification face. A headless install (sandbox,
+CI runner, oversight verifier) becomes keyed through one named environment
+variable, `DRIVER_JEV_API_KEY`; see
+[docs/driver.md](https://github.com/Sovereign-Communication/harness/blob/main/docs/driver.md#headless-key-provisioning).
+`health`, `verify`
+and `vocabulary` are intentionally keyless, and `health` reports `keyed` plus
+a `key_provisioning` object naming that variable -- never its value.
+
 Two packaging facts matter when installing:
 
 - The distribution is `sovereign-harness`; the import name is `harness`. PyPI
@@ -587,11 +595,12 @@ Wire into any MCP host (Claude Code, Cursor, your own agents):
 
 Tools (`tools/list` order): `ask`, `site_check`, `panel_verify`, `apply_edit`, `offer_work`, `defer_work`,
 `ledger_status`, `participation_report`, `spend_status`, `trust_status`, `plan_and_execute`,
-`issue_sort`, `route_query`, `mission_status`, `continue_work`, `script_run`, `log_judgment`, `jev_phase`,
-`jev_freeze`, `dogfood`, `generate_brief`, `driver_step`, `driver_health`, `driver_vocabulary`,
+`issue_sort`, `source_audit`, `route_query`, `mission_status`, `continue_work`, `script_run`, `log_judgment`,
+`lucas_gate_v2`, `jev_phase`, `jev_freeze`, `dogfood`, `generate_brief`, `driver_step`, `driver_health`, `driver_vocabulary`,
 `driver_verify`, `host_provision_probe`, `host_provision_plan`, `repo_cards`, `jev_calibration`,
-`economics_report`.
+`economics_report`, `flush_run`.
 `economics_report` reports tier snapshot freshness, seat-share diversity, per-lane/per-tier cost metering, and bounded pool-rotation proposals (EV-1..EV-5).
+`lucas_gate_v2` validates a caller-produced typed scorecard without making semantic judgments or calling a model. See [docs/lucas-gate-v2.md](https://github.com/Sovereign-Communication/harness/blob/main/docs/lucas-gate-v2.md) for private-profile handling and N/A categories.
 `script_run` executes one Python script through the governed runner in `harness/script.py`: consent is the
 sha256 of the exact source, the root must be an allowed root, scripting must be enabled
 (`HARNESS_SCRIPT_ENABLED=1`), and the receipt carries exit code, output, duration and optional Jev alignment.

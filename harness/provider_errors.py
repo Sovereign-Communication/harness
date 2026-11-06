@@ -18,14 +18,30 @@ def redact_secrets(text: str) -> str:
 
 
 class ProviderSpendLimitError(HarnessError):
-    """The active provider key/account cannot fund another model request."""
+    """A provider request failed for an upstream billing/entitlement reason.
+
+    HTTP 402 does not say *why* the provider refused, so ``cause`` keeps the
+    distinction the operator needs to act (issue #448):
+
+    * ``account_funding`` -- credits, balance, or a key/account spend limit.
+    * ``route_or_model_restriction`` -- this key/plan cannot reach this model
+      or route; adding credits will not help.
+    * ``unknown`` -- the response carries no signal either way.
+
+    The error kind stays ``provider_spend_limit`` so every existing terminal
+    handler keeps stopping the run; only the diagnosis and ``next_step`` vary.
+    """
 
     kind = "provider_spend_limit"
+    CAUSES = ("account_funding", "route_or_model_restriction", "unknown")
+    cause: str
+    next_step: Optional[str]
 
     def __init__(self, detail: str, *, http_status: Optional[int] = None,
-                 known_cost: float = 0.0):
+                 known_cost: float = 0.0, cause: str = "account_funding"):
         self.detail = str(detail or "")
         self.http_status = http_status
+        self.cause = cause if cause in self.CAUSES else "unknown"
         try:
             self.known_cost = max(0.0, float(known_cost or 0.0))
         except (TypeError, ValueError):
@@ -37,11 +53,28 @@ class ProviderSpendLimitError(HarnessError):
         from .events import mark_provider_spend_limit
         mark_provider_spend_limit(self)
         status = f" (HTTP {http_status})" if http_status is not None else ""
-        message = (
-            f"Upstream provider spend limit exhausted{status}. "
-            "The active Harness operation was stopped; add credits or raise "
-            "the API key/account spend limit before retrying."
-        )
+        if self.cause == "route_or_model_restriction":
+            message = (
+                f"Upstream provider refused this model or route{status}. "
+                "The active key cannot reach it; adding credits will not help. "
+                "Select a model or route the key can use before retrying."
+            )
+            self.next_step = "select a model or route the active key can reach"
+        elif self.cause == "unknown":
+            message = (
+                f"Upstream provider returned payment required{status} without "
+                "identifying the cause. This is not a Harness run-cap finding; "
+                "check the provider balance, key limits, and whether this "
+                "model or route is available to the key before retrying."
+            )
+            self.next_step = None
+        else:
+            message = (
+                f"Upstream provider spend limit exhausted{status}. "
+                "The active Harness operation was stopped; add credits or raise "
+                "the API key/account spend limit before retrying."
+            )
+            self.next_step = "add credits or raise the provider spend limit"
         super().__init__(message)
 
 
@@ -55,6 +88,32 @@ _SPEND_CODES = frozenset({
     "payment_required",
     "spend_limit_exceeded",
 })
+
+_ROUTE_RESTRICTION_CODES = frozenset({
+    "model_not_found",
+    "model_unavailable",
+    "no_endpoint",
+    "no_endpoints",
+    "not_available",
+    "no_provider",
+    "route_not_found",
+    "route_unavailable",
+    "unsupported_model",
+    "invalid_model",
+})
+
+_ROUTE_RESTRICTION_HINTS = (
+    "does not support",
+    "model is not available",
+    "model not found",
+    "no available providers",
+    "no endpoints",
+    "no provider",
+    "not available on",
+    "not supported by",
+    "route not found",
+    "unsupported model",
+)
 
 _SPEND_HINTS = (
     "account balance is too low",
@@ -113,8 +172,19 @@ def provider_spend_limit_error(status: Any, response: Any, *, known_cost: float 
         http_status = None
     detail, code = _error_fields(response)
     if http_status == 402:
+        cause = "account_funding"
+        fingerprint = ""
+        if isinstance(response, dict):
+            fingerprint = _response_fingerprint(
+                response.get("error", response)).lower()
+        if code in _ROUTE_RESTRICTION_CODES or any(
+                hint in fingerprint for hint in _ROUTE_RESTRICTION_HINTS):
+            cause = "route_or_model_restriction"
+        elif code not in _SPEND_CODES and not any(
+                hint in fingerprint for hint in _SPEND_HINTS):
+            cause = "unknown"
         return ProviderSpendLimitError(detail, http_status=http_status,
-                                       known_cost=known_cost)
+                                       known_cost=known_cost, cause=cause)
     # Error phrases can appear in ordinary model text. Only inspect an actual
     # error envelope on a failed HTTP response; a 200 assistant answer that
     # discusses billing is not evidence that the caller's key is exhausted.

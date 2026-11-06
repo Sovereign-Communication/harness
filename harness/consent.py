@@ -24,7 +24,7 @@ from enum import Enum
 from typing import Optional, Dict, Any, Tuple
 
 from . import events as _events
-from .chat import (chat, extract_content_and_cost, _extract_json, _reported_cost,
+from .chat import (chat_routed, extract_content_and_cost, _extract_json, _reported_cost,
                    _chat_reservation_slots,
                    REASONING_FALLBACK_PREFIX)  # noqa: F401
 from .errors import HarnessError
@@ -267,7 +267,7 @@ def probe_consent(*, transport, api_key, governor, task_id, task, model,
                 max_output_tokens=max_out,
                 label=f"consent:{task_id}:{m_}")
         try:
-            status, resp = chat(transport, api_key, m_, messages, max_tokens,
+            status, resp = chat_routed(transport, api_key, m_, messages, max_tokens,
                                 reasoning_effort="none", governor=governor)
         except Exception:
             if allowance is not None:

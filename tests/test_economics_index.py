@@ -192,3 +192,100 @@ class PerLaneMeteringTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EndpointPriceValidationTests(unittest.TestCase):
+    """#428: a price component is either finite and non-negative, or refused.
+
+    The audit's reproduction built an endpoint with a negative cache rate and
+    negative long-context override rates; `rates_for` returned them and
+    `effective_price` ranked the offer as the cheapest. These pins make the
+    invalid component fail at construction (or at feed parse) instead of
+    becoming pricing evidence.
+    """
+
+    def test_a_negative_cache_rate_is_refused(self):
+        from harness.errors import HarnessError
+        with self.assertRaises(HarnessError):
+            EndpointPrice("Bad", prompt=1e-6, completion=1e-6,
+                          input_cache_read=-0.00001)
+
+    def test_nan_and_infinite_cache_rates_are_refused(self):
+        from harness.errors import HarnessError
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value):
+                with self.assertRaises(HarnessError):
+                    EndpointPrice("Bad", prompt=1e-6, completion=1e-6,
+                                  input_cache_read=value)
+
+    def test_a_negative_override_rate_is_refused(self):
+        from harness.errors import HarnessError
+        for field in ("prompt", "completion"):
+            with self.subTest(field=field):
+                override = {"min_prompt_tokens": 100, "prompt": 1e-6,
+                            "completion": 1e-6}
+                override[field] = -5e-5
+                with self.assertRaises(HarnessError):
+                    EndpointPrice("Bad", prompt=1e-6, completion=1e-6,
+                                  overrides=(override,))
+
+    def test_a_nan_override_rate_is_refused(self):
+        from harness.errors import HarnessError
+        with self.assertRaises(HarnessError):
+            EndpointPrice("Bad", prompt=1e-6, completion=1e-6,
+                          overrides=({"min_prompt_tokens": 100,
+                                      "prompt": float("nan"),
+                                      "completion": 1e-6},))
+
+    def test_a_malformed_override_threshold_is_refused(self):
+        from harness.errors import HarnessError
+        for threshold in (None, -1, 1.5, "many", True):
+            with self.subTest(threshold=threshold):
+                with self.assertRaises(HarnessError):
+                    EndpointPrice(
+                        "Bad", prompt=1e-6, completion=1e-6,
+                        overrides=({"min_prompt_tokens": threshold,
+                                    "prompt": 2e-6, "completion": 2e-6},))
+
+    def test_a_non_object_override_is_refused_at_feed_parse(self):
+        from harness.endpoint_pricing import _parse_endpoints
+        from harness.errors import HarnessError
+        payload = {"data": [{"provider_name": "p",
+                             "pricing": {"prompt": "0.000001",
+                                         "completion": "0.000001",
+                                         "overrides": ["cheap"]}}]}
+        with self.assertRaises(HarnessError):
+            _parse_endpoints("vendor/model", payload)
+
+    def test_a_negative_feed_rate_is_refused_at_feed_parse(self):
+        from harness.endpoint_pricing import _parse_endpoints
+        from harness.errors import HarnessError
+        payload = {"data": [{"provider_name": "p",
+                             "pricing": {"prompt": "0.000001",
+                                         "completion": "0.000001",
+                                         "input_cache_read": "-0.00001"}}]}
+        with self.assertRaises(HarnessError):
+            _parse_endpoints("vendor/model", payload)
+
+    def test_valid_zero_and_positive_rates_still_price(self):
+        free = EndpointPrice("Free", prompt=0.0, completion=0.0)
+        self.assertEqual(free.blended_usd(1000, 500, semantics="multiplier"), 0.0)
+        paid = EndpointPrice("Paid", prompt=1e-6, completion=2e-6,
+                             input_cache_read=1e-7)
+        self.assertAlmostEqual(
+            paid.blended_usd(1000, 500, semantics="multiplier",
+                             cache_eligible=True),
+            1000 * 1e-7 + 500 * 2e-6)
+        self.assertAlmostEqual(
+            paid.blended_usd(1000, 500, semantics="multiplier",
+                             cache_eligible=False),
+            1000 * 1e-6 + 500 * 2e-6)
+
+    def test_threshold_selection_still_steps_on_valid_prices(self):
+        ep = EndpointPrice("Step", prompt=1e-6, completion=2e-6,
+                           overrides=({"min_prompt_tokens": 1000,
+                                       "prompt": 3e-6, "completion": 4e-6},))
+        self.assertEqual(ep.rates_for(500, True, "multiplier"),
+                         (1e-6, 2e-6))
+        self.assertEqual(ep.rates_for(5000, True, "multiplier"),
+                         (3e-6, 4e-6))
