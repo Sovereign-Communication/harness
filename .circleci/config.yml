@@ -43,6 +43,16 @@ commands:
           command: |
             python -m pip install --upgrade pip
             python -m pip install -e '.[dev]'
+      # The release battery's contract is that its interpreter matrix
+      # covers the CI versions (3.9/3.11/3.13), found via uv. Hosted
+      # Actions runners carried them in the toolcache; this image ships
+      # one interpreter, so provision the set uv is asked to find. The
+      # driver degrades honestly when one is missing (a printed note,
+      # no coverage) -- a CI rail that silently narrows the battery is
+      # the thing this step exists to prevent.
+      - run:
+          name: Provision the battery interpreter matrix (uv)
+          command: uv python install 3.9 3.11 3.13
 
 jobs:
   test:
