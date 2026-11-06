@@ -26,8 +26,8 @@ version: 2.1
 # main still requires the 11 Actions-era context names, and every one
 # of them must be satisfiable from this rail or PR #442 can never
 # land: the matrix legs, package, and the three installed-package legs
-# are added as jobs whose display names ARE the required contexts
-# (CircleCI posts check-runs under the job's display name). Leg
+# are added as jobs NAMED with the required context strings
+# (CircleCI posts check-runs under the job name). Leg
 # commands are the Actions originals adapted only for the executor
 # (single-OS images; the installed-package legs rebuild the wheel
 # in-job -- CircleCI has no cross-job artifact store equivalent in
@@ -140,44 +140,37 @@ jobs:
     steps:
       - hermetic_steps
 
-  hermetic-ubuntu2204-py39:
-    display_name: hermetic suite (ubuntu-22.04, py3.9)
+  hermetic suite (ubuntu-22.04, py3.9):
     executor: python39
     steps:
       - hermetic_steps
 
-  hermetic-ubuntu-py311:
-    display_name: hermetic suite (ubuntu-latest, py3.11)
+  hermetic suite (ubuntu-latest, py3.11):
     executor: python
     steps:
       - hermetic_steps
 
-  hermetic-ubuntu-py313:
-    display_name: hermetic suite (ubuntu-latest, py3.13)
+  hermetic suite (ubuntu-latest, py3.13):
     executor: python313
     steps:
       - hermetic_steps
 
-  hermetic-ubuntu-py314:
-    display_name: hermetic suite (ubuntu-latest, py3.14)
+  hermetic suite (ubuntu-latest, py3.14):
     executor: python314
     steps:
       - hermetic_steps
 
-  hermetic-windows-py311:
-    display_name: hermetic suite (windows-latest, py3.11)
+  hermetic suite (windows-latest, py3.11):
     executor: python
     steps:
       - hermetic_steps
 
-  hermetic-macos-py311:
-    display_name: hermetic suite (macos-latest, py3.11)
+  hermetic suite (macos-latest, py3.11):
     executor: python
     steps:
       - hermetic_steps
 
-  checkout-hygiene:
-    display_name: Checkout hygiene
+  Checkout hygiene:
     executor: python
     steps:
       - checkout
@@ -364,20 +357,17 @@ jobs:
           paths:
             - dist
 
-  installed-ubuntu:
-    display_name: installed package (ubuntu-latest)
+  installed package (ubuntu-latest):
     executor: python
     steps:
       - installed_smoke
 
-  installed-windows:
-    display_name: installed package (windows-latest)
+  installed package (windows-latest):
     executor: python
     steps:
       - installed_smoke
 
-  installed-macos:
-    display_name: installed package (macos-latest)
+  installed package (macos-latest):
     executor: python
     steps:
       - installed_smoke
@@ -386,18 +376,18 @@ workflows:
   ci:
     jobs:
       - test
-      - hermetic-ubuntu2204-py39
-      - hermetic-ubuntu-py311
-      - hermetic-ubuntu-py313
-      - hermetic-ubuntu-py314
-      - hermetic-windows-py311
-      - hermetic-macos-py311
-      - checkout-hygiene
+      - hermetic suite (ubuntu-22.04, py3.9)
+      - hermetic suite (ubuntu-latest, py3.11)
+      - hermetic suite (ubuntu-latest, py3.13)
+      - hermetic suite (ubuntu-latest, py3.14)
+      - hermetic suite (windows-latest, py3.11)
+      - hermetic suite (macos-latest, py3.11)
+      - Checkout hygiene
       - ui-playwright-smoke
       - audit:
           requires:
             - ui-playwright-smoke
       - package
-      - installed-ubuntu
-      - installed-windows
-      - installed-macos
+      - installed package (ubuntu-latest)
+      - installed package (windows-latest)
+      - installed package (macos-latest)
