@@ -56,9 +56,19 @@ jobs:
       - run:
           name: Compile
           command: python -m compileall -q harness tests examples/oc_handoff
+      # The cards tool cards every repository under a root directory and
+      # defaults that root to the checkout's parent -- on Actions that
+      # parent held only this checkout (named for the repo), here it is
+      # the job's home directory, which holds unrelated directories.
+      # Pin the root to a staging directory containing only this checkout
+      # under its repo name, so the check measures exactly what it
+      # measured on Actions. Verified locally before landing.
       - run:
           name: Check repo philosophy cards (drift check)
-          command: python -m harness.repo_cards --check
+          command: |
+            mkdir -p ~/ci-card-root
+            ln -sfn "$CIRCLE_WORKING_DIRECTORY" ~/ci-card-root/harness
+            python -m harness.repo_cards --check --root ~/ci-card-root
       - run:
           name: Run tests (hermetic, no network, warnings clean)
           command: python -W error::ResourceWarning -m unittest discover -s tests -v
