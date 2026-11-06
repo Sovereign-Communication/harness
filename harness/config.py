@@ -523,6 +523,7 @@ _ENV_NAMES = {
     "expect_key_label": "HARNESS_EXPECT_KEY_LABEL",
     "default_require_consent": "HARNESS_DEFAULT_REQUIRE_CONSENT",
     "allow_escalation": "HARNESS_ALLOW_ESCALATION",
+    "jev_primary_mode": "HARNESS_JEV_PRIMARY_MODE",
     "mcp_allow_write": "HARNESS_MCP_ALLOW_WRITE",
     "mcp_allow_verify": "HARNESS_MCP_ALLOW_VERIFY",
     "mcp_allowed_roots": "HARNESS_MCP_ALLOWED_ROOTS",
@@ -735,7 +736,7 @@ class Settings:
                   hourglass_stages=None,
                   openrouter_floor_default=True, max_price_prompt=None,
                   max_price_completion=None, jev_api_key=None,
-                  jev_disabled=False,
+                  jev_disabled=False, jev_primary_mode=False,
                   jev_endpoint="https://api.typesafe.ai/v1/systemone",
                   jev_model="jev-latest", min_confidence=0.70,
                   token_budget_input=DEFAULT_TOKEN_BUDGET_INPUT,
@@ -819,6 +820,7 @@ class Settings:
         self.max_price_completion = max_price_completion
         self.jev_api_key = jev_api_key
         self.jev_disabled = bool(jev_disabled)
+        self.jev_primary_mode = bool(jev_primary_mode)
         self.jev_endpoint = jev_endpoint
         self.jev_model = jev_model or "jev-latest"
         self.min_confidence = min_confidence
@@ -853,6 +855,7 @@ class Settings:
             "hourglass_require_attestation", "hourglass_decompose",
             "openrouter_floor_default",
             "max_price_prompt", "max_price_completion", "jev_api_key", "jev_disabled",
+            "jev_primary_mode",
             "jev_endpoint", "jev_model", "min_confidence",
             "token_budget_input", "token_budget_output",
             "hourglass_stages", "openrouter_enabled", "fireworks_enabled",
@@ -1188,6 +1191,7 @@ def load_settings(overrides=None):
         max_price_prompt=_opt_float(get("max_price_prompt", None)),
         max_price_completion=_opt_float(get("max_price_completion", None)),
         jev_disabled=jev_disabled,
+        jev_primary_mode=_as_bool(get("jev_primary_mode", False)),
         jev_api_key=jev_api_key,
         jev_endpoint=str(get("jev_endpoint", "https://api.typesafe.ai/v1/systemone")),
         jev_model=str(get("jev_model", "jev-latest")),

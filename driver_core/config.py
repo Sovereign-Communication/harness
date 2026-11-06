@@ -219,6 +219,8 @@ class Settings:
 
     jev_guardrails: bool = False
 
+    jev_primary_mode: bool = False
+
     def __post_init__(self):
         if not self.base_url.startswith(("http://", "https://")):
             raise ConfigError(
@@ -293,6 +295,7 @@ class Settings:
             "native_input_enabled": self.native_input_enabled,
             "launch_app_enabled": self.launch_app_enabled,
             "vision_verify_enabled": self.vision_verify_enabled,
+            "jev_primary_mode": self.jev_primary_mode,
         }
         return data
 
@@ -332,6 +335,7 @@ def load_settings(env=None, **overrides):
         port=_env_int(env, "PORT", DEFAULT_PORT),
         jev_guardrails=_env_bool(env, "JEV_GUARDRAILS", False),
         jev_ladder=_env_bool(env, "JEV_LADDER", False),
+        jev_primary_mode=_env_bool(env, "JEV_PRIMARY_MODE", False),
         jev_api_key=env.get(KEY_ENV, ""),
         token=token,
         jev_model=env.get(ENV_PREFIX + "JEV_MODEL", "jev-latest"),

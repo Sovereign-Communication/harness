@@ -147,7 +147,8 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
                 convergence_model=None, specialist_pool=None, claim_polarity=None,
                 free_tier=False, cancel_check=None,
                 jev_policy=None, jev_claim_support=False,
-                claim_texts=None, claim_evidence=None):
+                claim_texts=None, claim_evidence=None,
+                jev_primary_mode=False):
     """Rotating panel of independent cheap takes + 1 structured judge verdict.
 
     panel is an ordered pool; members that fail are replaced by the next model
@@ -183,7 +184,12 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
     panel_failures = []
 
     claim_support = None
-    if jev_policy is not None and jev_claim_support:
+    # #453 S3a: under jev_primary_mode the Jev claim-support path is the
+    # primary judgment route, not an opt-in advisory — it runs whenever a
+    # policy is wired. The route taken is recorded on the result envelope
+    # below; an absent policy or a Jev failure is a NAMED fallback, never a
+    # silent LLM-only judgment.
+    if jev_policy is not None and (jev_claim_support or jev_primary_mode):
         try:
             _cs_result, claim_support = jev_policy.evaluate_claim_support(
                 claim_texts if claim_texts is not None else [],
@@ -847,6 +853,26 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
     if claim_support is not None:
         # JEV-P3-claims advisory flags — never the claims lint authority.
         result["claim_support"] = claim_support
+    if jev_primary_mode:
+        # #453 S3a: name the judgment route on every verdict under the
+        # mode. "jev_primary" only when the Jev path actually ran; any
+        # other outcome is the LLM fallback, with its reason.
+        if claim_support is not None and not claim_support.get("skipped"):
+            result["judgment_route"] = "jev_primary"
+        else:
+            result["judgment_route"] = "llm_fallback"
+            if jev_policy is None:
+                result["judgment_route_reason"] = "jev_policy_absent"
+            elif claim_support and claim_support.get("error"):
+                result["judgment_route_reason"] = (
+                    "jev_error: " + str(claim_support["error"]))
+            elif not claim_texts:
+                # The Jev path ran but had no claims to judge (the
+                # claim-support skipped shape) — name it, do not dress
+                # it as an error or as a Jev judgment.
+                result["judgment_route_reason"] = "jev_no_claims"
+            else:
+                result["judgment_route_reason"] = "jev_not_run"
     if convergence_spec is not None:
         result["convergence"] = convergence_spec
     if ledger and task_id:
