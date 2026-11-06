@@ -85,13 +85,50 @@ def _add_output_flags(p):
                    help="disable ANSI color in stderr rendering (NO_COLOR is honored too)")
 
 
+class _FixedWidthHelpFormatter(argparse.HelpFormatter):
+    """Help formatter pinned to a fixed width.
+
+    argparse sizes its help layout from the ambient terminal
+    (``shutil.get_terminal_size()`` reads the COLUMNS variable, then the
+    tty). Content assertions over --help output therefore pass or fail
+    with the width of whoever ran the suite: the economics parser-surface
+    test saw the receipt filename hyphen-split at a narrow COLUMNS on
+    one CI leg while every other leg passed. The rendered help is part
+    of the CLI's surface, so it renders identically in every
+    environment.
+    """
+
+    def __init__(self, prog, indent_increment=2, max_help_position=100,
+                 width=None):
+        # Width 100 with the option column pushed past the longest
+        # invocation: argparse then never wraps help text at all (each
+        # help string renders on one line), so no asserted phrase can
+        # be split by wrapping at ANY ambient width -- and none by this
+        # one either. The option/usage layout still wraps as usual.
+        super().__init__(prog, indent_increment=indent_increment,
+                         max_help_position=max_help_position,
+                         width=100)
+
+
 def build_parser():
     """The harness parser, built fresh per call: every subcommand and flag,
     nothing else. Returns the configured ArgumentParser."""
     ap = argparse.ArgumentParser(
-        prog="harness",
+        prog="harness", formatter_class=_FixedWidthHelpFormatter,
         description="Cost-bounded multi-model verification & coding harness with AI sovereignty.")
     sub = ap.add_subparsers(dest="command", required=True)
+    # argparse does not propagate formatter_class from the parent parser
+    # to subparsers (nor does it accept it as an add_parser default);
+    # wrap add_parser so every subcommand renders its help at the same
+    # fixed width (see the formatter class above). Subcommands that pass
+    # their own formatter_class keep it.
+    _add_parser = sub.add_parser
+
+    def _add_parser_fixed(name, **kwargs):
+        kwargs.setdefault("formatter_class", _FixedWidthHelpFormatter)
+        return _add_parser(name, **kwargs)
+
+    sub.add_parser = _add_parser_fixed
 
     # Media generation via the sovereign-media service (adapter in
     # harness/media_client.py; parses its own subarguments).
