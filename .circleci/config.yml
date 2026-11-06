@@ -1,0 +1,117 @@
+version: 2.1
+
+# Port of .github/workflows/ci.yml, preserving its verification jobs:
+# the hermetic suite, the UI Playwright smoke, and the 4-dimensional
+# audit.
+#
+# Why this exists: on 2026-11-03 this repository transferred from an
+# organisation to a personal account, and the owner has settled that
+# GitHub Actions billing stays locked -- its jobs now die in seconds
+# with zero steps, so an Actions result is no evidence at all. A CI
+# surface that never starts cannot report on a head, which is why the
+# gate read moves here.
+#
+# What is deliberately unchanged: the job names and the commands each
+# one runs, copied verbatim from the Actions originals. A port that
+# quietly changed what it measured would replace one kind of
+# unverifiable green with another.
+#
+# Scope of this first port: the hermetic matrix collapses to its
+# canonical leg (Ubuntu, Python 3.11). The full OS/version matrix
+# stays an Actions-era property; widening this config's matrix is a
+# follow-up, not a silent omission -- the lane's local gates still run
+# the suite the same way.
+#
+# Secrets/variables, set on the CircleCI project, never in this file:
+#   OPENROUTER_API_KEY  optional. The audit's live model-freshness
+#                       step uses it when present, exactly as in the
+#                       Actions job; the gate jobs do not need it.
+
+executors:
+  python:
+    docker:
+      - image: cimg/python:3.11
+  python-node:
+    docker:
+      - image: cimg/python:3.11-node
+
+commands:
+  install_tooling:
+    steps:
+      - run:
+          name: Install development tooling
+          command: |
+            python -m pip install --upgrade pip
+            python -m pip install -e '.[dev]'
+
+jobs:
+  test:
+    executor: python
+    steps:
+      - checkout
+      - install_tooling
+      - run:
+          name: Lint (ruff)
+          command: python -m ruff check harness tests examples/oc_handoff
+      - run:
+          name: Compile
+          command: python -m compileall -q harness tests examples/oc_handoff
+      - run:
+          name: Check repo philosophy cards (drift check)
+          command: python -m harness.repo_cards --check
+      - run:
+          name: Run tests (hermetic, no network, warnings clean)
+          command: python -W error::ResourceWarning -m unittest discover -s tests -v
+          no_output_timeout: 20m
+
+  ui-playwright-smoke:
+    executor: python-node
+    steps:
+      - checkout
+      - run:
+          name: Install Playwright test dependency
+          command: npm ci
+          working_directory: tests/ui
+      - run:
+          name: Install Chromium and system dependencies
+          command: npx playwright install --with-deps chromium
+          working_directory: tests/ui
+      - run:
+          name: Run served UI journeys (one worker)
+          command: npm test
+          working_directory: tests/ui
+      - persist_to_workspace:
+          root: .
+          paths:
+            - tests/ui/ui-coverage.json
+
+  audit:
+    executor: python
+    environment:
+      HARNESS_D12_UI_COVERAGE: tests/ui/ui-coverage.json
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      - install_tooling
+      - run:
+          name: Resolve D12 base
+          command: |
+            git fetch origin main --quiet
+            echo "export HARNESS_D12_BASE=$(git merge-base origin/main HEAD)" >> "$BASH_ENV"
+      - run:
+          name: Lint audit script
+          command: python -m ruff check audits
+      - run:
+          name: 4-dimensional audit (9.5+ bar on every dimension)
+          command: python audits/self/audit.py
+          no_output_timeout: 20m
+
+workflows:
+  ci:
+    jobs:
+      - test
+      - ui-playwright-smoke
+      - audit:
+          requires:
+            - ui-playwright-smoke
