@@ -863,10 +863,16 @@ def panel_judge(*, transport, api_key, governor, prompt, panel, judge, max_token
             result["judgment_route"] = "llm_fallback"
             if jev_policy is None:
                 result["judgment_route_reason"] = "jev_policy_absent"
-            else:
+            elif claim_support and claim_support.get("error"):
                 result["judgment_route_reason"] = (
-                    "jev_error: " + str(claim_support.get("error", "unknown"))
-                    if claim_support else "jev_not_run")
+                    "jev_error: " + str(claim_support["error"]))
+            elif not claim_texts:
+                # The Jev path ran but had no claims to judge (the
+                # claim-support skipped shape) — name it, do not dress
+                # it as an error or as a Jev judgment.
+                result["judgment_route_reason"] = "jev_no_claims"
+            else:
+                result["judgment_route_reason"] = "jev_not_run"
     if convergence_spec is not None:
         result["convergence"] = convergence_spec
     if ledger and task_id:

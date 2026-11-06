@@ -303,10 +303,26 @@ def run_verify(settings=None, *, prompt, task_id=None, cancel_check=None,
         "use_free": resolved.use_free,
     }
     pre_run_warning(governor=gov, ledger=ledger, use_free=resolved.use_free)
+    # #453 S3a-2: under jev_primary_mode, wire the run's Jev policy into
+    # the panel so the Jev route can actually serve. A construction
+    # failure leaves jev_pol None and the envelope names the fallback
+    # (jev_policy_absent) — the mode never proceeds silently LLM-only.
+    jev_primary = bool(settings is not None
+                       and getattr(settings, "jev_primary_mode", False))
+    jev_pol = None
+    if jev_primary:
+        try:
+            from .jev_policy import policy_for
+            jev_pol = policy_for(settings,
+                                 transport=transport or HttpTransport(),
+                                 governor=gov, ledger=ledger)
+        except Exception:
+            jev_pol = None
     try:
         with _task_scope:
             result = panel_judge(
             transport=transport or HttpTransport(), api_key=api_key, governor=gov,
+                jev_policy=jev_pol,
                 prompt=prompt, panel=resolved.panel, judge=resolved.judge,
                 max_tokens=max_tokens, reasoning_effort=resolved.reasoning_effort,
                 reasoning_token_budget=resolved.reasoning_token_budget,
@@ -319,9 +335,7 @@ def run_verify(settings=None, *, prompt, task_id=None, cancel_check=None,
                                 (reassurance_claims or "").split(",")
                                 if cid.strip()},
                 free_tier=resolved.use_free, cancel_check=cancel_check,
-                jev_primary_mode=bool(
-                    settings is not None
-                    and getattr(settings, "jev_primary_mode", False)))
+                jev_primary_mode=jev_primary)
     except ToolCancelled:
         return cancelled_envelope(gov, settings, include_meta=attach_meta,
                                   meta_overrides=meta_overrides)

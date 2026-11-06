@@ -63,6 +63,17 @@ class JevPrimaryModePanelTests(unittest.TestCase):
         self.assertEqual(result["judgment_route_reason"],
                          "jev_policy_absent")
 
+    def test_mode_on_skipped_without_claims_names_no_claims(self):
+        class SkippingPolicy(StubPolicy):
+            def evaluate_claim_support(self, texts, evidence, **kwargs):
+                self.calls.append((texts, evidence, kwargs))
+                return object(), {"claim_flags": [], "skipped": True}
+
+        policy = SkippingPolicy()
+        result = _run(jev_policy=policy, jev_primary_mode=True)
+        self.assertEqual(result["judgment_route"], "llm_fallback")
+        self.assertEqual(result["judgment_route_reason"], "jev_no_claims")
+
     def test_mode_on_jev_error_names_the_fallback(self):
         policy = StubPolicy(error=RuntimeError("jev down"))
         result = _run(jev_policy=policy, jev_primary_mode=True)
