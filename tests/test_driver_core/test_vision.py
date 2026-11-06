@@ -114,6 +114,15 @@ def _vision_pool(*args, **kwargs):
     return build_vision_pool(*args, **kwargs)
 
 
+def _described():
+    """Platform facts, supplied rather than read off the host: a hermetic
+    suite never reads whatever window happens to be focused on the machine
+    (#292). Matches the state the fake provider answers with."""
+    return ({"window_title": "report - editor",
+             "foreground_app": "editor",
+             "error_dialog_present": False}, "")
+
+
 def _ok_response(state=None, *, echo=None):
     """A provider response that also echoes the request back at us."""
     payload = {
@@ -451,7 +460,8 @@ class OneClientPathTests(unittest.TestCase):
 
         pool = _vision_pool(_keyed(), budget=budget,
                             audit=MemoryAuditLog(), slots=2,
-                            transport_module=OneGood())
+                            transport_module=OneGood(),
+                            describer=_described)
         votes = pool.run(_capture(), SCREEN_SCHEMA)
         self.assertEqual(len(votes), 2)
         self.assertEqual(sum(1 for v in votes if v.status == "ok"), 1)
@@ -536,7 +546,8 @@ class NothingEchoesBackTests(unittest.TestCase):
         encoded = base64.b64encode(capture.payload).decode("ascii")
         service = FakeService(_ok_response(echo=encoded if echo else None))
         pool = _vision_pool(_keyed(), budget=budget, audit=audit,
-                                 slots=1, transport_module=service)
+                                 slots=1, transport_module=service,
+                                 describer=_described)
         votes = pool.run(capture, SCREEN_SCHEMA)
         return capture, service, audit, budget, votes
 
@@ -596,7 +607,8 @@ class NothingEchoesBackTests(unittest.TestCase):
         budget = Budget(1.0, step_ceiling_usd=1.0)
         service = FakeService(_ok_response(), _ok_response())
         pool = _vision_pool(_keyed(), budget=budget, audit=audit,
-                                 slots=2, transport_module=service)
+                                 slots=2, transport_module=service,
+                                 describer=_described)
         votes = pool.run(_capture(), SCREEN_SCHEMA)
         agreement = tally(votes, SCREEN_SCHEMA, quorum=2, min_agreement=1.0)
         self.assertTrue(agreement.is_usable)

@@ -17,7 +17,8 @@ from pathlib import Path
 from unittest import mock
 
 import harness.queue_bus as qb
-from driver_core.config import load_settings
+from driver_core.config import APP_ALLOWLIST, load_settings
+from driver_core.osal import platform_name
 from harness.queue_bus import QueueBus, Watcher, launch_item
 
 
@@ -125,7 +126,10 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(len(self.spawns), 1)
         argv, kwargs = self.spawns[0]
         self.assertIs(kwargs["shell"], False)
-        self.assertEqual(argv[-1], "notepad.exe")
+        # The declared launcher is per-platform (APP_ALLOWLIST); the gate
+        # must hand off this platform's declared value, whatever it is.
+        self.assertEqual(argv[-1],
+                         APP_ALLOWLIST["notepad"][platform_name()])
         self.assertEqual(self.bus.item("harness", "launch-item").state,
                          qb.RUNNING)
 
