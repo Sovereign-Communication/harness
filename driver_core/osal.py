@@ -327,6 +327,8 @@ def describe_screen():
     name = platform_name()
     if name == "windows":
         return _describe_windows()
+    if name == "linux":
+        return _describe_linux()
     return None, (f"screen description is not supported on {name}; this is a "
                   f"platform gap, not a configuration one")
 
@@ -426,6 +428,55 @@ def _describe_windows():
     }, ""
 
 
+def _describe_linux():
+    """Linux foreground window, the Windows reader's field-for-field twin.
+
+    The facts come from the X server through ``xdotool``, the one X
+    client this module declares: the active window (``_NET_ACTIVE_
+    WINDOW``, maintained by any EWMH window manager) and its title
+    (``WM_NAME``). Pixel capture already exists on this platform
+    (:func:`_capture_linux`); this reader is the structured half of
+    the perception bridge -- before it, ``describe_screen`` refused
+    on Linux by name, and every words-mode step stopped
+    ``no_capture`` there.
+
+    Two fields of the Windows shape have no honest Linux source
+    through the declared tool and are returned as empty strings
+    rather than invented: ``foreground_app`` (the owning process is
+    named by ``_NET_WM_PID``, which not every client sets -- Tk
+    windows, for one, set none) and ``window_class`` (``WM_CLASS``
+    is not readable through this xdotool build). An empty field is
+    a declared gap in the record; a guessed one would be a false
+    fact in it. Wayland sessions are refused by name: the
+    compositor owns the window list there and X tooling sees
+    nothing, so pretending otherwise would report an empty desktop.
+    """
+    if os.environ.get("WAYLAND_DISPLAY") and not os.environ.get("DISPLAY"):
+        return None, ("Wayland session: the compositor owns the window "
+                      "list and X tooling cannot read it; run the driver "
+                      "under an X session")
+    if not os.environ.get("DISPLAY"):
+        return None, ("no X display (DISPLAY is unset): there is no "
+                      "desktop session to describe")
+    if shutil.which("xdotool") is None:
+        return None, ("xdotool is not installed: it is the declared X "
+                      "client for screen description on Linux")
+    win = run(["xdotool", "getactivewindow"], timeout=10)
+    if not win.ok or not win.stdout.strip():
+        return None, ("no active window reported by the window manager "
+                      f"({win.error or win.stderr.strip()[:120]})")
+    title = run(["xdotool", "getactivewindow", "getwindowname"],
+                timeout=10)
+    if not title.ok:
+        return None, (f"active window title unreadable: "
+                      f"{title.error or title.stderr.strip()[:120]}")
+    return {
+        "window_title": title.stdout.strip(),
+        "foreground_app": "",
+        "window_class": "",
+    }, ""
+
+
 def _capture_windows():
     script = ("Add-Type -AssemblyName System.Windows.Forms,System.Drawing; "
               "$b = [System.Windows.Forms.SystemInformation]::VirtualScreen; "
@@ -458,10 +509,21 @@ def _capture_linux():
     out = os.environ.get("DRIVER_SCREEN_OUT", "")
     if not out:
         return None, "DRIVER_SCREEN_OUT is not set; cannot capture"
-    result = run(["gnome-screenshot", "-f", out], timeout=45)
-    if not result.ok or not os.path.exists(out):
-        return None, f"capture failed: {result.error or result.stderr[:200]}"
-    return out, ""
+    # Declared capture tools, in preference order: the GNOME tool the
+    # port originally named, then scrot, the small X11 capture tool
+    # present on minimal desktops where gnome-screenshot is not.
+    attempts = []
+    for tool, args in (("gnome-screenshot", ["-f", out]),
+                       ("scrot", [out])):
+        if shutil.which(tool) is None:
+            attempts.append(f"{tool}: not installed")
+            continue
+        result = run([tool, *args], timeout=45)
+        if result.ok and os.path.exists(out):
+            return out, ""
+        attempts.append(
+            f"{tool}: {result.error or result.stderr.strip()[:120]}")
+    return None, "capture failed: " + "; ".join(attempts)
 
 
 # ---- image preparation --------------------------------------------------
