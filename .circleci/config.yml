@@ -383,29 +383,51 @@ jobs:
 workflows:
   ci:
     jobs:
-      - test
+      # Every job carries the github-statuses context: without it the
+      # CircleCI GitHub integration never receives a token it may post
+      # commit statuses with, so no job result reaches GitHub as a
+      # check-run and branch protection's required contexts can never
+      # be satisfied from this rail. The context holds exactly one
+      # variable, CIRCLECI_GITHUB_TOKEN (a fine-grained PAT scoped to
+      # this repository's commit statuses), provisioned in the
+      # CircleCI UI -- never in this file.
+      - test:
+          context: github-statuses
       - hermetic-ubuntu2204-py39:
+          context: github-statuses
           name: "hermetic suite (ubuntu-22.04, py3.9)"
       - hermetic-ubuntu-py311:
+          context: github-statuses
           name: "hermetic suite (ubuntu-latest, py3.11)"
       - hermetic-ubuntu-py313:
+          context: github-statuses
           name: "hermetic suite (ubuntu-latest, py3.13)"
       - hermetic-ubuntu-py314:
+          context: github-statuses
           name: "hermetic suite (ubuntu-latest, py3.14)"
       - hermetic-windows-py311:
+          context: github-statuses
           name: "hermetic suite (windows-latest, py3.11)"
       - hermetic-macos-py311:
+          context: github-statuses
           name: "hermetic suite (macos-latest, py3.11)"
       - checkout-hygiene:
+          context: github-statuses
           name: "Checkout hygiene"
-      - ui-playwright-smoke
+      - ui-playwright-smoke:
+          context: github-statuses
       - audit:
+          context: github-statuses
           requires:
             - ui-playwright-smoke
-      - package
+      - package:
+          context: github-statuses
       - installed-ubuntu:
+          context: github-statuses
           name: "installed package (ubuntu-latest)"
       - installed-windows:
+          context: github-statuses
           name: "installed package (windows-latest)"
       - installed-macos:
+          context: github-statuses
           name: "installed package (macos-latest)"
