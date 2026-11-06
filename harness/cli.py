@@ -187,8 +187,8 @@ _DEFAULT_ROUTE_PACK = os.path.join(REPO_ROOT, "packs", "model_route.pack.json")
 def _run_claims_verify(settings, *, prompt, task_id=None, max_tokens=None,
                        reasoning_effort=None, converge=False, judge=None,
                        convergence_model=None, specialist_pool=None,
-                       reassurance_claims="", panel=None, max_cost=None,
-                       cancel_check=None):
+                       reassurance_claims="", claim_texts=None, panel=None,
+                       max_cost=None, cancel_check=None):
     """Claims-verify execution via the canonical service layer. Kept as a
     named seam because `dogfood` composes it and tests patch it; the
     assembly itself (governor, ledger, pre-run look-ahead, panel_judge
@@ -209,6 +209,7 @@ def _run_claims_verify(settings, *, prompt, task_id=None, max_tokens=None,
         convergence_model=convergence_model,
         specialist_pool=specialist_pool,
         reassurance_claims=reassurance_claims,
+        claim_texts=claim_texts,
         cancel_check=cancel_check, ensure_task_id=True)
 
 
@@ -259,7 +260,8 @@ def _cmd_verify(opts, settings):
         panel=(_split_opt_list(opts.panel) if opts.panel else None),
         specialist_pool=(_split_opt_list(opts.specialist_pool)
                          if opts.specialist_pool else None),
-        reassurance_claims=opts.reassurance_claims, max_cost=opts.max_cost)
+        reassurance_claims=opts.reassurance_claims,
+        claim_texts=prepared["claim_texts"], max_cost=opts.max_cost)
     if claims_lint is not None:
         result["claims_grounding"] = {
             "ok": claims_lint["ok"],

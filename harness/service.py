@@ -144,6 +144,12 @@ def prepare_verify(*, prompt=None, prompt_file=None, claims_file=None,
         "converge": bool(claims_file),
         "reassurance_claims": ",".join(
             c.claim_id for c in (claims or []) if c.kind == "reassurance"),
+        # #453 S5: the parsed claim texts travel with the prepared input so
+        # the verify lane can hand them to the Jev claim-support path;
+        # before this they were discarded here and every service-level run
+        # named jev_no_claims under jev_primary_mode.
+        "claim_texts": [{"id": c.claim_id, "text": c.text}
+                        for c in (claims or [])],
     }
 
 
@@ -217,7 +223,8 @@ class ResolvedVerifyInputs:
 def run_verify(settings=None, *, prompt, task_id=None, cancel_check=None,
                max_cost=None, judge=None, reasoning_effort=None, panel=None,
                converge=False, convergence_model=None, specialist_pool=None,
-               reassurance_claims="", max_tokens=None, api_key=None,
+               reassurance_claims="", claim_texts=None, max_tokens=None,
+               api_key=None,
                governor=None, ledger=None, transport=None,
                reasoning_token_budget=None, max_panelists=None,
                free_tier=None, router=None, generate_task_id=True,
@@ -334,6 +341,7 @@ def run_verify(settings=None, *, prompt, task_id=None, cancel_check=None,
                 claim_polarity={cid.strip(): "reassurance" for cid in
                                 (reassurance_claims or "").split(",")
                                 if cid.strip()},
+                claim_texts=claim_texts,
                 free_tier=resolved.use_free, cancel_check=cancel_check,
                 jev_primary_mode=jev_primary)
     except ToolCancelled:
