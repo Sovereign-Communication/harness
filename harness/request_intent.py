@@ -1,6 +1,7 @@
 """Deterministic prompt-intent rules, separated from request dispatch."""
 
 import re
+from typing import Optional
 
 from .edit_lifecycle import EXECUTION_PHRASES
 from .simple_request import is_supplied_text_rewrite
@@ -94,7 +95,7 @@ _NO_TOOLS_RE = re.compile(
 )
 
 
-def is_read_only_audit_request(prompt: str) -> bool:
+def is_read_only_audit_request(prompt: Optional[str]) -> bool:
     """True when the prompt asks for an audit it explicitly forbids itself to write.
 
     Both halves are required: an explicit no-write marker *and* the audit noun.

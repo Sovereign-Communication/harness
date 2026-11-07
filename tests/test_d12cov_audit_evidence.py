@@ -15,6 +15,7 @@ import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, Dict, Optional, cast
 from unittest import mock
 
 from harness import citation_verify as cv
@@ -289,8 +290,8 @@ class SiteEvidenceCoverageTests(unittest.TestCase):
 
         proxy = _bare_proxy()
         proxy._closed = threading.Event()
-        proxy._server = BrokenServer()
-        proxy._thread = SimpleNamespace(join=lambda timeout=None: None)
+        proxy._server = cast(Any, BrokenServer())
+        proxy._thread = cast(Any, SimpleNamespace(join=lambda timeout=None: None))
         proxy._workers = []
         self.assertIsNone(proxy.close())
         self.assertTrue(proxy._closed.is_set())
@@ -301,7 +302,7 @@ class SiteEvidenceCoverageTests(unittest.TestCase):
 
         proxy = _bare_proxy()
         proxy._closed = threading.Event()
-        proxy._server = SimpleNamespace(accept=accept)
+        proxy._server = cast(Any, SimpleNamespace(accept=accept))
         self.assertIsNone(proxy._serve())
 
     def test_relay_returns_when_select_fails(self):
@@ -504,7 +505,8 @@ class SourceAuditStateTests(unittest.TestCase):
         self.assertTrue(claimed)
         self.assertEqual(status, "in_flight")
         self.assertEqual(payload["path"], "src/app.py")
-        stored = source_audit._state_get(self.db, "chunk-9")
+        stored = cast(Dict[str, Any],
+                      source_audit._state_get(self.db, "chunk-9"))
         self.assertEqual(stored["status"], "in_flight")
 
     def test_claim_refuses_a_pending_row_with_a_foreign_identity(self):
@@ -516,7 +518,7 @@ class SourceAuditStateTests(unittest.TestCase):
 
     def test_claim_rereads_the_row_when_a_peer_finishes_it_first(self):
         class ConcurrentFinishConnection(sqlite3.Connection):
-            finish_payload = None
+            finish_payload: Optional[str] = None
 
             def execute(self, sql, parameters=()):
                 if (isinstance(sql, str)
@@ -571,6 +573,7 @@ class SourceAuditStateTests(unittest.TestCase):
         self._insert("chunk-1", "complete", json.dumps(IDENTITY))
         status, payload, changed = source_audit._state_requeue_pending(
             self.db, "chunk-1", IDENTITY)
+        payload = cast(Dict[str, Any], payload)
         self.assertEqual(status, "complete")
         self.assertFalse(changed)
         self.assertEqual(payload["status"], "complete")
@@ -595,7 +598,7 @@ class SourceAuditStateTests(unittest.TestCase):
             source_audit.run_source_audit(
                 self.state_path.parent, {}, lambda spent: None,
                 state_path="state.sqlite3", run_budget=1.0,
-                recover_interrupted="yes")
+                recover_interrupted=cast(bool, "yes"))
 
 
 class SourceAuditRepoRunTests(unittest.TestCase):

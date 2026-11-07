@@ -18,6 +18,7 @@ import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, Dict, cast
 from unittest import mock
 
 from harness import chat as chat_mod
@@ -555,8 +556,9 @@ class ChatMetaRouteTests(unittest.TestCase):
 
     def test_a_fireworks_route_threads_the_settings_key(self):
         from harness.fireworks import Route
-        route = Route("fireworks", "accounts/fireworks/models/x",
-                      "accounts/fireworks/models/x")
+        # chat_routed reads only route.provider on this path; the offer is
+        # resolved from a real routing table, which this test replaces.
+        route = Route("fireworks", "accounts/fireworks/models/x")
         seen = {}
 
         def fake_fireworks(transport, key, model, messages, max_tokens,
@@ -605,7 +607,8 @@ class McpLogEdgeTests(TempTree):
     def test_scrub_recurses_through_lists_and_tuples(self):
         cleaned = scrub(["plain", {"api_key": "shh"}, ("nested",)])
         self.assertEqual(cleaned[0], "plain")
-        self.assertEqual(cleaned[1]["api_key"], "[REDACTED]")
+        self.assertEqual(cast(Dict[str, Any], cleaned[1])["api_key"],
+                         "[REDACTED]")
         self.assertEqual(cleaned[2], ["nested"])
 
     def test_log_tool_call_without_a_path_is_a_no_op(self):
@@ -651,7 +654,8 @@ class RestartStateStoreEdgeTests(TempTree):
         result = store._remember(state)
         self.assertFalse(result["event_emitted"])
         self.assertFalse(result["deduplicated"])
-        self.assertEqual(store.last("r-1")["event_key"], "k1")
+        self.assertEqual(
+            cast(Dict[str, Any], store.last("r-1"))["event_key"], "k1")
 
 
 class OverlayEdgeTests(TempTree):
@@ -718,7 +722,9 @@ class SmallPredicateTests(unittest.TestCase):
 # ------------------------------------------------------- task lifecycle lane
 
 class _WorkspaceAuditHandler(TaskLaneLifecycleMixin):
-    pass
+    # The composing agent supplies this in production; the test supplies its
+    # own coordinator below, so the mixin's lane methods can be exercised.
+    lifecycle: LifecycleCoordinator
 
 
 class WorkspaceAuditLifecycleEdgeTests(TempTree):
@@ -731,7 +737,10 @@ class WorkspaceAuditLifecycleEdgeTests(TempTree):
         self.adapter = adapter_for(self.handler.lifecycle, "audit")
 
     def test_a_completed_saved_result_is_replayed_verbatim(self):
-        state = self.adapter.begin("sess-a", "audit the workspace")
+        # This test mutates the state to the finished shape a resumed run
+        # replays, which the active-lane TypedDict reserves for the adapter.
+        state = cast(Dict[str, Any],
+                     self.adapter.begin("sess-a", "audit the workspace"))
         saved = {"status": "approval_required", "response": "priced"}
         state["data"]["result"] = saved
         state["status"] = "complete"
