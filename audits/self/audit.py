@@ -305,11 +305,14 @@ def _has_governor_preflight_with_retry_calls(module_tree):
                     if not valid_appends or retry_terminated:
                         continue
 
+                    loop_end = candidates_loop.end_lineno
                     for statement in function.body:
                         preflight = statement.value if isinstance(statement, (ast.Assign, ast.Expr)) else None
                         if (not isinstance(preflight, ast.Call) or not isinstance(preflight.func, ast.Attribute)
                                 or preflight.func.attr != "preflight" or not is_name(preflight.func.value, "governor")
-                                or preflight.lineno <= candidates_loop.end_lineno):
+                                # An unknown end line cannot show the preflight
+                                # outside the retry loop, so this check fails.
+                                or loop_end is None or preflight.lineno <= loop_end):
                             continue
                         exact_args = (len(preflight.args) == 2 and not preflight.keywords
                                       and is_name(preflight.args[0], "prompt") and is_name(preflight.args[1], "calls"))
@@ -382,17 +385,19 @@ def a_preflight_covers_retries():
 def a_ceiling_hard():
     """record_actual never lets spent exceed the ceiling (raise, not clamp),
     and load_settings clamps config values to HARD_MAX_COST."""
+    # An unreadable segment is no evidence: the empty string fails the checks
+    # below exactly as a missing one should.
     body = ast.get_source_segment(_src("spend"),
                                   [n for n in ast.walk(tree("spend"))
                                    if isinstance(n, ast.FunctionDef)
-                                   and n.name == "record_actual"][0])
+                                   and n.name == "record_actual"][0]) or ""
     raises = "would exceed ceiling" in body and "raise" in body
     cfg = _src("config")
     clamped = "HARD_MAX_COST" in cfg and "_num(\"max_cost\"" in cfg.replace("'", "\"")
-    lock = "with self._spend_lock" in ast.get_source_segment(
+    lock = "with self._spend_lock" in (ast.get_source_segment(
         _src("spend"),
         [n for n in ast.walk(tree("spend"))
-         if isinstance(n, ast.FunctionDef) and n.name == "record_actual"][0])
+         if isinstance(n, ast.FunctionDef) and n.name == "record_actual"][0]) or "")
     return _pass(raises and clamped and lock,
                  "record_actual raises (never clamps) past max_cost under the "
                  "spend lock; load_settings bounds max_cost to [0, HARD_MAX_COST]",

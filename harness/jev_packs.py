@@ -2578,6 +2578,10 @@ def compose_decision_verdict(result: Any, *,
             "escalate",
             ["unusable Jev answer for: " + ", ".join(missing)
              + "; failing closed"])
+    # The guard above refused every absent value; name that fact for the
+    # arithmetic below instead of leaving it implicit.
+    assert destructive is not None and advances is not None
+    assert lead is not None and margin is not None and threshold is not None
     if destructive >= 0.5:
         return verdict_of(
             "escalate",

@@ -22,6 +22,7 @@ explicit S5 disposition.
 """
 
 import contextlib
+import importlib.machinery
 import importlib.util
 import io
 import json
@@ -41,6 +42,8 @@ _RUNBOOK_PATH = _ROOT / "docs" / "audit-triage.md"
 
 def _load_audit():
     spec = importlib.util.spec_from_file_location("_d12_audit", _AUDIT_PATH)
+    if spec is None or not isinstance(spec.loader, importlib.machinery.SourceFileLoader):
+        raise AssertionError(f"cannot load {_AUDIT_PATH} as a source module")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
