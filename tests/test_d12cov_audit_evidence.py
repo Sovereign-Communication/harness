@@ -17,8 +17,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from harness import osal, session, site_evidence, source_audit
 from harness import citation_verify as cv
+from harness import osal, session, site_evidence, source_audit
 from harness.citation_verify import (
     CitationRecord, SourceRecord, assess_claim, verify_citation,
 )
@@ -26,6 +26,22 @@ from harness.errors import HarnessError
 from harness.jev import jev_cost
 from harness.jev_policy import JEV_MAX_INPUT_TOKENS
 from harness.source_audit import SourceAuditError
+
+
+def _require_symlink(case, target, link):
+    """Create a symlink, or skip as an environment gap (#454).
+
+    Windows refuses symlink creation without SeCreateSymbolicLinkPrivilege
+    (``WinError 1314``) unless Developer Mode is enabled, so an unguarded
+    ``os.symlink`` turns a host privilege into a code verdict. The skip reason
+    names the missing fact; it is an environment gate, not a convenience skip.
+    """
+    try:
+        os.symlink(target, link)
+    except (OSError, NotImplementedError) as exc:
+        case.skipTest(
+            "symlink privilege unavailable on this host: {}".format(exc))
+
 
 DOI = "10.1234/abc"
 META = {
@@ -407,7 +423,7 @@ class SourceAuditPathLockExclusionTests(unittest.TestCase):
     def test_lock_path_cannot_be_a_symlink(self):
         target = self.root / "target.bin"
         target.write_bytes(b"x")
-        os.symlink(str(target), str(self.root / "state.sqlite3.lock"))
+        _require_symlink(self, str(target), str(self.root / "state.sqlite3.lock"))
         with self.assertRaisesRegex(
                 SourceAuditError, "cannot be a symlink or reparse point"):
             source_audit._acquire_source_audit_lock(
@@ -438,7 +454,7 @@ class SourceAuditPathLockExclusionTests(unittest.TestCase):
         target = self.root / "real.py"
         target.write_text("x = 1\n", encoding="utf-8")
         link = self.root / "link.py"
-        os.symlink(str(target), str(link))
+        _require_symlink(self, str(target), str(link))
         reason = source_audit._exclusion_reason(
             "link.py", link, set(), set())
         self.assertEqual(reason, "link_or_reparse_point")
@@ -654,8 +670,13 @@ class SourceAuditRepoRunTests(unittest.TestCase):
             self.root, self.packs, chunk_chars=512)
         entry = {row["path"]: row for row in manifest["files"]}[
             "docs/readme.md"]
-        text = (self.root / "docs" / "readme.md").read_text(
-            encoding="utf-8")
+        # Mirrors the audit's own read (`_read_text` decodes the raw bytes), so
+        # the chunk hash is computed over the same bytes the manifest hashed.
+        # Reading in text mode would translate CRLF to LF on a Windows
+        # checkout and produce a chunk id the audit can never match: the
+        # verdict would follow the platform's newline policy, not the code.
+        text = (self.root / "docs" / "readme.md").read_bytes().decode(
+            "utf-8")
         chunk_text, line_start, line_end = list(
             source_audit._iter_text_chunks(text, 512))[0]
         chunk_id = source_audit._chunk_id(

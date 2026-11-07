@@ -41,6 +41,21 @@ from harness.task_lifecycle import TaskLaneLifecycleMixin
 from harness.workspace_audit import _summary
 
 
+def _require_symlink(case, target, link):
+    """Create a symlink, or skip as an environment gap (#454).
+
+    Windows refuses symlink creation without SeCreateSymbolicLinkPrivilege
+    (``WinError 1314``) unless Developer Mode is enabled, so an unguarded
+    ``os.symlink`` turns a host privilege into a code verdict. The skip reason
+    names the missing fact; it is an environment gate, not a convenience skip.
+    """
+    try:
+        os.symlink(target, link)
+    except (OSError, NotImplementedError) as exc:
+        case.skipTest(
+            "symlink privilege unavailable on this host: {}".format(exc))
+
+
 class TempTree(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -57,6 +72,9 @@ class OsalFileLockEdgeTests(TempTree):
 
     def test_lock_path_that_is_not_a_regular_file_is_refused(self):
         fifo = self.path("lockfifo")
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("POSIX fifo (os.mkfifo) unavailable on this "
+                          "platform: windows")
         os.mkfifo(fifo)
         with self.assertRaises(osal.OsalError) as caught:
             osal.acquire_file_lock(fifo)
@@ -452,7 +470,7 @@ class RepoScopeEdgeTests(TempTree):
     def test_a_symlinked_file_is_excluded_as_a_link(self):
         real = Path(self.path("real.py"))
         real.write_text("x = 1\n", encoding="utf-8")
-        os.symlink(real, self.path("alias.py"))
+        _require_symlink(self, real, self.path("alias.py"))
         scope = audit_scope(Path(self.root))
         reasons = {entry["path"]: entry["reason"]
                    for entry in scope["excluded"]}
@@ -653,7 +671,7 @@ class OverlayEdgeTests(TempTree):
         overlay = self._tree("overlay")
         real = self._tree("real")
         (real / "f.txt").write_text("x", encoding="utf-8")
-        os.symlink(real, overlay / "linked")
+        _require_symlink(self, real, overlay / "linked")
         with self.assertRaises(HarnessError) as caught:
             run_overlay(str(base), str(overlay), ["true"])
         self.assertIn("is a symlink", str(caught.exception))
