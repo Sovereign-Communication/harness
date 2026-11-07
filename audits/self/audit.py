@@ -305,11 +305,14 @@ def _has_governor_preflight_with_retry_calls(module_tree):
                     if not valid_appends or retry_terminated:
                         continue
 
+                    loop_end = candidates_loop.end_lineno
                     for statement in function.body:
                         preflight = statement.value if isinstance(statement, (ast.Assign, ast.Expr)) else None
                         if (not isinstance(preflight, ast.Call) or not isinstance(preflight.func, ast.Attribute)
                                 or preflight.func.attr != "preflight" or not is_name(preflight.func.value, "governor")
-                                or preflight.lineno <= candidates_loop.end_lineno):
+                                # An unknown end line cannot show the preflight
+                                # outside the retry loop, so this check fails.
+                                or loop_end is None or preflight.lineno <= loop_end):
                             continue
                         exact_args = (len(preflight.args) == 2 and not preflight.keywords
                                       and is_name(preflight.args[0], "prompt") and is_name(preflight.args[1], "calls"))
@@ -382,17 +385,19 @@ def a_preflight_covers_retries():
 def a_ceiling_hard():
     """record_actual never lets spent exceed the ceiling (raise, not clamp),
     and load_settings clamps config values to HARD_MAX_COST."""
+    # An unreadable segment is no evidence: the empty string fails the checks
+    # below exactly as a missing one should.
     body = ast.get_source_segment(_src("spend"),
                                   [n for n in ast.walk(tree("spend"))
                                    if isinstance(n, ast.FunctionDef)
-                                   and n.name == "record_actual"][0])
+                                   and n.name == "record_actual"][0]) or ""
     raises = "would exceed ceiling" in body and "raise" in body
     cfg = _src("config")
     clamped = "HARD_MAX_COST" in cfg and "_num(\"max_cost\"" in cfg.replace("'", "\"")
-    lock = "with self._spend_lock" in ast.get_source_segment(
+    lock = "with self._spend_lock" in (ast.get_source_segment(
         _src("spend"),
         [n for n in ast.walk(tree("spend"))
-         if isinstance(n, ast.FunctionDef) and n.name == "record_actual"][0])
+         if isinstance(n, ast.FunctionDef) and n.name == "record_actual"][0]) or "")
     return _pass(raises and clamped and lock,
                  "record_actual raises (never clamps) past max_cost under the "
                  "spend lock; load_settings bounds max_cost to [0, HARD_MAX_COST]",
@@ -1831,6 +1836,15 @@ def main():
 
     print("=" * 65)
     print("JEV 4-DIMENSION TRUE GATE (authoritative bar >= 9.50/10 on ALL 4 dimensions):")
+    # Two numbers are in play above and they are not the same claim: the
+    # deterministic mean is arithmetic over the checks printed above, while the
+    # Jev level is a level Jev declared (or, per dimension, the
+    # evidence-calibrated heuristic standing in for a missing answer). Printing
+    # one unnamed number read as "every check passed, then 5.00 failing" with
+    # nothing saying which was which -- #454 item 3.
+    print("  jev_level = declared level; deterministic_mean = arithmetic on the")
+    print("  checks above; level_source = live | heuristic | not_evaluated.")
+    call_source = "heuristic" if jev_gate.get("is_fallback") else "live"
     for dim in ("A", "R", "SM", "SD"):
         d = jev_gate["dimensions"].get(dim, {})
         s = jev_gate["scores"].get(dim)
@@ -1839,13 +1853,21 @@ def main():
             continue
         bar_mark = "OK " if s >= 9.5 else "LOW"
         pct = (s / 10.0) * 100
-        print(f"  [{bar_mark}] {dim} — {d.get('name', dim)}: {s:.2f}/10 ({pct:.1f}%) [{d.get('level', 'evaluated')}]")
+        measured = summary.get(dim)
+        measured_txt = (f"{measured:.2f}/10" if isinstance(measured, (int, float))
+                        else "not measured")
+        source = d.get("source") or call_source
+        print(f"  [{bar_mark}] {dim} — {d.get('name', dim)}: "
+              f"jev_level {s:.2f}/10 ({pct:.1f}%) [{d.get('level', 'evaluated')}] "
+              f"| level_source={source} | deterministic_mean {measured_txt}")
     dims_evaluated = list(dims.keys())
     bar_met_for_dims = all(
         (jev_gate["scores"].get(d) or 0.0) >= 9.5 for d in dims_evaluated)
     if args.dim:
         print(f"  Jev Gate Result ({args.dim}): {'PASS (>=95%)' if bar_met_for_dims else 'FAIL (<95%)'} "
               f"(is_fallback={jev_gate['is_fallback']}, model={jev_gate.get('model')})")
+        print(f"  Partial run: only {args.dim} was evaluated. The all-four-dimension")
+        print("  bar is not claimed and the tracked receipt is left unchanged.")
     else:
         print(f"  Jev Gate Result: {'PASS (>=95% on all 4 dimensions)' if jev_gate['bar_95_pass'] else 'FAIL (<95% on one or more dimensions)'} "
               f"(is_fallback={jev_gate['is_fallback']}, model={jev_gate.get('model')})")
@@ -1855,37 +1877,17 @@ def main():
     # Gating rule: evaluated dimensions must average >= 9.5 and pass Jev 95%+ gate
     total_ok = total_ok and bar_met_for_dims
 
-    if args.dim and out.exists():
-        try:
-            prior = json.loads(out.read_text(encoding="utf-8"))
-            saved_scores = prior.get("scores", {})
-            saved_scores.update(summary)
-            saved_jev = prior.get("jev_scores", {})
-            saved_jev.update({d: jev_gate["scores"][d] for d in dims_evaluated if d in jev_gate["scores"]})
-            saved_checks = prior.get("checks", {})
-            saved_checks.update(results)
-            saved_skipped = prior.get("skipped_checks", {})
-            saved_skipped.update(skipped_checks)
-            payload = {
-                "scores": saved_scores,
-                "jev_scores": saved_jev,
-                "jev_gate_pass": all(
-                    isinstance(saved_jev.get(d), (int, float))
-                    and saved_jev[d] >= 9.5
-                    for d in ("A", "R", "SM", "SD")),
-                "jev_eval": jev_gate,
-                "skipped_checks": saved_skipped,
-                "checks": saved_checks,
-            }
-        except Exception:
-            payload = {
-                "scores": summary,
-                "jev_scores": jev_gate["scores"],
-                "jev_gate_pass": jev_gate["bar_95_pass"],
-                "jev_eval": jev_gate,
-                "skipped_checks": skipped_checks,
-                "checks": results,
-            }
+    if args.dim:
+        # A partial --dim run measures ONE dimension. Merging it into the
+        # tracked receipt left the other three dimensions' scores from a
+        # previous run in place, so the file read as this run's verdict over
+        # four dimensions while three of them had not run at all -- the
+        # misleading 4x10.0 artefact #454 item 3 records. The receipt is written
+        # by full runs only; a partial run reports on stdout and touches no
+        # tracked file, so it cannot dirty the tree it is gating.
+        print(f"scores (partial run, {args.dim} only): {summary}")
+        print(f"receipt: {out.relative_to(ROOT)} left unchanged "
+              f"(written by full runs only)")
     else:
         payload = {
             "scores": summary,
@@ -1896,8 +1898,8 @@ def main():
             "checks": results,
         }
 
-    _write_receipt(out, payload)
-    print(f"scores: {payload['scores']}  (written to {out.relative_to(ROOT)})")
+        _write_receipt(out, payload)
+        print(f"scores: {payload['scores']}  (written to {out.relative_to(ROOT)})")
     print("verdict:", "ALL EVALUATED DIMENSIONS >= 9.5 (JEV 95%+ TRUE GATE MET) — bar met" if total_ok
           else "BAR NOT MET — iterate on the failing checks above")
     return 0 if total_ok else 1

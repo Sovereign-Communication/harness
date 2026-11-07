@@ -247,12 +247,11 @@ def aggregate_structural(
     results: Iterable[Dict[str, Any]], site: str
 ) -> Optional[Dict[str, Any]]:
     """Aggregate evaluated child envelopes without inventing an empty verdict."""
-    values = [
-        result.get("structural")
-        for result in results
-        if isinstance(result, dict)
-        and isinstance(result.get("structural"), dict)
-    ]
+    values = []
+    for result in results:
+        structural = result.get("structural") if isinstance(result, dict) else None
+        if isinstance(structural, dict):
+            values.append(structural)
     if not values:
         return None
     verdicts = {value.get("verdict") for value in values}
@@ -320,9 +319,11 @@ class JevPolicy:
                 else breaker_cooldown,
                 clock or time.monotonic)
         explicitly_disabled = bool(getattr(settings, "jev_disabled", False))
+        # No `endpoint=` here: JevEvaluator already reads settings.jev_endpoint
+        # itself and falls back to its own default, so passing the attribute
+        # through again only restated it -- and typed it as possibly missing.
         self.evaluator = (JevEvaluator(
             api_key=None,
-            endpoint=getattr(settings, "jev_endpoint", None),
             transport=transport,
             settings=settings,
             breakers=breakers,
@@ -330,7 +331,6 @@ class JevPolicy:
             single_attempt=single_attempt,
         ) if explicitly_disabled else evaluator or JevEvaluator(
             api_key=getattr(settings, "jev_api_key", None),
-            endpoint=getattr(settings, "jev_endpoint", None),
             transport=transport,
             settings=settings,
             breakers=breakers,
@@ -354,10 +354,13 @@ class JevPolicy:
         """
         if not self.keyed:
             return False
-        remaining = getattr(self.governor, "remaining", None)
+        remaining: Any = getattr(self.governor, "remaining", None)
         if callable(remaining):
             try:
-                if float(remaining()) < jev_cost(max_input_tokens):
+                # A governor's remaining() may be duck-typed; float() is the
+                # contract check, and the except below is the refusal.
+                reserve_left: Any = remaining()
+                if float(reserve_left) < jev_cost(max_input_tokens):
                     return False
             except (TypeError, ValueError, HarnessError):
                 pass
@@ -661,7 +664,8 @@ class JevPolicy:
                         book(cost, model)
                     error.cost_accounted = True
             from .events import emit
-            reserved = token[1] if isinstance(token, tuple) and len(token) > 1 else None
+            reserved: Any = (token[1] if isinstance(token, tuple) and len(token) > 1
+                             else None)
             if token is not None and self.governor is not None:
                 reclassify = getattr(self.governor, "reclassify_unknown", None)
                 if callable(reclassify):
@@ -1196,8 +1200,8 @@ class JevPolicy:
                  "pack_version": SIMPLE_STRATEGY_PACK_VERSION},
                 [reason],
                 cost=float(getattr(raw_result, "cost", 0.0) or 0.0),
-                input_tokens=getattr(raw_result, "input_tokens", None),
-                output_tokens=getattr(raw_result, "output_tokens", None),
+                input_tokens=int(getattr(raw_result, "input_tokens", 0) or 0),
+                output_tokens=int(getattr(raw_result, "output_tokens", 0) or 0),
                 is_fallback=True,
                 model=getattr(raw_result, "model", self.evaluator.model),
                 discarded=bool(getattr(raw_result, "discarded", False)),
@@ -1224,7 +1228,7 @@ class JevPolicy:
             valid = (not result.is_fallback and choice in options
                      and isinstance(probabilities, dict)
                      and all(name in probabilities for name in options))
-            if valid:
+            if valid and isinstance(probabilities, dict):
                 normalized = {
                     "strategy": choice,
                     "probabilities": dict(probabilities),
@@ -1401,17 +1405,22 @@ class JevPolicy:
                     fallback_reason=result.fallback_reason,
                 )
                 return fallback, values, False
+            # `valid` proved every probability is a float; narrow them once
+            # here rather than asking each arithmetic site to re-prove it. The
+            # filtered mapping equals `values` whenever `valid` holds.
+            measured = {key: float(value) for key, value in values.items()
+                        if value is not None}
             normalized = {
-                "answer_sufficient": values["answer_sufficient"],
-                "iteration_required": values["iteration_required"] >= 0.5,
-                "plan_required": values["plan_required"] >= 0.5,
+                "answer_sufficient": measured["answer_sufficient"],
+                "iteration_required": measured["iteration_required"] >= 0.5,
+                "plan_required": measured["plan_required"] >= 0.5,
                 "raw": raw,
                 "pack_version": ANSWER_PACK_VERSION,
             }
             verdict = result.verdict if result.verdict in ("pass", "fail") else "fail"
             return JevEvaluationResult(
                 verdict, float(result.confidence or 0.0),
-                min(values.values()), normalized, list(result.reasons or []),
+                min(measured.values()), normalized, list(result.reasons or []),
                 cost=result.cost, input_tokens=result.input_tokens,
                 output_tokens=result.output_tokens, is_fallback=False,
                 model=result.model, cache_hit=result.cache_hit,
@@ -1449,17 +1458,19 @@ class JevPolicy:
             structural = self._account(
                 result, site=site, task_id=task_id, reservation=reservation)
             reservation = None
+            iteration_required = values.get("iteration_required")
+            plan_required = values.get("plan_required")
             structural.update({
                 "capability": "answer",
                 "pack_version": ANSWER_PACK_VERSION,
                 "native": bool(live),
                 "answer_sufficient": values.get("answer_sufficient"),
                 "iteration_required": (
-                    True if values.get("iteration_required") is None
-                    else values["iteration_required"] >= 0.5),
+                    True if iteration_required is None
+                    else iteration_required >= 0.5),
                 "plan_required": (
-                    None if values.get("plan_required") is None
-                    else values["plan_required"] >= 0.5),
+                    None if plan_required is None
+                    else plan_required >= 0.5),
             })
             return result, structural
         except ProviderUsageUnknown as exc:
@@ -2807,7 +2818,8 @@ class JevPolicy:
         identical input; see the 2026-09-22 determinism probe).
         """
         pack_doc = pack_doc if isinstance(pack_doc, dict) else {}
-        score = pack_doc.get("score") if isinstance(pack_doc.get("score"), dict) else {}
+        score_config = pack_doc.get("score")
+        score = score_config if isinstance(score_config, dict) else {}
         return {
             "pack_id": pack_doc.get("id"),
             "axes": dict(axes or {}),
@@ -3555,6 +3567,7 @@ class JevPolicy:
                     "bar_met": False,
                     "confidence": None,
                     "evaluated": False,
+                    "source": "not_evaluated",
                 }
                 continue
             evaluated_dim_ids.append(dim)
@@ -3579,6 +3592,7 @@ class JevPolicy:
             if level is not None:
                 idx = levels.index(level)
                 any_dim_valid = True
+                level_source = "live"
             else:
                 # Declared answer missing/invalid: fall back to this ONE
                 # dimension's own evidence-calibrated index -- never an
@@ -3589,6 +3603,7 @@ class JevPolicy:
                       3 if ev_score >= 9.5 else
                       2 if ev_score >= 8.5 else
                       1 if ev_score >= 7.0 else 0)
+                level_source = "heuristic"
             dim_results[dim] = {
                 "name": spec["name"],
                 "level_index": idx,
@@ -3597,6 +3612,11 @@ class JevPolicy:
                 "bar_met": idx >= bar_idx,
                 "confidence": conf,
                 "evaluated": True,
+                # Which claim this level is: a level Jev declared for this
+                # dimension, or this dimension's evidence-calibrated index
+                # standing in for a missing/invalid answer. A call can be live
+                # overall while one dimension is heuristic (#454 item 3).
+                "source": level_source,
             }
 
         if evaluated_dim_ids and not any_dim_valid:
@@ -3642,6 +3662,9 @@ class JevPolicy:
         model_name = getattr(self.evaluator, "model", None)
         if not isinstance(model_name, str) or not model_name.strip():
             model_name = "jev-latest"
+        # Bound before the try so the refusal path leaves no reading of an
+        # unset name; the only path that dispatches is the one that set it.
+        sanitized_state: Any = None
         try:
             sanitized_state = sanitize_vision_state(state)
             metrics = vision_assessment_preflight(
@@ -3792,6 +3815,7 @@ class JevPolicy:
                 is_fallback=False, model=None)
 
         assessed = False
+        perfect = False
         reasons = list(result.reasons or [])
         if result.is_fallback:
             reasons = ["fallback result cannot assess the vision"]

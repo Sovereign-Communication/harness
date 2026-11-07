@@ -18,6 +18,7 @@ import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, Dict, cast
 from unittest import mock
 
 from harness import chat as chat_mod
@@ -41,6 +42,21 @@ from harness.task_lifecycle import TaskLaneLifecycleMixin
 from harness.workspace_audit import _summary
 
 
+def _require_symlink(case, target, link):
+    """Create a symlink, or skip as an environment gap (#454).
+
+    Windows refuses symlink creation without SeCreateSymbolicLinkPrivilege
+    (``WinError 1314``) unless Developer Mode is enabled, so an unguarded
+    ``os.symlink`` turns a host privilege into a code verdict. The skip reason
+    names the missing fact; it is an environment gate, not a convenience skip.
+    """
+    try:
+        os.symlink(target, link)
+    except (OSError, NotImplementedError) as exc:
+        case.skipTest(
+            "symlink privilege unavailable on this host: {}".format(exc))
+
+
 class TempTree(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -57,7 +73,11 @@ class OsalFileLockEdgeTests(TempTree):
 
     def test_lock_path_that_is_not_a_regular_file_is_refused(self):
         fifo = self.path("lockfifo")
-        os.mkfifo(fifo)
+        mkfifo = getattr(os, "mkfifo", None)
+        if mkfifo is None:
+            self.skipTest("POSIX fifo (os.mkfifo) unavailable on this "
+                          "platform: windows")
+        mkfifo(fifo)
         with self.assertRaises(osal.OsalError) as caught:
             osal.acquire_file_lock(fifo)
         self.assertIn("must be a regular file", str(caught.exception))
@@ -452,7 +472,7 @@ class RepoScopeEdgeTests(TempTree):
     def test_a_symlinked_file_is_excluded_as_a_link(self):
         real = Path(self.path("real.py"))
         real.write_text("x = 1\n", encoding="utf-8")
-        os.symlink(real, self.path("alias.py"))
+        _require_symlink(self, real, self.path("alias.py"))
         scope = audit_scope(Path(self.root))
         reasons = {entry["path"]: entry["reason"]
                    for entry in scope["excluded"]}
@@ -536,8 +556,9 @@ class ChatMetaRouteTests(unittest.TestCase):
 
     def test_a_fireworks_route_threads_the_settings_key(self):
         from harness.fireworks import Route
-        route = Route("fireworks", "accounts/fireworks/models/x",
-                      "accounts/fireworks/models/x")
+        # chat_routed reads only route.provider on this path; the offer is
+        # resolved from a real routing table, which this test replaces.
+        route = Route("fireworks", "accounts/fireworks/models/x")
         seen = {}
 
         def fake_fireworks(transport, key, model, messages, max_tokens,
@@ -586,7 +607,8 @@ class McpLogEdgeTests(TempTree):
     def test_scrub_recurses_through_lists_and_tuples(self):
         cleaned = scrub(["plain", {"api_key": "shh"}, ("nested",)])
         self.assertEqual(cleaned[0], "plain")
-        self.assertEqual(cleaned[1]["api_key"], "[REDACTED]")
+        self.assertEqual(cast(Dict[str, Any], cleaned[1])["api_key"],
+                         "[REDACTED]")
         self.assertEqual(cleaned[2], ["nested"])
 
     def test_log_tool_call_without_a_path_is_a_no_op(self):
@@ -632,7 +654,8 @@ class RestartStateStoreEdgeTests(TempTree):
         result = store._remember(state)
         self.assertFalse(result["event_emitted"])
         self.assertFalse(result["deduplicated"])
-        self.assertEqual(store.last("r-1")["event_key"], "k1")
+        self.assertEqual(
+            cast(Dict[str, Any], store.last("r-1"))["event_key"], "k1")
 
 
 class OverlayEdgeTests(TempTree):
@@ -653,7 +676,7 @@ class OverlayEdgeTests(TempTree):
         overlay = self._tree("overlay")
         real = self._tree("real")
         (real / "f.txt").write_text("x", encoding="utf-8")
-        os.symlink(real, overlay / "linked")
+        _require_symlink(self, real, overlay / "linked")
         with self.assertRaises(HarnessError) as caught:
             run_overlay(str(base), str(overlay), ["true"])
         self.assertIn("is a symlink", str(caught.exception))
@@ -699,7 +722,9 @@ class SmallPredicateTests(unittest.TestCase):
 # ------------------------------------------------------- task lifecycle lane
 
 class _WorkspaceAuditHandler(TaskLaneLifecycleMixin):
-    pass
+    # The composing agent supplies this in production; the test supplies its
+    # own coordinator below, so the mixin's lane methods can be exercised.
+    lifecycle: LifecycleCoordinator
 
 
 class WorkspaceAuditLifecycleEdgeTests(TempTree):
@@ -712,7 +737,10 @@ class WorkspaceAuditLifecycleEdgeTests(TempTree):
         self.adapter = adapter_for(self.handler.lifecycle, "audit")
 
     def test_a_completed_saved_result_is_replayed_verbatim(self):
-        state = self.adapter.begin("sess-a", "audit the workspace")
+        # This test mutates the state to the finished shape a resumed run
+        # replays, which the active-lane TypedDict reserves for the adapter.
+        state = cast(Dict[str, Any],
+                     self.adapter.begin("sess-a", "audit the workspace"))
         saved = {"status": "approval_required", "response": "priced"}
         state["data"]["result"] = saved
         state["status"] = "complete"

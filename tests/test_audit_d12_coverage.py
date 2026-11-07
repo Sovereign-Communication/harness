@@ -22,6 +22,7 @@ explicit S5 disposition.
 """
 
 import contextlib
+import importlib.machinery
 import importlib.util
 import io
 import json
@@ -41,6 +42,8 @@ _RUNBOOK_PATH = _ROOT / "docs" / "audit-triage.md"
 
 def _load_audit():
     spec = importlib.util.spec_from_file_location("_d12_audit", _AUDIT_PATH)
+    if spec is None or not isinstance(spec.loader, importlib.machinery.SourceFileLoader):
+        raise AssertionError(f"cannot load {_AUDIT_PATH} as a source module")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -413,6 +416,98 @@ class AuditSkipSurfaceTests(unittest.TestCase):
             self.assertEqual(sd["checks_skipped"], 1)
             self.assertEqual([c["id"] for c in sd["checks"]],
                              ["D-pass", "D-fail"])
+        finally:
+            tmp.cleanup()
+
+
+class AuditPartialRunTests(unittest.TestCase):
+    """A partial `--dim` run reports on stdout and never rewrites the receipt.
+
+    #454 item 3: `--dim SD` merged its one dimension into the tracked
+    `round2_scores.json`, so the file kept three dimensions' scores from a
+    previous run while presenting itself as this run's verdict. The display
+    also printed one unnamed number per dimension, so "every check passed" sat
+    directly above "5.00/10 failing" with nothing saying which was which.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.audit = _load_audit()
+
+    def _run(self, argv, *, prior_receipt=None):
+        def fake_evaluate(evidence):
+            # A level unlike the deterministic mean on purpose: the specimen
+            # printed 10.00/10 of passing checks directly above a 5.00/10
+            # declared level, and the defect was that neither number said what
+            # it was.
+            scores = {dim: 5.0 for dim in evidence}
+            return {
+                "dimensions": {
+                    dim: {"name": self.audit.DIM_NAMES[dim], "score": score,
+                          "level": "aligned", "evaluated": score is not None,
+                          "source": "live"}
+                    for dim, score in scores.items()
+                },
+                "scores": scores,
+                "bar_95_pass": False,
+                "is_fallback": False,
+                "model": "fake",
+            }
+
+        fake_policy = mock.Mock()
+        fake_policy.evaluate_audit_dimensions.side_effect = fake_evaluate
+
+        def measured_pass():
+            return 1.0, "measured pass"
+
+        tmp = tempfile.TemporaryDirectory()
+        root = Path(tmp.name) / "repo"
+        here = root / "audits" / "self"
+        here.mkdir(parents=True)
+        if prior_receipt is not None:
+            (here / "round2_scores.json").write_text(prior_receipt,
+                                                     encoding="utf-8")
+        stdout = io.StringIO()
+        with mock.patch.object(self.audit, "ROOT", root), \
+             mock.patch.object(self.audit, "HERE", here), \
+             mock.patch.object(self.audit, "CHECKS", {"SD": [
+                 ("D-pass", "measured pass", measured_pass)]}), \
+             mock.patch.object(self.audit, "_compose_audit_jev_policy",
+                               return_value=fake_policy), \
+             mock.patch("harness.config.load_settings",
+                        return_value=SimpleNamespace(max_cost=0.0,
+                                                     jev_api_key=None)), \
+             mock.patch.object(sys, "argv", argv), \
+             contextlib.redirect_stdout(stdout):
+            rc = self.audit.main()
+        return tmp, here, stdout.getvalue(), rc
+
+    def test_partial_run_leaves_the_tracked_receipt_unchanged(self):
+        prior = '{"scores": {"A": 10.0}}\n'
+        tmp, here, text, _rc = self._run(["audit.py", "--dim", "SD"],
+                                         prior_receipt=prior)
+        try:
+            self.assertEqual(
+                (here / "round2_scores.json").read_text(encoding="utf-8"), prior)
+            self.assertIn("partial run, SD only", text)
+            self.assertIn("left unchanged", text)
+        finally:
+            tmp.cleanup()
+
+    def test_partial_run_does_not_create_a_receipt_where_none_existed(self):
+        tmp, here, _text, _rc = self._run(["audit.py", "--dim", "SD"])
+        try:
+            self.assertFalse((here / "round2_scores.json").exists())
+        finally:
+            tmp.cleanup()
+
+    def test_gate_line_names_the_level_its_source_and_the_deterministic_mean(self):
+        tmp, _here, text, _rc = self._run(["audit.py", "--dim", "SD"])
+        try:
+            # Both numbers are named, and they are allowed to disagree.
+            self.assertIn("jev_level 5.00/10", text)
+            self.assertIn("level_source=live", text)
+            self.assertIn("deterministic_mean 10.00/10", text)
         finally:
             tmp.cleanup()
 
