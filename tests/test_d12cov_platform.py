@@ -72,10 +72,11 @@ class OsalFileLockEdgeTests(TempTree):
 
     def test_lock_path_that_is_not_a_regular_file_is_refused(self):
         fifo = self.path("lockfifo")
-        if not hasattr(os, "mkfifo"):
+        mkfifo = getattr(os, "mkfifo", None)
+        if mkfifo is None:
             self.skipTest("POSIX fifo (os.mkfifo) unavailable on this "
                           "platform: windows")
-        os.mkfifo(fifo)
+        mkfifo(fifo)
         with self.assertRaises(osal.OsalError) as caught:
             osal.acquire_file_lock(fifo)
         self.assertIn("must be a regular file", str(caught.exception))
