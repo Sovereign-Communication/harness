@@ -3555,6 +3555,7 @@ class JevPolicy:
                     "bar_met": False,
                     "confidence": None,
                     "evaluated": False,
+                    "source": "not_evaluated",
                 }
                 continue
             evaluated_dim_ids.append(dim)
@@ -3579,6 +3580,7 @@ class JevPolicy:
             if level is not None:
                 idx = levels.index(level)
                 any_dim_valid = True
+                level_source = "live"
             else:
                 # Declared answer missing/invalid: fall back to this ONE
                 # dimension's own evidence-calibrated index -- never an
@@ -3589,6 +3591,7 @@ class JevPolicy:
                       3 if ev_score >= 9.5 else
                       2 if ev_score >= 8.5 else
                       1 if ev_score >= 7.0 else 0)
+                level_source = "heuristic"
             dim_results[dim] = {
                 "name": spec["name"],
                 "level_index": idx,
@@ -3597,6 +3600,11 @@ class JevPolicy:
                 "bar_met": idx >= bar_idx,
                 "confidence": conf,
                 "evaluated": True,
+                # Which claim this level is: a level Jev declared for this
+                # dimension, or this dimension's evidence-calibrated index
+                # standing in for a missing/invalid answer. A call can be live
+                # overall while one dimension is heuristic (#454 item 3).
+                "source": level_source,
             }
 
         if evaluated_dim_ids and not any_dim_valid:

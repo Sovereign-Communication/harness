@@ -161,6 +161,19 @@ class HeuristicAuditDimensionsTests(unittest.TestCase):
             self.assertIn("level", result[dim])
             self.assertIn("score", result[dim])
             self.assertIn("bar_met", result[dim])
+            self.assertIn("source", result[dim])
+
+    def test_every_level_names_its_source(self):
+        """#454 item 3: a receipt must say whether a level is a declared level
+        or the evidence-calibrated heuristic standing in for one."""
+        full = heuristic_audit_dimensions(
+            self._evidence(A=10.0, R=6.0, SM=10.0, SD=10.0))
+        for dim in ("A", "R", "SM", "SD"):
+            self.assertEqual(full[dim]["source"], "heuristic")
+        partial = heuristic_audit_dimensions(self._evidence(A=10.0))
+        self.assertEqual(partial["A"]["source"], "heuristic")
+        for dim in ("R", "SM", "SD"):
+            self.assertEqual(partial[dim]["source"], "not_evaluated")
 
     def test_partial_evidence_marks_absent_dim_not_evaluated(self):
         """A dim missing from a real evidence dict is honestly not_evaluated,
@@ -181,6 +194,7 @@ class HeuristicAuditDimensionsTests(unittest.TestCase):
         for dim in ("A", "R", "SM", "SD"):
             self.assertEqual(result[dim]["level"], "not_evaluated")
             self.assertFalse(result[dim]["evaluated"])
+            self.assertEqual(result[dim]["source"], "not_evaluated")
 
     def test_none_evidence_keeps_all_zero_fallback_not_not_evaluated(self):
         """Whole-call None (no mapping shape at all) keeps the historical
@@ -446,6 +460,8 @@ class EvaluateAuditDimensionsKeyedTests(unittest.TestCase):
             self.assertEqual(d["level"], self.levels[self.bar_idx])
             self.assertIn(d["level"], self.levels)  # declared levels only
             self.assertTrue(d["bar_met"])
+            # provenance: every level here is one Jev actually declared
+            self.assertEqual(d["source"], "live")
         self.assertTrue(result["bar_95_pass"])
 
         # preflight reservation before dispatch
@@ -482,6 +498,7 @@ class EvaluateAuditDimensionsKeyedTests(unittest.TestCase):
             self.assertEqual(result["dimensions"][dim]["level"], "not_evaluated")
             self.assertIsNone(result["dimensions"][dim]["score"])
             self.assertFalse(result["dimensions"][dim]["evaluated"])
+            self.assertEqual(result["dimensions"][dim]["source"], "not_evaluated")
         # fail closed: never a false PASS on a partial run, even though the
         # one evaluated dimension is exemplary.
         self.assertFalse(result["bar_95_pass"])
@@ -513,6 +530,10 @@ class EvaluateAuditDimensionsKeyedTests(unittest.TestCase):
         self.assertEqual(result["dimensions"]["R"]["level"], self.levels[0])
         self.assertEqual(result["dimensions"]["R"]["level_index"], 0)
         self.assertIn(result["dimensions"]["A"]["level"], self.levels)
+        # The call is live overall, but R's level is the heuristic standing in
+        # for an unmatched answer -- the receipt must not blur the two (#454).
+        self.assertEqual(result["dimensions"]["R"]["source"], "heuristic")
+        self.assertEqual(result["dimensions"]["A"]["source"], "live")
         events = [e for e in self.ledger.entries() if e["event"] == "jev_eval"]
         self.assertEqual(len(events), 1)
         self.assertFalse(events[0]["is_fallback"])

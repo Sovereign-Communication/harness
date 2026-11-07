@@ -2271,6 +2271,7 @@ def heuristic_audit_dimensions(
                 "score": None,
                 "bar_met": False,
                 "evaluated": False,
+                "source": "not_evaluated",
             }
             continue
         ev = dimension_evidence.get(dim, {}) if evidence_is_dict else {}
@@ -2292,6 +2293,10 @@ def heuristic_audit_dimensions(
             "score": round(score_val if 0.0 <= score_val <= 10.0 else ordinals[idx], 2),
             "bar_met": idx >= doc["sentiment"].get("bar_met_index", 3),
             "evaluated": True,
+            # Provenance, not decoration: this level is the evidence-calibrated
+            # heuristic, so a receipt can say so instead of letting the number
+            # pass for a Jev declaration (#454 item 3).
+            "source": "heuristic",
         }
     return out
 
