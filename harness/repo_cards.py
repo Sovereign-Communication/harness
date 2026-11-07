@@ -350,8 +350,16 @@ def generate(root: Path, cards_dir: Path, repo: Optional[str] = None) -> Tuple[L
 
 
 def default_root() -> Path:
-    """The directory holding the sibling repositories (parent of this repo)."""
-    return Path(__file__).resolve().parent.parent.parent
+    """The checkout this tool lives in.
+
+    Not the checkout's *parent*: on a laptop that holds sibling repositories
+    the parent is a multi-repo directory, on CI it is a single-checkout folder,
+    and on a sandbox host it is something else again. A default rooted there
+    makes the same tree pass or fail on the shape of the machine (#454).
+    Carding sibling repositories stays available, but as the explicit
+    ``--root`` case, where the operator has said which directory they mean.
+    """
+    return Path(__file__).resolve().parent.parent
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -368,6 +376,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     root = args.root or default_root()
     cards = args.cards or Path(__file__).resolve().parent.parent / CARDS_SUBDIR
+    # Name the root the verdict came from: a silent default is what let the
+    # same card set read "up to date" on one machine and "stale" on another.
+    print("root: {}".format(root))
 
     repos = [(canonical_repo_name(n, cards), p) for n, p in discover_repos(root)]
     if args.repo:
@@ -381,8 +392,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             target = cards / "{}.md".format(name)
             if not target.is_file() or target.read_text(encoding="utf-8") != body:
                 stale.append(name)
+        # A committed card this run did not measure is a scope gap, not a pass.
+        # It does not fail the gate (a CI checkout cannot hold the siblings),
+        # but the verdict must not read as covering it.
+        checked = {name for name, _ in repos}
+        outside = sorted(f.stem for f in cards.glob("*.md") if f.stem not in checked)
         for name in stale:
             print("stale: {}".format(name))
+        for name in outside:
+            print("not checked (outside root): {}".format(name))
         print("{} card(s) would change".format(len(stale)) if stale else "cards up to date")
         return 1 if stale else 0
 

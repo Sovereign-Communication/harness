@@ -362,8 +362,38 @@ class CliTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 1, proc.stderr)
         self.assertIn("stale: Demo", proc.stdout)
 
-    def test_default_root_is_the_parent_of_this_checkout(self):
-        self.assertEqual(default_root(), ROOT.parent)
+    def test_default_root_is_this_checkout_not_its_parent(self):
+        """The default must not measure the machine's layout (#454)."""
+        self.assertEqual(default_root(), ROOT)
+
+    def test_check_output_names_the_root_it_used(self):
+        code, out = self._run("--check")
+        self.assertEqual(code, 1)
+        self.assertIn("root: {}".format(self.root), out)
+
+    def test_a_sibling_checkout_does_not_change_a_single_checkout_verdict(self):
+        """The laptop multi-repo case: the parent's siblings are not in scope.
+
+        Rooted at the checkout itself, a sibling repository beside it cannot
+        turn this verdict red -- the same tree must answer the same way where
+        no siblings exist at all.
+        """
+        sibling = self.root.parent / "Sibling"
+        (sibling / ".git").mkdir(parents=True)
+        (sibling / "AGENTS.md").write_text("x", encoding="utf-8")
+        self.assertEqual(self._run()[0], 0)
+        code, out = self._run("--check", "--root", str(self.root / "Demo"))
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("Sibling", out)
+
+    def test_a_committed_card_outside_the_root_is_reported_not_silently_passed(self):
+        """Carding fewer repos must read as narrower scope, never as clean."""
+        self._run()
+        write_card(self.cards, "Sibling", "# Sibling\n")
+        code, out = self._run("--check", "--root", str(self.root / "Demo"))
+        self.assertEqual(code, 0, out)
+        self.assertIn("not checked (outside root): Sibling", out)
+        self.assertIn("cards up to date", out)
 
 
 if __name__ == "__main__":
